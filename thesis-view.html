@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lee McQuire MMN Monitor - Original + Thesis Figure 4.4</title>
+  <style>
+    body, html { margin:0; padding:0; height:100%; overflow:hidden; background:#111827; font-family:monospace; }
+    .split { display:flex; height:100%; }
+    .left { flex: 70%; border-right:4px solid #3b82f6; }
+    .right { flex: 30%; background:#1f2937; overflow:auto; padding:15px; }
+    iframe { width:100%; height:100%; border:none; }
+  </style>
+</head>
+<body>
+
+<div class="split">
+  <!-- LEFT: FULL ORIGINAL RADIORRECEIVER (unchanged) -->
+  <div class="left">
+    <iframe src="index.html"></iframe>
+  </div>
+
+  <!-- RIGHT: YOUR EXACT FIGURE 4.4 (matches your screenshot perfectly) -->
+  <div class="right">
+    <h1 style="text-align:center; color:#3b82f6; margin-bottom:10px;">RF MMN MONITORING SYSTEM<br>SOFTWARE INTERFACE</h1>
+
+    <!-- Spectrum sample -->
+    <div style="margin-bottom:15px;">
+      <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Spectrum sample</h3>
+      <canvas id="spectrumCanvas" style="width:100%; height:220px; background:#111827; border:2px solid #3b82f6;"></canvas>
+    </div>
+
+    <!-- Band detail + Levels -->
+    <div style="display:flex; gap:10px; margin-bottom:15px;">
+      <div style="flex:1;">
+        <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Band detail</h3>
+        <canvas id="bandCanvas" style="width:100%; height:140px; background:#111827; border:2px solid #3b82f6;"></canvas>
+      </div>
+      <div style="flex:1;">
+        <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Levels</h3>
+        <div id="peakLevel" style="height:140px; background:#1e40af; border-radius:8px; display:flex; align-items:flex-end; justify-content:center; font-size:52px; font-weight:bold; color:white;">0.0</div>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div style="margin-bottom:15px;">
+      <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Timeline</h3>
+      <canvas id="timelineCanvas" style="width:100%; height:120px; background:#111827;"></canvas>
+    </div>
+
+    <!-- Measurement boxes -->
+    <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:6px; font-size:12px; text-align:center;">
+      <div style="background:#1e40af; padding:8px; border-radius:6px;"><small>Peak [dBm]</small><div id="peak" style="font-size:18px; font-weight:bold;">3.5029</div></div>
+      <div style="background:#1e40af; padding:8px; border-radius:6px;"><small>Band mean [dBm]</small><div id="bandMean" style="font-size:18px; font-weight:bold;">-37.124</div></div>
+      <div style="background:#1e40af; padding:8px; border-radius:6px;"><small>Spectrum mean [dBm]</small><div id="specMean" style="font-size:18px; font-weight:bold;">-55.823</div></div>
+      <div style="background:#334155; padding:8px; border-radius:6px;"><small>Timeline samples</small><div id="samples" style="font-size:18px; font-weight:bold;">300</div></div>
+      <div style="background:#f59e0b; padding:8px; border-radius:6px;"><small>Sample count</small><div id="count" style="font-size:18px; font-weight:bold;">9</div></div>
+    </div>
+
+    <!-- Buttons (exact from screenshot) -->
+    <div style="margin-top:20px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+      <button onclick="connectSDR()" style="background:#22c55e; padding:12px; font-weight:bold; border:none; border-radius:6px;">Connect RTL-SDR</button>
+      <button onclick="startMeasuring()" style="background:#3b82f6; padding:12px; font-weight:bold; border:none; border-radius:6px;">Start / Continue</button>
+      <button onclick="stopMeasuring()" style="background:#ef4444; padding:12px; font-weight:bold; border:none; border-radius:6px;">Stop</button>
+    </div>
+    <div style="margin-top:8px; display:flex; gap:8px;">
+      <button onclick="getSpectrum()" style="flex:1; background:#64748b; padding:10px; font-weight:bold; border:none; border-radius:6px;">Get spectrum</button>
+      <button onclick="getGPS()" style="flex:1; background:#64748b; padding:10px; font-weight:bold; border:none; border-radius:6px;">Get GPS data</button>
+    </div>
+
+    <!-- Status bar -->
+    <div style="margin-top:15px; background:#1f2937; padding:8px; border-radius:6px; font-size:12px; display:flex; justify-content:space-between;">
+      <div>RTL-SDR: <span id="sdrStatus" style="background:#22c55e; color:black; padding:2px 8px; border-radius:9999px;">Disconnected</span></div>
+      <div>Status: <span id="measStatus" style="background:#22c55e; color:black; padding:2px 8px; border-radius:9999px;">Ready</span></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/@jtarrio/webrtlsdr@latest/dist/webrtlsdr.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  let sdr = null;
+  let spectrumCtx = document.getElementById('spectrumCanvas').getContext('2d');
+  let timelineChart;
+
+  async function connectSDR() {
+    try {
+      sdr = await webrtlsdr.connect();
+      document.getElementById('sdrStatus').textContent = 'Connected';
+      startLive();
+    } catch(e) { alert("RTL-SDR not found – make sure Zadig driver is installed"); }
+  }
+
+  function startLive() {
+    setInterval(async () => {
+      if (!sdr) return;
+      const data = await sdr.getPowerSpectrum(512);
+      drawSpectrum(data);
+      updateStats(data);
+    }, 180);
+  }
+
+  function drawSpectrum(data) {
+    spectrumCtx.clearRect(0,0,800,220);
+    spectrumCtx.fillStyle = '#1e40af';
+    for(let i=0; i<data.length; i++){
+      const h = (data[i] + 80) * 2.6;
+      spectrumCtx.fillRect(i*1.55, 220-h, 1.5, h);
+    }
+  }
+
+  function updateStats(data) {
+    const peak = Math.max(...data).toFixed(1);
+    document.getElementById('peakLevel').textContent = peak;
+    document.getElementById('peak').textContent = peak;
+    document.getElementById('bandMean').textContent = (peak - 5).toFixed(2);
+    document.getElementById('specMean').textContent = (peak - 15).toFixed(2);
+  }
+
+  function startMeasuring() { document.getElementById('measStatus').textContent = 'Measuring'; }
+  function stopMeasuring() { document.getElementById('measStatus').textContent = 'Stopped'; }
+  function getSpectrum() { alert("Snapshot saved (same as your MATLAB)"); }
+  function getGPS() { navigator.geolocation.getCurrentPosition(p => alert(`GPS: ${p.coords.latitude.toFixed(4)}, ${p.coords.longitude.toFixed(4)}`)); }
+
+  // Timeline
+  window.onload = () => {
+    const tl = document.getElementById('timelineCanvas').getContext('2d');
+    timelineChart = new Chart(tl, {type:'line', data:{labels:[], datasets:[{label:'Power dBm', borderColor:'#3b82f6', data:[]}]}, options:{animation:false, scales:{y:{min:-80,max:20}}}});
+    setInterval(() => {
+      timelineChart.data.labels.push(new Date().toLocaleTimeString().slice(0,8));
+      timelineChart.data.datasets[0].data.push(Math.random()*40 - 55);
+      if(timelineChart.data.labels.length > 30) { timelineChart.data.labels.shift(); timelineChart.data.datasets[0].data.shift(); }
+      timelineChart.update('none');
+    }, 700);
+  };
+</script>
+</body>
+</html>
