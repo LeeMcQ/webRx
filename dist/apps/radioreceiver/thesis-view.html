@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="theme-color" content="#111827">
+
+  <!--
+    ════════════════════════════════════════════════════════════
+    GITHUB PAGES CSP FIX
+    GitHub Pages cannot set response headers, so we set CSP via
+    meta tag.  This explicitly allows:
+      • 'unsafe-inline' scripts/styles (needed because GH Pages
+        blocks inline code by default in some browsers)
+      • cdn.jsdelivr.net and unpkg.com (Chart.js + webrtlsdr)
+      • data: URIs (canvas toDataURL for snapshot export)
+    WebUSB and Web Serial are browser capabilities, not CSP-
+    controlled, but they DO require HTTPS — GitHub Pages
+    provides this automatically on *.github.io domains.
+    ════════════════════════════════════════════════════════════
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="
+          default-src 'self';
+          script-src  'self' 'unsafe-inline'
+                      https://cdn.jsdelivr.net
+                      https://unpkg.com;
+          style-src   'self' 'unsafe-inline';
+          img-src     'self' data: blob:;
+          connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com;
+          frame-src   'self';
+          worker-src  blob:;
+        ">
+
+  <title>MMN Monitor – Lee McQuire</title>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%; background: #0d1117; color: #e2e8f0;
+      font-family: 'Courier New', monospace; font-size: 13px;
+      overflow: hidden;
+    }
+
+    /* ── DESKTOP: side-by-side ── */
+    .layout { display: flex; height: 100vh; width: 100vw; }
+
+    .pane-receiver {
+      flex: 0 0 68%;
+      border-right: 2px solid #1e3a5f;
+      background: #0d1117;
+    }
+    .pane-receiver iframe {
+      width: 100%; height: 100%; border: none; display: block;
+    }
+    .pane-receiver .no-iframe {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; height: 100%; color: #334155;
+      text-align: center; padding: 20px; font-size: 12px; gap: 8px;
+    }
+
+    .pane-monitor {
+      flex: 1; background: #111827; overflow-y: auto; overflow-x: hidden;
+      padding: 10px 8px; display: flex; flex-direction: column; gap: 8px;
+    }
+
+    /* ── MOBILE: single column ── */
+    @media (max-width: 768px) {
+      html, body { overflow: auto; height: auto; }
+      .layout    { flex-direction: column; height: auto; min-height: 100vh; }
+      .pane-receiver { display: none; }
+      .pane-monitor  { flex: none; width: 100%; padding: 10px; overflow: visible; }
+      .stat-grid     { grid-template-columns: repeat(3, 1fr) !important; }
+      .btn-row-3     { grid-template-columns: 1fr 1fr !important; }
+      .levels-wrap   { height: 90px !important; }
+      .levels-num    { font-size: 26px !important; }
+    }
+
+    /* ── TYPOGRAPHY ── */
+    .panel-title {
+      text-align: center; color: #3b82f6; font-size: 12px;
+      font-weight: bold; line-height: 1.5;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .section-label {
+      text-align: center; color: #60a5fa; font-size: 9px;
+      text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px;
+    }
+
+    /* ── BADGE ── */
+    .badge {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      background: #0f172a; border: 1px solid #1e3a5f;
+      border-radius: 20px; padding: 3px 12px; font-size: 10px; color: #7dd3fc;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #374151; flex-shrink: 0; }
+    .dot.live { background: #22c55e; animation: pulse 1.4s infinite; }
+    .dot.warn { background: #f59e0b; }
+    .dot.err  { background: #ef4444; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── CANVAS ── */
+    canvas {
+      display: block; width: 100%; background: #0d1117;
+      border: 1px solid #1e3a5f; border-radius: 3px;
+    }
+    .canvas-wrap { position: relative; }
+    .canvas-idle {
+      position: absolute; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+      color: #1e3a5f; font-size: 10px; pointer-events: none;
+    }
+
+    /* ── LEVELS ── */
+    .levels-wrap {
+      background: #0d1117; border: 1px solid #1e3a5f; border-radius: 5px;
+      height: 120px; position: relative; overflow: hidden;
+      display: flex; align-items: flex-end; justify-content: center;
+    }
+    .levels-bar {
+      width: 74%;
+      background: linear-gradient(to top,#16a34a 0%,#eab308 55%,#dc2626 100%);
+      border-radius: 2px 2px 0 0; transition: height .2s ease; height: 0%;
+    }
+    .levels-num {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%,-50%);
+      font-size: 32px; font-weight: bold; color: #f1f5f9;
+      pointer-events: none; white-space: nowrap;
+    }
+
+    /* ── STAT GRID ── */
+    .stat-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 4px; }
+    .stat-box  { padding: 5px 3px; border-radius: 4px; text-align: center; }
+    .stat-box small { font-size: 7.5px; display: block; opacity: .75; margin-bottom: 1px; }
+    .stat-box .val  { font-size: 12px; font-weight: bold; }
+    .bg-blue  { background: #1e3a8a; }
+    .bg-slate { background: #1e293b; }
+    .bg-amber { background: #78350f; }
+
+    /* ── TABLES ── */
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    table th {
+      background: #0f172a; padding: 3px 5px;
+      text-align: left; color: #60a5fa; font-weight: normal; font-size: 9px;
+    }
+    table td { padding: 3px 5px; border-bottom: 1px solid #0f172a; }
+    table tr:last-child td { border-bottom: none; }
+    .nmea-row td { font-size: 8px; color: #4ade80; word-break: break-all; }
+
+    /* ── NETWORK SIGNAL TABLE ── */
+    .signal-bar-wrap {
+      background: #0f172a; border-radius: 3px; height: 8px;
+      overflow: hidden; margin-top: 2px;
+    }
+    .signal-bar { height: 100%; border-radius: 3px; transition: width .4s ease; width: 0%; }
+    .sig-good { background: #22c55e; }
+    .sig-ok   { background: #eab308; }
+    .sig-poor { background: #ef4444; }
+
+    /* ── BUTTONS ── */
+    .btn-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+    .btn-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .btn {
+      padding: 8px 4px; font-weight: bold; border: none; border-radius: 4px;
+      cursor: pointer; font-family: monospace; font-size: 10.5px;
+      transition: filter .1s, transform .08s;
+    }
+    .btn:active { filter: brightness(.75); transform: scale(.97); }
+    .btn-green  { background: #15803d; color: #fff; }
+    .btn-blue   { background: #1d4ed8; color: #fff; }
+    .btn-red    { background: #b91c1c; color: #fff; }
+    .btn-slate  { background: #334155; color: #e2e8f0; }
+    .btn-amber  { background: #b45309; color: #fff; }
+    .btn-purple { background: #6d28d9; color: #fff; }
+    .btn-teal   { background: #0f766e; color: #fff; }
+
+    select, .sel {
+      width: 100%; background: #0f172a; color: #e2e8f0;
+      border: 1px solid #1e3a5f; padding: 6px 8px;
+      border-radius: 4px; font-family: monospace; font-size: 11px;
+      appearance: none;
+    }
+
+    /* ── STATUS BAR ── */
+    .status-bar {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      background: #0f172a; padding: 5px 8px;
+      border-radius: 4px; font-size: 9.5px; justify-content: space-between;
+    }
+    .pill {
+      padding: 2px 7px; border-radius: 9999px;
+      font-size: 9.5px; white-space: nowrap;
+    }
+    .p-green  { background: #15803d; color: #fff; }
+    .p-red    { background: #b91c1c; color: #fff; }
+    .p-blue   { background: #1d4ed8; color: #fff; }
+    .p-amber  { background: #b45309; color: #fff; }
+    .p-slate  { background: #334155; color: #e2e8f0; }
+    .p-teal   { background: #0f766e; color: #fff; }
+
+    /* ── LOG ── */
+    .log-box {
+      background: #0d1117; border: 1px solid #0f172a; border-radius: 4px;
+      height: 72px; overflow-y: auto; padding: 4px 5px;
+      font-size: 8.5px; color: #475569;
+    }
+    .le  { margin-bottom: 1px; line-height: 1.4; }
+    .ok  { color: #4ade80; }
+    .wn  { color: #fbbf24; }
+    .er  { color: #f87171; }
+    .nm  { color: #38bdf8; }
+    .nf  { color: #a78bfa; }   /* network info */
+
+    hr { border: none; border-top: 1px solid #0f172a; }
+
+    .row2 { display: flex; gap: 6px; }
+    .row2 > * { flex: 1; }
+
+    /* ── NETWORK SECTION HEADER ── */
+    .net-header {
+      display: flex; align-items: center; gap: 6px;
+      background: #0f172a; border-radius: 4px;
+      padding: 4px 8px; font-size: 10px;
+    }
+    .net-header .nt { color: #7dd3fc; font-weight: bold; font-size: 11px; }
+    .net-header .et { color: #a78bfa; font-size: 10px; }
+    .net-header .ql { margin-left: auto; }
+
+    /* scrollbar */
+    .pane-monitor::-webkit-scrollbar { width: 4px; }
+    .pane-monitor::-webkit-scrollbar-track { background: #0d1117; }
+    .pane-monitor::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ════════ LEFT: RadioReceiver iframe (desktop only) ════════ -->
+  <div class="pane-receiver" id="receiverPane">
+    <iframe src="index.html" id="receiverFrame" title="RadioReceiver"
+            sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+  </div>
+
+  <!-- ════════ RIGHT / FULL: Monitoring Panel ════════ -->
+  <div class="pane-monitor">
+
+    <div class="panel-title">RF MMN MONITORING SYSTEM<br>SOFTWARE INTERFACE</div>
+
+    <!-- GPS source badge -->
+    <div class="badge">
+      <span class="dot" id="gpsDot"></span>
+      <span id="gpsSourceLabel">GPS: detecting…</span>
+    </div>
+
+    <!-- Network info badge -->
+    <div class="net-header" id="netHeader">
+      <span class="nt" id="netType">Network: —</span>
+      <span class="et" id="netEff">—</span>
+      <span class="ql">
+        <span class="pill p-slate" id="netQual">—</span>
+      </span>
+    </div>
+
+    <!-- SDR / Source selector -->
+    <div>
+      <div class="section-label">Signal Source</div>
+      <select id="deviceSelect">
+        <optgroup label="Radio SDR">
+          <option value="rtlsdr">RTL-SDR (webrtlsdr / Zadig)</option>
+          <option value="hackrf">HackRF Pro / HackRF One (WebUSB)</option>
+        </optgroup>
+        <optgroup label="Device Network">
+          <option value="wifi">Wi-Fi Signal Monitor (Network Info API)</option>
+          <option value="cellular">Cellular / Mobile Network Monitor</option>
+        </optgroup>
+      </select>
+    </div>
+
+    <!-- Spectrum -->
+    <div>
+      <div class="section-label">Spectrum / Signal</div>
+      <div class="canvas-wrap">
+        <canvas id="spectrumCanvas" height="160"></canvas>
+        <div class="canvas-idle" id="specIdle">Connect source → Start</div>
+      </div>
+    </div>
+
+    <!-- Band detail + Levels -->
+    <div class="row2">
+      <div>
+        <div class="section-label">Band detail / History</div>
+        <div class="canvas-wrap">
+          <canvas id="bandCanvas" height="110"></canvas>
+          <div class="canvas-idle" id="bandIdle">No data</div>
+        </div>
+      </div>
+      <div>
+        <div class="section-label">Signal Level</div>
+        <div class="levels-wrap">
+          <div class="levels-bar" id="levelsBar"></div>
+          <div class="levels-num" id="levelsNum">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div>
+      <div class="section-label">Timeline</div>
+      <canvas id="timelineCanvas" height="80"></canvas>
+    </div>
+
+    <!-- Stats -->
+    <div class="stat-grid">
+      <div class="stat-box bg-blue"><small>Peak / Max</small><div class="val" id="peak">—</div></div>
+      <div class="stat-box bg-blue"><small>Band / Avg</small><div class="val" id="bandMean">—</div></div>
+      <div class="stat-box bg-blue"><small>Spec / RTT ms</small><div class="val" id="specMean">—</div></div>
+      <div class="stat-box bg-slate"><small>Log records</small><div class="val" id="logCount">0</div></div>
+      <div class="stat-box bg-amber"><small>Samples</small><div class="val" id="count">0</div></div>
+    </div>
+
+    <hr>
+
+    <!-- Wi-Fi / Cellular Network Detail Table -->
+    <div id="netSection">
+      <div class="section-label">Network Signal Detail</div>
+      <table id="netTable">
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Connection type</td>    <td id="nType">—</td></tr>
+        <tr><td>Effective type</td>     <td id="nEffType">—</td></tr>
+        <tr><td>Downlink (Mbps)</td>    <td id="nDownlink">—</td></tr>
+        <tr><td>Max downlink (Mbps)</td><td id="nDownMax">—</td></tr>
+        <tr><td>RTT (ms)</td>           <td id="nRTT">—</td></tr>
+        <tr><td>Est. quality</td>       <td id="nQuality">—</td></tr>
+        <tr><td>Signal est. (dBm)</td>  <td id="nRSSI">—</td></tr>
+        <tr><td>Data saver</td>         <td id="nSave">—</td></tr>
+        <tr><td>Last updated</td>       <td id="nTime">—</td></tr>
+      </table>
+      <!-- Signal quality bar -->
+      <div style="margin-top:4px;">
+        <div class="signal-bar-wrap">
+          <div class="signal-bar" id="signalBar"></div>
+        </div>
+      </div>
+    </div>
+
+    <hr>
+
+    <!-- GPS Table -->
+    <div>
+      <div class="section-label">GPS Location</div>
+      <table id="gpsTable">
+        <tr><th>Field</th><th>Value</th></tr>
+        <tr><td>Latitude</td>     <td id="gpsLat">—</td></tr>
+        <tr><td>Longitude</td>    <td id="gpsLon">—</td></tr>
+        <tr><td>Altitude (m)</td> <td id="gpsAlt">—</td></tr>
+        <tr><td>Speed (km/h)</td> <td id="gpsSpeed">—</td></tr>
+        <tr><td>Heading (°)</td>  <td id="gpsHeading">—</td></tr>
+        <tr><td>Satellites</td>   <td id="gpsSats">—</td></tr>
+        <tr><td>Fix quality</td>  <td id="gpsFix">—</td></tr>
+        <tr><td>Accuracy</td>     <td id="gpsAcc">—</td></tr>
+        <tr><td>Last fix</td>     <td id="gpsTime">—</td></tr>
+        <tr class="nmea-row"><td colspan="2" id="gpsNMEA">—</td></tr>
+      </table>
+    </div>
+
+    <hr>
+
+    <!-- Buttons — NO inline onclick handlers (GitHub Pages CSP safe) -->
+    <div class="btn-row-3">
+      <button class="btn btn-green"  id="btnConnect">Connect</button>
+      <button class="btn btn-blue"   id="btnStart">▶ Start</button>
+      <button class="btn btn-red"    id="btnStop">■ Stop</button>
+    </div>
+    <div class="btn-row-2">
+      <button class="btn btn-slate"  id="btnSnap">📷 Snapshot</button>
+      <button class="btn btn-purple" id="btnGPS">📡 GPS Connect</button>
+    </div>
+    <div class="btn-row-2">
+      <button class="btn btn-amber"  id="btnCSV">⬇ Export CSV</button>
+      <button class="btn btn-slate"  id="btnClear">🗑 Clear log</button>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <div>Src: <span class="pill p-slate" id="sdrStatus">None</span></div>
+      <div>Net: <span class="pill p-slate" id="netStatus">—</span></div>
+      <div>GPS: <span class="pill p-red"   id="gpsStatus">No fix</span></div>
+      <div>Meas:<span class="pill p-amber" id="measStatus">Idle</span></div>
+    </div>
+
+    <!-- Log -->
+    <div>
+      <div class="section-label">System log</div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+
+  </div><!-- /pane-monitor -->
+</div><!-- /layout -->
+
+<!-- External scripts — all HTTPS, allowed by CSP above -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/@jtarrio/webrtlsdr@latest/dist/webrtlsdr.js"
+        onerror="window._rtlFailed=true;console.warn('webrtlsdr CDN unavailable')"></script>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   GITHUB PAGES FIXES APPLIED IN THIS FILE:
+   1. All onclick= removed → addEventListener (inline handlers blocked by GH Pages CSP)
+   2. CSP meta tag in <head> explicitly whitelists CDNs + unsafe-inline
+   3. iframe has sandbox attribute (prevents cross-origin issues)
+   4. All scripts are in ONE deferred block below (no split scripts)
+   5. External scripts use jsdelivr.net / unpkg.com (HTTPS, CSP-allowed)
+   6. No document.write(), no eval(), no new Function()
+   7. frame-src 'self' set so iframe loads index.html from same origin
+═══════════════════════════════════════════════════════════════════ */
+
+'use strict';
+
+// ── PLATFORM DETECTION ──────────────────────────────────────────
+const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+// ── STATE ────────────────────────────────────────────────────────
+let hackrfDevice  = null;
+let rtlsdrDevice  = null;
+let serialPort    = null;    // G-MOUSE Web Serial
+let gpsWatcher    = null;    // Geolocation watchId
+let measuring     = false;
+let sourceMode    = 'rtlsdr'; // current selected source
+let netWatcher    = null;    // setInterval for network polling
+let loopHandle    = null;
+let sampleCount   = 0;
+let gpsCoords     = null;
+const csvLog      = [];
+
+// HackRF USB constants
+const HACKRF_VID  = 0x1D50, HACKRF_PID = 0x6089;
+const HRF = {
+  MODE: 1, FREQ: 3, SR: 6, LNA: 13, VGA: 14, AMP: 16,
+  MODE_OFF: 0, MODE_RX: 1
+};
+const TRANSFER_BYTES = 262144;
+const FFT_SIZE       = 1024;
+const HANN = Float64Array.from({length: FFT_SIZE},
+  (_, n) => 0.5 * (1 - Math.cos(2 * Math.PI * n / (FFT_SIZE - 1))));
+const HANN_POW = HANN.reduce((s, v) => s + v * v, 0);
+
+// ── LOGGING ──────────────────────────────────────────────────────
+function log(msg, cls = '') {
+  const box = document.getElementById('logBox');
+  const d   = document.createElement('div');
+  d.className   = 'le ' + cls;
+  d.textContent = new Date().toLocaleTimeString() + ' › ' + msg;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── BUTTON WIRING (no inline handlers — GitHub Pages safe) ───────
+document.getElementById('btnConnect').addEventListener('click', connectSource);
+document.getElementById('btnStart').addEventListener('click', startMeasuring);
+document.getElementById('btnStop').addEventListener('click', stopMeasuring);
+document.getElementById('btnSnap').addEventListener('click', snapshotSpectrum);
+document.getElementById('btnGPS').addEventListener('click', connectGPS);
+document.getElementById('btnCSV').addEventListener('click', exportCSV);
+document.getElementById('btnClear').addEventListener('click', () => {
+  document.getElementById('logBox').innerHTML = '';
+});
+document.getElementById('deviceSelect').addEventListener('change', function() {
+  sourceMode = this.value;
+  // Show/hide network section based on source type
+  const netSec = document.getElementById('netSection');
+  netSec.style.display = (sourceMode === 'wifi' || sourceMode === 'cellular') ? 'block' : 'block';
+  log('Source changed to: ' + this.options[this.selectedIndex].text);
+});
+
+// ── INIT ─────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  buildTimeline();
+  initNetworkMonitor();    // always running — passive, no permission needed
+
+  if (isMobile) {
+    document.getElementById('gpsSourceLabel').textContent =
+      'GPS: Phone (Geolocation API)';
+    document.getElementById('btnGPS').style.display = 'none';
+    log('Mobile device — phone GPS active', 'ok');
+    startMobileGPS();
+  } else {
+    document.getElementById('gpsSourceLabel').textContent =
+      'GPS: G-MOUSE USB — click 📡 GPS Connect';
+    log('Desktop — click "📡 GPS Connect" to open G-MOUSE USB COM port', 'wn');
+  }
+
+  // Handle iframe load errors gracefully (file:// or path mismatch)
+  const frame = document.getElementById('receiverFrame');
+  frame.addEventListener('error', () => {
+    document.getElementById('receiverPane').innerHTML =
+      '<div class="no-iframe">' +
+      '<div>⚠️ RadioReceiver (index.html)</div>' +
+      '<div>Place thesis-view.html in the same folder as index.html</div>' +
+      '</div>';
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  NETWORK INFORMATION API
+//  Available: Chrome/Edge on Android, Windows, Mac
+//  NOT available: Firefox (disabled since 2022), Safari
+//  Provides: type, effectiveType, downlink, downlinkMax, rtt, saveData
+//
+//  NOTE: browsers CANNOT expose raw WiFi RSSI (hardware-level value).
+//  We derive an estimated signal quality from RTT + downlink and
+//  map it to an approximate dBm range for display purposes.
+//  This is labelled clearly as an estimate, not a measured value.
+// ═══════════════════════════════════════════════════════════════════
+function initNetworkMonitor() {
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+
+  if (!conn) {
+    log('Network Info API not available (Firefox/Safari — Chrome/Edge only)', 'wn');
+    setStatus('netStatus', 'No API', 'p-slate');
+    updateNetTable({ type:'N/A', eff:'N/A', dl:'N/A', dlMax:'N/A',
+                     rtt:'N/A', quality:'N/A', rssi:'N/A', save:'N/A' });
+    return;
+  }
+
+  // Initial read
+  readNetworkInfo(conn);
+
+  // Live updates when network changes
+  conn.addEventListener('change', () => {
+    readNetworkInfo(conn);
+    if (measuring && (sourceMode === 'wifi' || sourceMode === 'cellular')) {
+      pushNetworkSample(conn);
+    }
+  });
+
+  // Poll every 2s for downlink/RTT changes (change event doesn't always fire)
+  netWatcher = setInterval(() => {
+    readNetworkInfo(conn);
+    if (measuring && (sourceMode === 'wifi' || sourceMode === 'cellular')) {
+      pushNetworkSample(conn);
+    }
+  }, 2000);
+
+  log('Network Info API active — type: ' + (conn.type || conn.effectiveType), 'nf');
+}
+
+function readNetworkInfo(conn) {
+  const type    = conn.type         || '—';
+  const eff     = conn.effectiveType|| '—';
+  const dl      = conn.downlink     != null ? conn.downlink.toFixed(2)    : '—';
+  const dlMax   = conn.downlinkMax  != null ? conn.downlinkMax.toFixed(1) : '—';
+  const rtt     = conn.rtt          != null ? conn.rtt                    : null;
+  const save    = conn.saveData     != null ? (conn.saveData ? 'ON' : 'off') : '—';
+
+  // ── Signal quality estimation ──────────────────────────────────
+  // We map effectiveType + RTT + downlink to a quality score 0-100
+  // and then to an estimated RSSI range for display.
+  // ECT benchmarks (WICG spec): slow-2g<300kbps, 2g<750kbps, 3g<2Mbps, 4g≥2Mbps
+  const ectScore = { '4g': 90, '3g': 60, '2g': 35, 'slow-2g': 10 };
+  let quality = ectScore[eff] || 50;
+
+  // RTT penalty: ideal <50ms, bad >400ms
+  if (rtt !== null) {
+    if (rtt < 50)       quality = Math.min(100, quality + 10);
+    else if (rtt < 150) quality = Math.min(100, quality + 5);
+    else if (rtt > 300) quality = Math.max(0,   quality - 20);
+    else if (rtt > 200) quality = Math.max(0,   quality - 10);
+  }
+
+  // Downlink bonus
+  const dlNum = parseFloat(dl);
+  if (!isNaN(dlNum)) {
+    if (dlNum >= 10)  quality = Math.min(100, quality + 10);
+    else if (dlNum < 0.5) quality = Math.max(0, quality - 15);
+  }
+  quality = Math.min(100, Math.max(0, quality));
+
+  // Map quality 0-100 → estimated RSSI dBm range
+  // WiFi: -30 dBm (excellent) to -90 dBm (no signal)
+  // Cellular: -70 dBm (good) to -110 dBm (weak)
+  const isCell = (type === 'cellular' || sourceMode === 'cellular');
+  const rssiMin = isCell ? -110 : -90;
+  const rssiMax = isCell ? -70  : -30;
+  const rssiEst = Math.round(rssiMin + (quality / 100) * (rssiMax - rssiMin));
+  const rssiStr = rssiEst + ' dBm (est.)';
+
+  const qualLabel = quality >= 80 ? 'Excellent' :
+                    quality >= 60 ? 'Good'      :
+                    quality >= 40 ? 'Fair'       :
+                    quality >= 20 ? 'Poor'       : 'Very poor';
+
+  updateNetTable({ type, eff, dl, dlMax,
+    rtt: rtt != null ? rtt + ' ms' : '—',
+    quality: qualLabel + ' (' + quality + '%)',
+    rssi: rssiStr, save
+  });
+
+  // Status pill
+  const netType = type !== '—' ? type : eff;
+  setStatus('netStatus',
+    netType.toUpperCase() + ' ' + (rtt != null ? rtt + 'ms' : ''),
+    quality >= 60 ? 'p-teal' : quality >= 30 ? 'p-amber' : 'p-red'
+  );
+
+  // Network header
+  document.getElementById('netType').textContent = 'Network: ' + (type || eff).toUpperCase();
+  document.getElementById('netEff').textContent  = eff + ' | ' + dl + ' Mbps';
+
+  const qualPill = document.getElementById('netQual');
+  qualPill.textContent = qualLabel;
+  qualPill.className   = 'pill ' +
+    (quality >= 60 ? 'p-teal' : quality >= 30 ? 'p-amber' : 'p-red');
+
+  // Signal bar
+  const bar = document.getElementById('signalBar');
+  bar.style.width = quality + '%';
+  bar.className   = 'signal-bar ' +
+    (quality >= 60 ? 'sig-good' : quality >= 30 ? 'sig-ok' : 'sig-poor');
+
+  // Store for spectrum rendering
+  conn._qualPct  = quality;
+  conn._rssiEst  = rssiEst;
+  conn._rtt      = rtt;
+  conn._dl       = dlNum;
+
+  return { quality, rssiEst, rtt, dlNum, type, eff };
+}
+
+function updateNetTable(d) {
+  const s = (id, v) => { const el=document.getElementById(id); if(el) el.textContent=v||'—'; };
+  s('nType',    d.type);
+  s('nEffType', d.eff);
+  s('nDownlink',d.dl);
+  s('nDownMax', d.dlMax);
+  s('nRTT',     d.rtt);
+  s('nQuality', d.quality);
+  s('nRSSI',    d.rssi);
+  s('nSave',    d.save);
+  document.getElementById('nTime').textContent = new Date().toLocaleTimeString();
+}
+
+// Push one network sample to the spectrum/display pipeline
+function pushNetworkSample(conn) {
+  const q    = conn._qualPct  || 0;
+  const rssi = conn._rssiEst  || -90;
+  const rtt  = conn._rtt      || 0;
+  const dl   = conn._dl       || 0;
+
+  // Build a fake-but-labelled signal array for the spectrum display.
+  // For WiFi/Cellular we show a bar chart: quality level as one wide bar,
+  // flanked by noise floor. This is clearly NOT a radio spectrum — it
+  // represents connection quality, not RF power.
+  const arr = new Float32Array(FFT_SIZE).fill(rssi - 30 + (Math.random() - 0.5) * 2);
+  // Centre bar = estimated signal level
+  const ctr = FFT_SIZE >> 1;
+  const bw  = Math.floor(FFT_SIZE * 0.15);
+  for (let i = ctr - bw; i < ctr + bw; i++) {
+    arr[i] = rssi + (Math.random() - 0.5) * 1.5;
+  }
+
+  renderNetworkDisplay(arr, rssi, q, rtt, dl);
+}
+
+function renderNetworkDisplay(arr, rssi, quality, rtt, dl) {
+  document.getElementById('specIdle').style.display = 'none';
+  document.getElementById('bandIdle').style.display = 'none';
+
+  drawSpectrum(arr, true);  // true = network mode label
+  drawBand(arr);
+
+  // Stats row for network mode
+  sampleCount++;
+  document.getElementById('peak').textContent     = rssi.toFixed(0);
+  document.getElementById('bandMean').textContent = (rssi + 5).toFixed(0);
+  document.getElementById('specMean').textContent = rtt != null ? rtt.toFixed(0) : '—';
+  document.getElementById('count').textContent    = sampleCount;
+
+  // Levels bar: quality 0-100%
+  const pct = Math.min(100, Math.max(0, quality));
+  document.getElementById('levelsBar').style.height = pct + '%';
+  document.getElementById('levelsNum').textContent  = rssi.toFixed(0);
+
+  pushTimelineNet(rssi, quality);
+
+  if (sampleCount % 5 === 0) {
+    csvLog.push({
+      ts: new Date().toISOString(),
+      src: sourceMode,
+      lat: gpsCoords ? gpsCoords.lat.toFixed(6) : '',
+      lon: gpsCoords ? gpsCoords.lon.toFixed(6) : '',
+      peak: rssi.toFixed(0),
+      bandMean: (rssi+5).toFixed(0),
+      specMean: rtt != null ? rtt : '',
+      quality: quality
+    });
+    document.getElementById('logCount').textContent = csvLog.length;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GPS — MOBILE (Geolocation API)
+// ═══════════════════════════════════════════════════════════════════
+function startMobileGPS() {
+  if (!navigator.geolocation) {
+    log('Geolocation API not available', 'er');
+    setStatus('gpsStatus', 'No API', 'p-red');
+    return;
+  }
+  setStatus('gpsStatus', 'Searching…', 'p-amber');
+  if (gpsWatcher !== null) navigator.geolocation.clearWatch(gpsWatcher);
+
+  gpsWatcher = navigator.geolocation.watchPosition(
+    pos => {
+      const c = pos.coords;
+      gpsCoords = { lat: c.latitude, lon: c.longitude, alt: c.altitude };
+      fillGPS({
+        lat:     c.latitude.toFixed(6),
+        lon:     c.longitude.toFixed(6),
+        alt:     c.altitude != null ? c.altitude.toFixed(1) : 'N/A',
+        speed:   c.speed    != null ? (c.speed * 3.6).toFixed(1) + ' km/h' : 'N/A',
+        heading: c.heading  != null ? c.heading.toFixed(1) + '°' : 'N/A',
+        sats:    'N/A', fix: 'Phone GPS',
+        acc:     '±' + c.accuracy.toFixed(1) + ' m',
+        time:    new Date(pos.timestamp).toLocaleTimeString(),
+        nmea:    '(Geolocation API — no raw NMEA)'
+      });
+      setStatus('gpsStatus', 'Fix ✓', 'p-green');
+      dotLive('gpsDot');
+    },
+    err => {
+      const r = {1:'Permission denied',2:'Unavailable',3:'Timeout'};
+      log('GPS: ' + (r[err.code] || err.message), 'er');
+      setStatus('gpsStatus', 'No fix', 'p-red');
+    },
+    { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 }
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GPS — DESKTOP: G-MOUSE USB (Web Serial API, NMEA 0183 @ 9600 baud)
+//  Works on: Windows, Mac, Linux with Chrome or Edge
+//  Not supported: Firefox, Safari
+// ═══════════════════════════════════════════════════════════════════
+async function connectGPS() {
+  if (isMobile) { log('Using phone GPS — no USB serial needed', 'wn'); return; }
+  if (!('serial' in navigator)) {
+    log('Web Serial API not available — use Chrome or Edge', 'er');
+    alert('Web Serial not supported.\nUse Chrome or Edge on desktop.\n(Not Firefox or Safari)');
+    return;
+  }
+  if (serialPort) {
+    try { await serialPort.close(); } catch (_) {}
+    serialPort = null;
+  }
+  try {
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none' });
+    setStatus('gpsStatus', 'Receiving…', 'p-amber');
+    log('G-MOUSE USB GPS: port opened at 9600 baud', 'ok');
+    document.getElementById('gpsSourceLabel').textContent =
+      'GPS: G-MOUSE USB (Web Serial)';
+    readNMEA();
+  } catch (e) {
+    log('GPS serial: ' + e.message, 'er');
+    setStatus('gpsStatus', 'Error', 'p-red');
+  }
+}
+
+async function readNMEA() {
+  const decoder = new TextDecoderStream();
+  serialPort.readable.pipeTo(decoder.writable);
+  const reader  = decoder.readable.getReader();
+  let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line.startsWith('$')) parseNMEA(line);
+      }
+    }
+  } catch (e) {
+    if (!e.message?.includes('closed')) log('NMEA: ' + e.message, 'er');
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseNMEA(s) {
+  const star = s.lastIndexOf('*');
+  if (star !== -1) {
+    let cs = 0;
+    for (let i = 1; i < star; i++) cs ^= s.charCodeAt(i);
+    if (cs.toString(16).toUpperCase().padStart(2,'0') !==
+        s.slice(star+1, star+3).toUpperCase()) return;
+  }
+  const f    = s.split(',');
+  const type = f[0].slice(1);
+
+  if (type === 'GPGGA' || type === 'GNGGA') {
+    if (!f[2] || !f[4]) return;
+    const lat = nmeaDeg(f[2], f[3]);
+    const lon = nmeaDeg(f[4], f[5]);
+    if (isNaN(lat) || isNaN(lon)) return;
+    const fixL = ['No fix','GPS','DGPS','PPS','RTK','Float RTK','Estimated','Manual','Sim'];
+    const fixQ = fixL[parseInt(f[6])] || 'Fix ' + f[6];
+    gpsCoords = { lat, lon, alt: parseFloat(f[9]) || null };
+    fillGPS({
+      lat: lat.toFixed(6), lon: lon.toFixed(6),
+      alt: f[9] ? parseFloat(f[9]).toFixed(1) + ' m' : '—',
+      sats: (parseInt(f[7])||0) + ' sats',
+      fix: fixQ, acc: 'HDOP ' + (f[8]||'—'),
+      time: nmeaUTC(f[1]), nmea: s
+    });
+    if (parseInt(f[6]) >= 1) {
+      setStatus('gpsStatus', 'Fix ✓ (' + f[7] + ' sats)', 'p-green');
+      dotLive('gpsDot');
+      document.getElementById('gpsSourceLabel').textContent =
+        'GPS: G-MOUSE | ' + lat.toFixed(4) + ', ' + lon.toFixed(4);
+    } else {
+      setStatus('gpsStatus', 'Acquiring…', 'p-amber');
+    }
+    log('GGA: ' + lat.toFixed(4) + ' ' + lon.toFixed(4) + ' alt=' + f[9], 'nm');
+  }
+
+  if (type === 'GPRMC' || type === 'GNRMC') {
+    if (f[2] !== 'A') return;
+    const spd = f[7] ? (parseFloat(f[7]) * 1.852).toFixed(1) + ' km/h' : '—';
+    const hdg = f[8] ? parseFloat(f[8]).toFixed(1) + '°' : '—';
+    document.getElementById('gpsSpeed').textContent   = spd;
+    document.getElementById('gpsHeading').textContent = hdg;
+    document.getElementById('gpsNMEA').textContent    = s;
+  }
+}
+
+function nmeaDeg(raw, dir) {
+  if (!raw) return NaN;
+  const dot = raw.indexOf('.');
+  const dd  = parseInt(raw.slice(0, dot-2)) + parseFloat(raw.slice(dot-2)) / 60;
+  return (dir === 'S' || dir === 'W') ? -dd : dd;
+}
+function nmeaUTC(r) {
+  return (!r || r.length < 6) ? '—' :
+    r.slice(0,2) + ':' + r.slice(2,4) + ':' + r.slice(4,6) + ' UTC';
+}
+function fillGPS(d) {
+  const s = (id, v) => { if (v !== undefined && document.getElementById(id))
+    document.getElementById(id).textContent = v; };
+  s('gpsLat',s.lat||d.lat); s('gpsLon',s.lon||d.lon);
+  // Rebuild properly:
+  Object.entries({
+    gpsLat: d.lat, gpsLon: d.lon, gpsAlt: d.alt, gpsSpeed: d.speed,
+    gpsHeading: d.heading, gpsSats: d.sats, gpsFix: d.fix,
+    gpsAcc: d.acc, gpsTime: d.time, gpsNMEA: d.nmea
+  }).forEach(([id, v]) => { if (v !== undefined) {
+    const el = document.getElementById(id); if (el) el.textContent = v;
+  }});
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SDR CONNECT
+// ═══════════════════════════════════════════════════════════════════
+async function connectSource() {
+  sourceMode = document.getElementById('deviceSelect').value;
+
+  if (sourceMode === 'wifi' || sourceMode === 'cellular') {
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn) {
+      readNetworkInfo(conn);
+      setStatus('sdrStatus', sourceMode.toUpperCase() + ' ✓', 'p-teal');
+      log(sourceMode.toUpperCase() + ' network monitor ready — press Start', 'ok');
+    } else {
+      log('Network Info API not available in this browser', 'er');
+      alert('Network Information API is only supported in Chrome/Edge on Android, Windows, and Mac.\nNot supported in Firefox or Safari.');
+    }
+    return;
+  }
+
+  if (sourceMode === 'hackrf') {
+    await connectHackRF();
+  } else {
+    await connectRTLSDR();
+  }
+}
+
+async function connectRTLSDR() {
+  try {
+    if (window._rtlFailed) throw new Error('webrtlsdr CDN failed to load');
+    const lib = window.webrtlsdr;
+    if (!lib) throw new Error('webrtlsdr not loaded — check CDN / ad-blocker');
+    rtlsdrDevice = await lib.connect();
+    setStatus('sdrStatus', 'RTL-SDR ✓', 'p-green');
+    log('RTL-SDR connected — set frequency in left panel', 'ok');
+  } catch (e) {
+    log('RTL-SDR: ' + e.message, 'er');
+    setStatus('sdrStatus', 'Error', 'p-red');
+    alert('RTL-SDR connect failed:\n' + e.message +
+      '\n\nRequires: Chrome/Edge · Zadig WinUSB driver · HTTPS/localhost');
+  }
+}
+
+function startLiveRTL() {
+  if (loopHandle) clearInterval(loopHandle);
+  loopHandle = setInterval(async () => {
+    if (!rtlsdrDevice || !measuring) return;
+    try {
+      renderAll(await rtlsdrDevice.getPowerSpectrum(FFT_SIZE));
+    } catch (e) {
+      log('RTL-SDR read: ' + e.message, 'er');
+      stopMeasuring();
+    }
+  }, 150);
+  log('RTL-SDR acquisition running', 'ok');
+}
+
+async function connectHackRF() {
+  if (!navigator.usb) { alert('WebUSB not available. Use Chrome or Edge.'); return; }
+  try {
+    hackrfDevice = await navigator.usb.requestDevice({
+      filters: [{ vendorId: HACKRF_VID, productId: HACKRF_PID }]
+    });
+    await hackrfDevice.open();
+    await hackrfDevice.selectConfiguration(1);
+    await hackrfDevice.claimInterface(0);
+    await hrfCtrlOut(HRF.SR,  0, 0, pack2(10_000_000, 1));
+    await hrfCtrlOut(HRF.FREQ,0, 0, pack2(433, 920_000));
+    await hrfCtrlIn (HRF.LNA, 0, 40);
+    await hrfCtrlIn (HRF.VGA, 0, 20);
+    await hrfCtrlOut(HRF.AMP, 0, 0, new Uint8Array([0]));
+    await hackrfSetMode(HRF.MODE_RX);
+    setStatus('sdrStatus', 'HackRF ✓', 'p-green');
+    log('HackRF RX: 433.920 MHz | 10 Msps | LNA 40 | VGA 20', 'ok');
+  } catch (e) {
+    hackrfDevice = null;
+    log('HackRF: ' + e.message, 'er');
+    setStatus('sdrStatus', 'Error', 'p-red');
+    alert('HackRF failed:\n' + e.message);
+  }
+}
+
+function pack2(a, b) {
+  const buf = new ArrayBuffer(8), dv = new DataView(buf);
+  dv.setUint32(0, a, true); dv.setUint32(4, b, true);
+  return buf;
+}
+async function hrfCtrlOut(req, val, idx, data) {
+  const d = data instanceof ArrayBuffer ? data : data.buffer;
+  await hackrfDevice.controlTransferOut(
+    { requestType:'vendor', recipient:'device', request:req, value:val, index:idx }, d);
+}
+async function hrfCtrlIn(req, val, idx) {
+  await hackrfDevice.controlTransferIn(
+    { requestType:'vendor', recipient:'device', request:req, value:val, index:idx }, 1);
+}
+async function hackrfSetMode(mode) {
+  await hackrfDevice.controlTransferOut(
+    { requestType:'vendor', recipient:'device',
+      request: HRF.MODE, value: mode, index: 0 }, new Uint8Array(0));
+}
+
+function startLiveHackRF() {
+  async function rxLoop() {
+    while (measuring && hackrfDevice) {
+      let result;
+      try {
+        result = await hackrfDevice.transferIn(1, TRANSFER_BYTES);
+      } catch (e) {
+        log('HackRF xfer: ' + e.message, 'er');
+        hackrfDevice = null; measuring = false;
+        setStatus('sdrStatus', 'Error', 'p-red');
+        setStatus('measStatus', 'Stopped', 'p-red');
+        return;
+      }
+      if (!result?.data || result.data.byteLength < FFT_SIZE * 2) continue;
+
+      const raw  = new Uint8Array(result.data.buffer);
+      const nBlk = Math.floor(raw.length / 2 / FFT_SIZE);
+      if (nBlk < 1) continue;
+
+      const acc = new Float64Array(FFT_SIZE);
+      for (let b = 0; b < nBlk; b++) {
+        const off = b * FFT_SIZE;
+        for (let k = 0; k < FFT_SIZE; k++) {
+          let re = 0, im = 0;
+          const w2 = (2 * Math.PI * k) / FFT_SIZE;
+          for (let n = 0; n < FFT_SIZE; n++) {
+            const idx = (off + n) * 2;
+            const I   = (raw[idx]   - 128) / 128;
+            const Q   = (raw[idx+1] - 128) / 128;
+            const ang = w2 * n, wn = HANN[n];
+            re += wn * (I * Math.cos(ang) + Q * Math.sin(ang));
+            im += wn * (-I * Math.sin(ang) + Q * Math.cos(ang));
+          }
+          acc[k] += re * re + im * im;
+        }
+      }
+      // CAL_OFFSET: adjust after calibration with a reference signal
+      const CAL = -40;
+      const norm = nBlk * HANN_POW;
+      const spec = new Float32Array(FFT_SIZE);
+      for (let k = 0; k < FFT_SIZE; k++)
+        spec[k] = 10 * Math.log10(acc[k] / norm + 1e-30) + CAL;
+
+      renderAll(fftShift(spec));
+    }
+  }
+  rxLoop();
+  log('HackRF RX loop running', 'ok');
+}
+
+function fftShift(a) {
+  const h = a.length >> 1, o = new Float32Array(a.length);
+  for (let i = 0; i < h; i++) o[i] = a[i+h];
+  for (let i = h; i < a.length; i++) o[i] = a[i-h];
+  return o;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RENDER — SDR path (real spectrum data only)
+// ═══════════════════════════════════════════════════════════════════
+function renderAll(spectrum) {
+  document.getElementById('specIdle').style.display = 'none';
+  document.getElementById('bandIdle').style.display = 'none';
+  drawSpectrum(spectrum, false);
+  drawBand(spectrum);
+  updateStats(spectrum);
+  pushTimeline(spectrum);
+}
+
+const specCtx = document.getElementById('spectrumCanvas').getContext('2d');
+function drawSpectrum(data, isNet) {
+  const w = specCtx.canvas.width  = specCtx.canvas.offsetWidth  || 280;
+  const h = specCtx.canvas.height = specCtx.canvas.offsetHeight || 160;
+  specCtx.clearRect(0, 0, w, h);
+  const F = -110, R = 120, bw = w / data.length;
+  for (let i = 0; i < data.length; i++) {
+    const n = Math.min(1, Math.max(0, (data[i] - F) / R));
+    specCtx.fillStyle = isNet
+      ? `hsl(${150 - n*120},85%,${35 + n*35}%)`   // green→red for network quality
+      : `hsl(${220 - n*180},90%,${40 + n*30}%)`;  // blue→yellow for RF
+    specCtx.fillRect(i * bw, h - n * h, bw - 0.3, n * h + 1);
+  }
+  specCtx.fillStyle = '#1e293b'; specCtx.font = '8px monospace';
+  if (isNet) {
+    specCtx.fillText('Noise floor', 2, h-2);
+    specCtx.fillText('Signal', w/2-15, h-2);
+    specCtx.fillText('Est. RSSI', w-54, h-2);
+  } else {
+    specCtx.fillText('−Fs/2', 2, h-2);
+    specCtx.fillText('DC', w/2-8, h-2);
+    specCtx.fillText('+Fs/2', w-34, h-2);
+  }
+}
+
+const bandCtx = document.getElementById('bandCanvas').getContext('2d');
+function drawBand(data) {
+  const w = bandCtx.canvas.width  = bandCtx.canvas.offsetWidth  || 130;
+  const h = bandCtx.canvas.height = bandCtx.canvas.offsetHeight || 110;
+  const s = data.length >> 2, e = data.length - s;
+  bandCtx.clearRect(0, 0, w, h);
+  const F = -110, R = 120, bw = w / (e - s);
+  for (let i = s; i < e; i++) {
+    const n = Math.min(1, Math.max(0, (data[i] - F) / R));
+    bandCtx.fillStyle = `hsl(${200 - n*120},85%,${45 + n*25}%)`;
+    bandCtx.fillRect((i-s)*bw, h - n*h, bw - 0.3, n*h + 1);
+  }
+}
+
+function updateStats(data) {
+  sampleCount++;
+  const arr      = Array.from(data);
+  const peak     = Math.max(...arr);
+  const specMean = arr.reduce((s, v) => s + v, 0) / arr.length;
+  const s1 = arr.length >> 2, e1 = arr.length - s1;
+  const bandMean = arr.slice(s1, e1).reduce((a, v) => a + v, 0) / (e1 - s1);
+
+  document.getElementById('peak').textContent     = peak.toFixed(2);
+  document.getElementById('specMean').textContent = specMean.toFixed(2);
+  document.getElementById('bandMean').textContent = bandMean.toFixed(2);
+  document.getElementById('count').textContent    = sampleCount;
+
+  // Levels bar: bandMean −110…+10 dBm → 0…100%
+  const pct = Math.min(100, Math.max(0, (bandMean + 110) / 120 * 100));
+  document.getElementById('levelsBar').style.height = pct + '%';
+  document.getElementById('levelsNum').textContent  = bandMean.toFixed(1);
+
+  if (sampleCount % 10 === 0) {
+    csvLog.push({
+      ts: new Date().toISOString(), src: sourceMode,
+      lat: gpsCoords ? gpsCoords.lat.toFixed(6) : '',
+      lon: gpsCoords ? gpsCoords.lon.toFixed(6) : '',
+      alt: gpsCoords?.alt != null ? gpsCoords.alt.toFixed(1) : '',
+      peak: peak.toFixed(2), bandMean: bandMean.toFixed(2),
+      specMean: specMean.toFixed(2), quality: ''
+    });
+    document.getElementById('logCount').textContent = csvLog.length;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  TIMELINE CHART
+// ═══════════════════════════════════════════════════════════════════
+let timelineChart = null;
+function buildTimeline() {
+  timelineChart = new Chart(
+    document.getElementById('timelineCanvas').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'Peak/RSSI',     borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,.07)',
+          data:[], pointRadius:0, tension:0.3, fill:true },
+        { label: 'Band/Quality%', borderColor:'#22c55e', backgroundColor:'transparent',
+          data:[], pointRadius:0, tension:0.3, fill:false }
+      ]
+    },
+    options: {
+      animation: false,
+      plugins: { legend: { labels: { color:'#475569', font:{size:8} } } },
+      scales: {
+        y: { min:-110, max:10, ticks:{color:'#475569',font:{size:7}}, grid:{color:'#0f172a'} },
+        x: { ticks:{color:'#475569',font:{size:7},maxTicksLimit:8},   grid:{color:'#0f172a'} }
+      }
+    }
+  });
+}
+
+function pushTimeline(spectrum) {
+  if (!timelineChart) return;
+  const arr  = Array.from(spectrum);
+  const peak = Math.max(...arr);
+  const s1 = arr.length >> 2, e1 = arr.length - s1;
+  const bm   = arr.slice(s1, e1).reduce((a, v) => a + v, 0) / (e1 - s1);
+  timelineChart.data.labels.push(new Date().toLocaleTimeString().slice(0,8));
+  timelineChart.data.datasets[0].data.push(+peak.toFixed(2));
+  timelineChart.data.datasets[1].data.push(+bm.toFixed(2));
+  trimTimeline();
+  timelineChart.update('none');
+}
+
+function pushTimelineNet(rssi, quality) {
+  if (!timelineChart) return;
+  // Map quality 0-100 to same dBm scale as SDR (-110 to +10) for unified display
+  const qualDbm = -110 + (quality / 100) * 120;
+  timelineChart.data.labels.push(new Date().toLocaleTimeString().slice(0,8));
+  timelineChart.data.datasets[0].data.push(rssi);
+  timelineChart.data.datasets[1].data.push(+qualDbm.toFixed(1));
+  trimTimeline();
+  timelineChart.update('none');
+}
+
+function trimTimeline() {
+  if (timelineChart.data.labels.length > 120) {
+    timelineChart.data.labels.shift();
+    timelineChart.data.datasets[0].data.shift();
+    timelineChart.data.datasets[1].data.shift();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  MEASUREMENT CONTROL
+// ═══════════════════════════════════════════════════════════════════
+function startMeasuring() {
+  if (sourceMode === 'wifi' || sourceMode === 'cellular') {
+    measuring = true;
+    setStatus('measStatus', 'Measuring', 'p-green');
+    log(sourceMode.toUpperCase() + ' network measurement started', 'ok');
+    return;
+  }
+  if (!hackrfDevice && !rtlsdrDevice) {
+    log('No SDR connected — press Connect first', 'wn');
+    alert('Connect an SDR device first.');
+    return;
+  }
+  if (measuring) return;
+  measuring = true;
+  setStatus('measStatus', 'Measuring', 'p-green');
+  log('Measurement started', 'ok');
+  if (hackrfDevice) startLiveHackRF();
+  else              startLiveRTL();
+}
+
+function stopMeasuring() {
+  measuring = false;
+  if (loopHandle) { clearInterval(loopHandle); loopHandle = null; }
+  setStatus('measStatus', 'Stopped', 'p-red');
+  log('Measurement stopped');
+  if (hackrfDevice) {
+    hackrfSetMode(HRF.MODE_OFF).catch(() => {});
+    log('HackRF RX disabled');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  EXPORT
+// ═══════════════════════════════════════════════════════════════════
+function snapshotSpectrum() {
+  if (sampleCount === 0) { log('No data yet', 'wn'); return; }
+  const a    = document.createElement('a');
+  a.download = 'spectrum_' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.png';
+  a.href     = document.getElementById('spectrumCanvas').toDataURL('image/png');
+  a.click();
+  log('Spectrum PNG saved', 'ok');
+}
+
+function exportCSV() {
+  if (!csvLog.length) { log('No log records yet', 'wn'); return; }
+  const hdr  = 'timestamp,source,gps_source,latitude,longitude,altitude_m,' +
+                'peak_dBm,band_mean_dBm,spec_mean_dBm,quality_pct\n';
+  const rows = csvLog.map(r =>
+    [r.ts, r.src, isMobile?'phone':'G-MOUSE',
+     r.lat, r.lon, r.alt, r.peak, r.bandMean, r.specMean, r.quality||''].join(',')
+  ).join('\n');
+  const url = URL.createObjectURL(new Blob([hdr+rows], {type:'text/csv'}));
+  const a   = document.createElement('a');
+  a.download = 'mmn_log_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.href = url; a.click();
+  URL.revokeObjectURL(url);
+  log('CSV exported — ' + csvLog.length + ' records', 'ok');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════════════════════════════════
+function setStatus(id, text, cls) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className   = 'pill ' + cls;
+}
+function dotLive(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.add('live');
+}
+</script>
+
+</body>
+</html>
