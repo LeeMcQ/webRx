@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MMN Map Visualizer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin:0; padding:15px; background:#f8f9fa; }
+        h1 { text-align:center; margin:10px 0; color:#222; }
+        .container { max-width:1280px; margin:auto; background:white; padding:15px; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,0.1); }
+        .top-bar { display:flex; flex-wrap:wrap; gap:15px; align-items:center; justify-content:center; margin-bottom:15px; background:#f1f3f5; padding:12px; border-radius:8px; }
+        button { padding:10px 18px; font-size:15px; background:#0066cc; color:white; border:none; border-radius:6px; cursor:pointer; }
+        button:hover { background:#0055aa; }
+        #predBtn, #sourceBtn { background:#d32f2f; }
+        #predBtn:hover, #sourceBtn:hover { background:#b71c1c; }
+        select, input[type="range"] { padding:6px; font-size:15px; }
+        #map { height:680px; border:3px solid #ddd; border-radius:10px; position:relative; }
+        .summary { background:#e3f2fd; padding:12px; border-radius:8px; font-size:14px; margin-bottom:12px; line-height:1.5; }
+        .tabs { text-align:center; margin:12px 0; }
+        .tab-btn { padding:10px 22px; font-size:16px; margin:0 5px; border:none; background:#ddd; border-radius:6px; cursor:pointer; }
+        .tab-btn.active { background:#0066cc; color:white; }
+        .info { position:absolute; bottom:15px; left:15px; background:white; padding:8px 12px; border-radius:6px; box-shadow:0 2px 8px rgba(0,0,0,0.2); font-size:12px; z-index:1000; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MMN Map Visualizer</h1>
+
+        <div class="top-bar">
+            <input type="file" id="csvFile" accept=".csv" multiple>
+            <button id="loadBtn">Load Files</button>
+            <button id="clearBtn">Clear</button>
+        </div>
+
+        <div class="summary" id="summary">
+            <strong>Detected Power Bands & Ranges:</strong><br>
+            <span id="ranges">Upload files to see bands</span>
+        </div>
+
+        <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:10px;">
+            <div>
+                <strong>Band / Channel:</strong><br>
+                <select id="channel"></select>
+            </div>
+            <div>
+                <strong>Power Filter (dBm):</strong><br>
+                <input type="range" id="minP" min="-100" max="30" value="-70" step="0.5">
+                <input type="range" id="maxP" min="-100" max="30" value="-20" step="0.5">
+                <span id="minLabel">-70.0</span> — <span id="maxLabel">-20.0</span> dBm
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab-btn active" id="tab0">Thermal Heatmap</button>
+            <button class="tab-btn" id="tab1">Scatter + Route</button>
+            <button class="tab-btn" id="tab2">Predicted Coverage</button>
+            <button class="tab-btn" id="tab3">Predict Source Location</button>
+        </div>
+
+        <div id="map">
+            <div class="info" id="info">0 points | ready</div>
+        </div>
+    </div>
+
+    <script>
+        let map, heatLayer, scatterLayer, polylineLayer, predLayer, sourceMarker, sourceCircle;
+        let allData = [];
+        let currentTab = 0;
+        let currentFiltered = [];
+        let detectedBands = [];
+
+        function initMap() {
+            map = L.map('map').setView([50, 16], 10);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+            heatLayer = L.heatLayer([], {radius:25, blur:15, max:1});
+            scatterLayer = L.layerGroup();
+            polylineLayer = L.layerGroup();
+            predLayer = L.layerGroup();
+        }
+
+        async function loadFiles() {
+            const files = document.getElementById('csvFile').files;
+            if (!files.length) return alert("Select CSV files");
+            allData = [];
+            detectedBands = [];
+            for (let file of files) {
+                const text = await file.text();
+                parseCSVSmart(text);
+            }
+            buildBandSelector();
+            showSummary();
+            switchTab(0);
+        }
+
+        function parseCSVSmart(text) {
+            const lines = text.trim().split('\n');
+            if (lines.length < 2) return;
+
+            const firstLine = lines[0].toLowerCase();
+            const hasHeader = /latitude|longitude|lat|lon|power|level|timestamp/.test(firstLine);
+
+            let latCol = -1, lonCol = -1, powerCols = [];
+
+            if (hasHeader) {
+                // Header-based detection
+                const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+                headers.forEach((h, i) => {
+                    if (h.includes('lat')) latCol = i;
+                    if (h.includes('lon') || h.includes('longitude')) lonCol = i;
+                    if (h.includes('power') || h.includes('level')) powerCols.push(i);
+                });
+            }
+
+            // Fallback / enhancement: value-range detection (works even with header)
+            if (latCol === -1 || lonCol === -1 || powerCols.length === 0) {
+                for (let c = 0; c < 10; c++) {
+                    const vals = lines.slice(hasHeader ? 1 : 0, 15).map(row => {
+                        const parts = row.split(',');
+                        return c < parts.length ? parseFloat(parts[c].trim()) : NaN;
+                    }).filter(v => !isNaN(v));
+
+                    if (vals.length < 3) continue;
+                    const minV = Math.min(...vals);
+                    const maxV = Math.max(...vals);
+                    const avgV = vals.reduce((a,b)=>a+b,0)/vals.length;
+
+                    if ((avgV > 48 && avgV < 51) || (avgV > -35 && avgV < -30)) latCol = c;
+                    else if ((avgV > 15 && avgV < 20) || (avgV > 17 && avgV < 19)) lonCol = c;
+                    else if (minV > -100 && maxV < 30) powerCols.push(c);
+                }
+            }
+
+            // Parse every row (skip header if present)
+            const startRow = hasHeader ? 1 : 0;
+            for (let i = startRow; i < lines.length; i++) {
+                if (!lines[i].trim()) continue;
+                const cols = lines[i].split(',').map(v => parseFloat(v.trim()));
+                if (cols.length < 3) continue;
+
+                let lat = latCol >= 0 && latCol < cols.length ? cols[latCol] : NaN;
+                let lon = lonCol >= 0 && lonCol < cols.length ? cols[lonCol] : NaN;
+
+                // Auto-swap & hemisphere fix
+                if (!isNaN(lat) && !isNaN(lon)) {
+                    if (Math.abs(lat) > 40 && Math.abs(lon) < 25) [lat, lon] = [lon, lat];
+                    if (lat > 0 && lat < 50) lat = -lat; // SA files
+                }
+
+                let powers = [];
+                powerCols.forEach(pc => {
+                    if (pc < cols.length && !isNaN(cols[pc])) powers.push(cols[pc]);
+                });
+
+                if (!isNaN(lat) && !isNaN(lon) && powers.length > 0) {
+                    allData.push({lat, lon, powers});
+                }
+            }
+
+            if (powerCols.length > 0 && detectedBands.length < powerCols.length) {
+                detectedBands = powerCols.map((_,i) => `Band ${i+1}`);
+            }
+        }
+
+        function buildBandSelector() {
+            const sel = document.getElementById('channel');
+            sel.innerHTML = '';
+            detectedBands.forEach((name, i) => {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = name;
+                sel.appendChild(opt);
+            });
+        }
+
+        function showSummary() {
+            let html = '';
+            detectedBands.forEach((name, i) => {
+                const vals = allData.map(d => d.powers[i]).filter(v => !isNaN(v));
+                if (vals.length) html += `<strong>${name}:</strong> ${Math.min(...vals).toFixed(1)} to ${Math.max(...vals).toFixed(1)} dBm<br>`;
+            });
+            document.getElementById('ranges').innerHTML = html || 'No bands detected';
+        }
+
+        function getFilteredPoints() {
+            const ch = parseInt(document.getElementById('channel').value);
+            const minP = parseFloat(document.getElementById('minP').value);
+            const maxP = parseFloat(document.getElementById('maxP').value);
+            return allData.filter(p => {
+                const v = p.powers[ch] || -999;
+                return v >= minP && v <= maxP;
+            });
+        }
+
+        function updateLabels() {
+            document.getElementById('minLabel').textContent = document.getElementById('minP').value;
+            document.getElementById('maxLabel').textContent = document.getElementById('maxP').value;
+        }
+
+        function clearLayers() {
+            [heatLayer, scatterLayer, polylineLayer, predLayer, sourceMarker, sourceCircle].forEach(l => {
+                if (l && map.hasLayer(l)) map.removeLayer(l);
+            });
+        }
+
+        function switchTab(n) {
+            currentTab = n;
+            document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === n));
+            clearLayers();
+            currentFiltered = getFilteredPoints();
+            if (!currentFiltered.length) {
+                document.getElementById('info').innerHTML = "0 points in range";
+                return;
+            }
+            const ch = parseInt(document.getElementById('channel').value);
+            const vals = currentFiltered.map(p => p.powers[ch] || -999);
+            const minV = Math.min(...vals);
+            const maxV = Math.max(...vals);
+
+            if (n === 0) {
+                const heatData = currentFiltered.map(p => [p.lat, p.lon, (p.powers[ch]-minV)/(maxV-minV)]);
+                heatLayer = L.heatLayer(heatData, {radius:25, blur:15, max:1, gradient:{0:'blue',0.4:'cyan',0.7:'yellow',1:'red'}}).addTo(map);
+            } else if (n === 1) {
+                scatterLayer = L.layerGroup(); polylineLayer = L.layerGroup();
+                const route = currentFiltered.map(p => [p.lat, p.lon]);
+                L.polyline(route, {color:'#666', weight:7, opacity:0.5}).addTo(polylineLayer);
+                currentFiltered.forEach((p,i) => {
+                    const v = p.powers[ch];
+                    const col = v > -35 ? '#FF0000' : v > -40 ? '#FFAA00' : v > -45 ? '#00CC00' : '#0099FF';
+                    L.circleMarker([p.lat, p.lon], {radius:7, fillColor:col, color:'white', weight:2, fillOpacity:0.9}).addTo(scatterLayer);
+                    if (i>0) L.polyline([[currentFiltered[i-1].lat,currentFiltered[i-1].lon],[p.lat,p.lon]], {color:col, weight:5, opacity:0.8}).addTo(polylineLayer);
+                });
+                scatterLayer.addTo(map); polylineLayer.addTo(map);
+            } else if (n === 2) {
+                document.getElementById('info').innerHTML = currentFiltered.length + " points — click Generate Coverage";
+            } else if (n === 3) {
+                document.getElementById('info').innerHTML = currentFiltered.length + " points — click Predict Source Location";
+            }
+
+            if (n < 2) map.fitBounds(L.latLngBounds(currentFiltered.map(p => [p.lat, p.lon])), {padding:[25,25]});
+            document.getElementById('info').innerHTML = currentFiltered.length + " points | " + minV.toFixed(1) + " to " + maxV.toFixed(1) + " dBm";
+        }
+
+        function generatePredictedCoverage() {
+            if (currentTab !== 2 || !currentFiltered.length) return alert("Switch to Predicted Coverage tab first");
+            clearLayers();
+            const ch = parseInt(document.getElementById('channel').value);
+            const gridSize = 60;
+            const bounds = L.latLngBounds(currentFiltered.map(p => [p.lat, p.lon]));
+            const minLat = bounds.getSouth(), maxLat = bounds.getNorth();
+            const minLon = bounds.getWest(), maxLon = bounds.getEast();
+            const latStep = (maxLat - minLat) / gridSize;
+            const lonStep = (maxLon - minLon) / gridSize;
+
+            predLayer = L.layerGroup();
+
+            for (let i = 0; i <= gridSize; i++) {
+                const lat = minLat + i * latStep;
+                for (let j = 0; j <= gridSize; j++) {
+                    const lon = minLon + j * lonStep;
+                    let sumW = 0, sumPW = 0;
+                    currentFiltered.forEach(p => {
+                        const dx = p.lat - lat;
+                        const dy = p.lon - lon;
+                        const dist = Math.sqrt(dx*dx + dy*dy) + 0.000001;
+                        const w = Math.exp(-dist * 8);
+                        sumW += w;
+                        sumPW += w * p.powers[ch];
+                    });
+                    const interp = sumW > 0 ? sumPW / sumW : -999;
+                    if (interp === -999) continue;
+                    const col = interp > -35 ? '#FF0000' : interp > -40 ? '#FFAA00' : interp > -45 ? '#00CC00' : '#0099FF';
+                    L.circleMarker([lat, lon], {radius: 2.8, fillColor: col, color: 'transparent', fillOpacity: 0.35})
+                     .addTo(predLayer);
+                }
+            }
+            predLayer.addTo(map);
+            document.getElementById('info').innerHTML = `Predicted Coverage (60×60) — see-through`;
+        }
+
+        function predictSourceLocation() {
+            if (currentTab !== 3 || !currentFiltered.length) return alert("Switch to Predict Source Location tab first");
+            clearLayers();
+            const ch = parseInt(document.getElementById('channel').value);
+
+            let sumLat = 0, sumLon = 0, sumWeight = 0;
+            let maxPower = -Infinity;
+            currentFiltered.forEach(p => {
+                const power = p.powers[ch];
+                const weight = Math.pow(10, power / 10);
+                sumLat += p.lat * weight;
+                sumLon += p.lon * weight;
+                sumWeight += weight;
+                if (power > maxPower) maxPower = power;
+            });
+
+            const estLat = sumLat / sumWeight;
+            const estLon = sumLon / sumWeight;
+
+            let sumVar = 0;
+            currentFiltered.forEach(p => {
+                const weight = Math.pow(10, p.powers[ch] / 10);
+                const dLat = p.lat - estLat;
+                const dLon = p.lon - estLon;
+                sumVar += weight * (dLat*dLat + dLon*dLon);
+            });
+            const radiusMeters = Math.sqrt(sumVar / sumWeight) * 2.5 * 111000;
+            const avgPower = currentFiltered.reduce((a,p) => a + p.powers[ch], 0) / currentFiltered.length;
+            const confidence = Math.min(98, Math.max(60, 95 - Math.round((maxPower - avgPower) * 2)));
+
+            sourceMarker = L.marker([estLat, estLon], {icon: L.divIcon({className:'custom-pin', html:'📡', iconSize:[40,40]})})
+                .addTo(map).bindPopup("<b>Predicted Source</b><br>Lat: " + estLat.toFixed(6) + "<br>Lon: " + estLon.toFixed(6) + "<br><b>Confidence: " + confidence + "%</b>");
+
+            sourceCircle = L.circle([estLat, estLon], {radius: radiusMeters, color:'#FF0000', fillColor:'#FF0000', fillOpacity:0.15, weight:3}).addTo(map);
+
+            document.getElementById('info').innerHTML = "📡 Source: " + estLat.toFixed(5) + ", " + estLon.toFixed(5) + "<br>Confidence: <strong>" + confidence + "%</strong> (circle ≈ " + radiusMeters.toFixed(0) + " m)";
+            map.flyTo([estLat, estLon], 15);
+        }
+
+        function clearAll() {
+            allData = [];
+            clearLayers();
+            document.getElementById('ranges').innerHTML = 'Upload files to see ranges';
+            document.getElementById('info').innerHTML = '0 points | ready';
+            map.setView([50, 16], 10);
+        }
+
+        window.onload = function() {
+            initMap();
+            document.getElementById('loadBtn').addEventListener('click', loadFiles);
+            document.getElementById('clearBtn').addEventListener('click', clearAll);
+            document.getElementById('minP').addEventListener('input', () => { updateLabels(); switchTab(currentTab); });
+            document.getElementById('maxP').addEventListener('input', () => { updateLabels(); switchTab(currentTab); });
+            document.getElementById('channel').addEventListener('change', () => switchTab(currentTab));
+            document.getElementById('tab0').addEventListener('click', () => switchTab(0));
+            document.getElementById('tab1').addEventListener('click', () => switchTab(1));
+            document.getElementById('tab2').addEventListener('click', () => switchTab(2));
+            document.getElementById('tab3').addEventListener('click', () => switchTab(3));
+
+            const predBtn = document.createElement('button');
+            predBtn.id = 'predBtn';
+            predBtn.textContent = 'Generate Coverage';
+            predBtn.onclick = generatePredictedCoverage;
+            document.querySelector('.tabs').appendChild(predBtn);
+
+            const sourceBtn = document.createElement('button');
+            sourceBtn.id = 'sourceBtn';
+            sourceBtn.textContent = 'Predict Source Location';
+            sourceBtn.onclick = predictSourceLocation;
+            document.querySelector('.tabs').appendChild(sourceBtn);
+
+            console.log('%cAuto-detection now works for ALL files (including new backup.csv + Czech)', 'color:green');
+        };
+    </script>
+</body>
+</html>

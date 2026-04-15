@@ -2,136 +2,896 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Lee McQuire MMN Monitor - Original + Thesis Figure 4.4</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="theme-color" content="#111827">
+  <title>MMN Monitor – Lee McQuire</title>
   <style>
-    body, html { margin:0; padding:0; height:100%; overflow:hidden; background:#111827; font-family:monospace; }
-    .split { display:flex; height:100%; }
-    .left { flex: 70%; border-right:4px solid #3b82f6; }
-    .right { flex: 30%; background:#1f2937; overflow:auto; padding:15px; }
-    iframe { width:100%; height:100%; border:none; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #111827; color: #e2e8f0;
+      font-family: 'Courier New', monospace;
+      font-size: 13px; overflow: hidden;
+    }
+
+    /* ── DESKTOP LAYOUT ── */
+    .layout { display: flex; height: 100vh; width: 100vw; }
+    .pane-receiver { flex: 0 0 68%; border-right: 3px solid #3b82f6; }
+    .pane-receiver iframe { width: 100%; height: 100%; border: none; display: block; }
+    .pane-monitor {
+      flex: 1; background: #1f2937;
+      display: flex; flex-direction: column;
+      overflow-y: auto; overflow-x: hidden;
+      padding: 10px 8px; gap: 8px;
+    }
+
+    /* ── MOBILE LAYOUT ── */
+    @media (max-width: 768px) {
+      html, body { overflow: auto; height: auto; }
+      .layout { flex-direction: column; height: auto; min-height: 100vh; }
+      .pane-receiver { display: none; }
+      .pane-monitor { flex: none; width: 100%; padding: 10px; overflow: visible; }
+      .stat-grid { grid-template-columns: repeat(3, 1fr) !important; }
+      .btn-grid-3 { grid-template-columns: 1fr 1fr !important; }
+      .levels-wrap { height: 100px !important; }
+      .levels-num { font-size: 28px !important; }
+    }
+
+    /* ── TYPE ── */
+    .panel-title {
+      text-align: center; color: #3b82f6; font-size: 13px;
+      font-weight: bold; margin: 0 0 2px; line-height: 1.4;
+      letter-spacing: .5px; text-transform: uppercase;
+    }
+    .section-label {
+      text-align: center; color: #60a5fa; font-size: 10px;
+      margin: 0 0 3px; text-transform: uppercase; letter-spacing: .8px;
+    }
+
+    /* ── GPS BADGE ── */
+    .gps-badge {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      background: #0f172a; border: 1px solid #3b82f6;
+      border-radius: 9999px; padding: 3px 12px; font-size: 10px; color: #93c5fd;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #ef4444; flex-shrink: 0; }
+    .dot.live { background: #22c55e; animation: blink 1.4s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── CANVAS ── */
+    canvas { display: block; width: 100%; background: #0d1117; border: 1.5px solid #1e3a5f; border-radius: 4px; }
+    .canvas-wrap { position: relative; }
+    .canvas-idle {
+      position: absolute; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+      color: #334155; font-size: 10px; pointer-events: none;
+    }
+
+    /* ── LEVELS ── */
+    .levels-wrap {
+      background: #0f172a; border: 1.5px solid #1e3a5f; border-radius: 6px;
+      height: 130px; position: relative; overflow: hidden;
+      display: flex; align-items: flex-end; justify-content: center;
+    }
+    .levels-bar {
+      width: 76%;
+      background: linear-gradient(to top, #22c55e 0%, #facc15 55%, #ef4444 100%);
+      border-radius: 3px 3px 0 0; transition: height .18s ease; height: 0%;
+    }
+    .levels-num {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%,-50%);
+      font-size: 36px; font-weight: bold; color: #fff; pointer-events: none; white-space: nowrap;
+    }
+
+    /* ── STAT GRID ── */
+    .stat-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 4px; }
+    .stat-box { padding: 5px 3px; border-radius: 5px; text-align: center; }
+    .stat-box small { font-size: 8px; display: block; opacity: .8; margin-bottom: 1px; }
+    .stat-box .val { font-size: 13px; font-weight: bold; }
+    .bg-blue  { background: #1e3a8a; }
+    .bg-slate { background: #334155; }
+    .bg-amber { background: #92400e; }
+
+    /* ── GPS TABLE ── */
+    .gps-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    .gps-table th { background: #1e3a5f; padding: 4px 5px; text-align: left; color: #7dd3fc; font-weight: normal; }
+    .gps-table td { padding: 3px 5px; border-bottom: 1px solid #1e293b; }
+    .gps-table tr:last-child td { border-bottom: none; }
+    .nmea-row td { font-size: 8px; color: #4ade80; word-break: break-all; }
+
+    /* ── BUTTONS ── */
+    .btn-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+    .btn-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .btn {
+      padding: 9px 4px; font-weight: bold; border: none; border-radius: 5px;
+      cursor: pointer; font-family: monospace; font-size: 11px; transition: filter .1s;
+    }
+    .btn:active { filter: brightness(.8); }
+    .btn-green  { background: #16a34a; color: #fff; }
+    .btn-blue   { background: #2563eb; color: #fff; }
+    .btn-red    { background: #dc2626; color: #fff; }
+    .btn-slate  { background: #475569; color: #fff; }
+    .btn-amber  { background: #d97706; color: #fff; }
+    .btn-purple { background: #7c3aed; color: #fff; }
+
+    select {
+      width: 100%; background: #0f172a; color: #e2e8f0;
+      border: 1.5px solid #3b82f6; padding: 6px 8px;
+      border-radius: 5px; font-family: monospace; font-size: 11px; appearance: none;
+    }
+
+    /* ── STATUS ── */
+    .status-bar {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      background: #0f172a; padding: 5px 8px;
+      border-radius: 5px; font-size: 10px; justify-content: space-between;
+    }
+    .pill { padding: 2px 7px; border-radius: 9999px; font-size: 10px; white-space: nowrap; }
+    .pill-green  { background: #16a34a; color: #fff; }
+    .pill-red    { background: #dc2626; color: #fff; }
+    .pill-blue   { background: #2563eb; color: #fff; }
+    .pill-amber  { background: #d97706; color: #fff; }
+
+    /* ── LOG ── */
+    .log-box {
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 5px;
+      height: 80px; overflow-y: auto; padding: 5px; font-size: 9px; color: #64748b;
+    }
+    .le { margin-bottom: 1px; line-height: 1.4; }
+    .le.ok   { color: #4ade80; }
+    .le.warn { color: #fbbf24; }
+    .le.err  { color: #f87171; }
+    .le.nmea { color: #38bdf8; }
+
+    hr.divider { border: none; border-top: 1px solid #1e293b; margin: 0; }
   </style>
 </head>
 <body>
 
-<div class="split">
-  <!-- LEFT: FULL ORIGINAL RADIORRECEIVER (unchanged) -->
-  <div class="left">
-    <iframe src="index.html"></iframe>
+<div class="layout">
+
+  <!-- LEFT: RadioReceiver (desktop only) -->
+  <div class="pane-receiver">
+    <iframe src="index.html" title="RadioReceiver"></iframe>
   </div>
 
-  <!-- RIGHT: YOUR EXACT FIGURE 4.4 (matches your screenshot perfectly) -->
-  <div class="right">
-    <h1 style="text-align:center; color:#3b82f6; margin-bottom:10px;">RF MMN MONITORING SYSTEM<br>SOFTWARE INTERFACE</h1>
+  <!-- RIGHT / FULL: Monitor panel -->
+  <div class="pane-monitor">
 
-    <!-- Spectrum sample -->
-    <div style="margin-bottom:15px;">
-      <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Spectrum sample</h3>
-      <canvas id="spectrumCanvas" style="width:100%; height:220px; background:#111827; border:2px solid #3b82f6;"></canvas>
+    <div class="panel-title">RF MMN MONITORING SYSTEM<br>SOFTWARE INTERFACE</div>
+
+    <!-- GPS source badge — JS fills this -->
+    <div class="gps-badge">
+      <span class="dot" id="gpsDot"></span>
+      <span id="gpsSourceLabel">GPS: detecting…</span>
+    </div>
+
+    <!-- SDR selector -->
+    <div>
+      <div class="section-label">SDR Device</div>
+      <select id="deviceSelect">
+        <option value="rtlsdr">RTL-SDR (webrtlsdr / Zadig driver)</option>
+        <option value="hackrf">HackRF Pro / HackRF One (WebUSB)</option>
+      </select>
+    </div>
+
+    <!-- Spectrum -->
+    <div>
+      <div class="section-label">Spectrum sample</div>
+      <div class="canvas-wrap">
+        <canvas id="spectrumCanvas" height="180"></canvas>
+        <div class="canvas-idle" id="specIdle">Connect SDR → Start</div>
+      </div>
     </div>
 
     <!-- Band detail + Levels -->
-    <div style="display:flex; gap:10px; margin-bottom:15px;">
+    <div style="display:flex;gap:6px;">
       <div style="flex:1;">
-        <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Band detail</h3>
-        <canvas id="bandCanvas" style="width:100%; height:140px; background:#111827; border:2px solid #3b82f6;"></canvas>
+        <div class="section-label">Band detail</div>
+        <div class="canvas-wrap">
+          <canvas id="bandCanvas" height="120"></canvas>
+          <div class="canvas-idle" id="bandIdle">No data</div>
+        </div>
       </div>
       <div style="flex:1;">
-        <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Levels</h3>
-        <div id="peakLevel" style="height:140px; background:#1e40af; border-radius:8px; display:flex; align-items:flex-end; justify-content:center; font-size:52px; font-weight:bold; color:white;">0.0</div>
+        <div class="section-label">Levels (avg dBm)</div>
+        <div class="levels-wrap">
+          <div class="levels-bar" id="levelsBar"></div>
+          <div class="levels-num" id="levelsNum">—</div>
+        </div>
       </div>
     </div>
 
     <!-- Timeline -->
-    <div style="margin-bottom:15px;">
-      <h3 style="text-align:center; color:#60a5fa; font-size:14px;">Timeline</h3>
-      <canvas id="timelineCanvas" style="width:100%; height:120px; background:#111827;"></canvas>
+    <div>
+      <div class="section-label">Timeline</div>
+      <canvas id="timelineCanvas" height="90"></canvas>
     </div>
 
-    <!-- Measurement boxes -->
-    <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:6px; font-size:12px; text-align:center;">
-      <div style="background:#1e40af; padding:8px; border-radius:6px;"><small>Peak [dBm]</small><div id="peak" style="font-size:18px; font-weight:bold;">3.5029</div></div>
-      <div style="background:#1e40af; padding:8px; border-radius:6px;"><small>Band mean [dBm]</small><div id="bandMean" style="font-size:18px; font-weight:bold;">-37.124</div></div>
-      <div style="background:#1e40af; padding:8px; border-radius:6px;"><small>Spectrum mean [dBm]</small><div id="specMean" style="font-size:18px; font-weight:bold;">-55.823</div></div>
-      <div style="background:#334155; padding:8px; border-radius:6px;"><small>Timeline samples</small><div id="samples" style="font-size:18px; font-weight:bold;">300</div></div>
-      <div style="background:#f59e0b; padding:8px; border-radius:6px;"><small>Sample count</small><div id="count" style="font-size:18px; font-weight:bold;">9</div></div>
+    <!-- Stats -->
+    <div class="stat-grid">
+      <div class="stat-box bg-blue"><small>Peak [dBm]</small><div class="val" id="peak">—</div></div>
+      <div class="stat-box bg-blue"><small>Band mean</small><div class="val" id="bandMean">—</div></div>
+      <div class="stat-box bg-blue"><small>Spec mean</small><div class="val" id="specMean">—</div></div>
+      <div class="stat-box bg-slate"><small>Log records</small><div class="val" id="logCount">0</div></div>
+      <div class="stat-box bg-amber"><small>Samples</small><div class="val" id="count">0</div></div>
     </div>
 
-    <!-- Buttons (exact from screenshot) -->
-    <div style="margin-top:20px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
-      <button onclick="connectSDR()" style="background:#22c55e; padding:12px; font-weight:bold; border:none; border-radius:6px;">Connect RTL-SDR</button>
-      <button onclick="startMeasuring()" style="background:#3b82f6; padding:12px; font-weight:bold; border:none; border-radius:6px;">Start / Continue</button>
-      <button onclick="stopMeasuring()" style="background:#ef4444; padding:12px; font-weight:bold; border:none; border-radius:6px;">Stop</button>
-    </div>
-    <div style="margin-top:8px; display:flex; gap:8px;">
-      <button onclick="getSpectrum()" style="flex:1; background:#64748b; padding:10px; font-weight:bold; border:none; border-radius:6px;">Get spectrum</button>
-      <button onclick="getGPS()" style="flex:1; background:#64748b; padding:10px; font-weight:bold; border:none; border-radius:6px;">Get GPS data</button>
+    <hr class="divider">
+
+    <!-- GPS Table — populated by real data only -->
+    <div>
+      <div class="section-label">GPS Location</div>
+      <table class="gps-table">
+        <tr><th>Field</th><th>Value</th></tr>
+        <tr><td>Latitude</td>     <td id="gpsLat">—</td></tr>
+        <tr><td>Longitude</td>    <td id="gpsLon">—</td></tr>
+        <tr><td>Altitude (m)</td> <td id="gpsAlt">—</td></tr>
+        <tr><td>Speed (km/h)</td> <td id="gpsSpeed">—</td></tr>
+        <tr><td>Heading (°)</td>  <td id="gpsHeading">—</td></tr>
+        <tr><td>Satellites</td>   <td id="gpsSats">—</td></tr>
+        <tr><td>Fix quality</td>  <td id="gpsFix">—</td></tr>
+        <tr><td>Accuracy</td>     <td id="gpsAcc">—</td></tr>
+        <tr><td>Last fix</td>     <td id="gpsTime">—</td></tr>
+        <tr class="nmea-row"><td colspan="2" id="gpsRawNMEA">—</td></tr>
+      </table>
     </div>
 
-    <!-- Status bar -->
-    <div style="margin-top:15px; background:#1f2937; padding:8px; border-radius:6px; font-size:12px; display:flex; justify-content:space-between;">
-      <div>RTL-SDR: <span id="sdrStatus" style="background:#22c55e; color:black; padding:2px 8px; border-radius:9999px;">Disconnected</span></div>
-      <div>Status: <span id="measStatus" style="background:#22c55e; color:black; padding:2px 8px; border-radius:9999px;">Ready</span></div>
+    <hr class="divider">
+
+    <!-- Controls -->
+    <div class="btn-grid-3">
+      <button class="btn btn-green"  onclick="connectDevice()">Connect SDR</button>
+      <button class="btn btn-blue"   onclick="startMeasuring()">▶ Start</button>
+      <button class="btn btn-red"    onclick="stopMeasuring()">■ Stop</button>
     </div>
+    <div class="btn-grid-2">
+      <button class="btn btn-slate"  onclick="snapshotSpectrum()">📷 Spectrum</button>
+      <button class="btn btn-purple" id="gpsConnectBtn" onclick="connectGPS()">📡 GPS Connect</button>
+    </div>
+    <div class="btn-grid-2">
+      <button class="btn btn-amber"  onclick="exportCSV()">⬇ Export CSV</button>
+      <button class="btn btn-slate"  onclick="clearLog()">🗑 Clear log</button>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar">
+      <div>SDR: <span class="pill pill-red"   id="sdrStatus">Disconnected</span></div>
+      <div>GPS: <span class="pill pill-red"   id="gpsStatus">No fix</span></div>
+      <div>Meas:<span class="pill pill-amber" id="measStatus">Idle</span></div>
+    </div>
+
+    <!-- Log -->
+    <div>
+      <div class="section-label">System log</div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+
   </div>
 </div>
 
-<script src="https://unpkg.com/@jtarrio/webrtlsdr@latest/dist/webrtlsdr.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script>
-  let sdr = null;
-  let spectrumCtx = document.getElementById('spectrumCanvas').getContext('2d');
-  let timelineChart;
+'use strict';
 
-  async function connectSDR() {
+// ═══════════════════════════════════════════════════════════
+//  DEVICE DETECTION
+//  Mobile  → Geolocation API (phone GPS)
+//  Desktop → G-MOUSE USB via Web Serial (NMEA 0183 @ 9600)
+// ═══════════════════════════════════════════════════════════
+const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+// ═══════════════════════════════════════════════════════════
+//  STATE — no default values, no simulation
+// ═══════════════════════════════════════════════════════════
+let hackrfDevice = null;
+let rtlsdrDevice = null;
+let serialPort   = null;
+let gpsWatcher   = null;
+let measuring    = false;
+let loopHandle   = null;
+let sampleCount  = 0;
+let gpsCoords    = null;   // set only when a real fix arrives
+const csvLog     = [];
+
+// ═══════════════════════════════════════════════════════════
+//  HackRF USB constants
+// ═══════════════════════════════════════════════════════════
+const HACKRF_VID = 0x1D50, HACKRF_PID = 0x6089;
+const HACKRF_SET_TRANSCEIVER_MODE = 1;
+const HACKRF_SET_FREQ             = 3;
+const HACKRF_SET_SAMPLE_RATE      = 6;
+const HACKRF_SET_LNA_GAIN         = 13;
+const HACKRF_SET_VGA_GAIN         = 14;
+const HACKRF_SET_AMP_ENABLE       = 16;
+const HACKRF_MODE_OFF             = 0;
+const HACKRF_MODE_RX              = 1;
+
+const TRANSFER_BYTES = 262144;
+const FFT_SIZE       = 1024;
+const HANN = Float64Array.from({length: FFT_SIZE},
+  (_, n) => 0.5 * (1 - Math.cos(2 * Math.PI * n / (FFT_SIZE - 1))));
+const HANN_POWER = HANN.reduce((s, v) => s + v * v, 0);
+
+// ═══════════════════════════════════════════════════════════
+//  LOGGING
+// ═══════════════════════════════════════════════════════════
+function log(msg, cls = '') {
+  const box = document.getElementById('logBox');
+  const d = document.createElement('div');
+  d.className = 'le ' + cls;
+  d.textContent = new Date().toLocaleTimeString() + ' › ' + msg;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog() { document.getElementById('logBox').innerHTML = ''; }
+
+// ═══════════════════════════════════════════════════════════
+//  INIT — detect platform, start GPS, build chart
+// ═══════════════════════════════════════════════════════════
+window.addEventListener('load', () => {
+  buildTimeline();
+
+  if (isMobile) {
+    // ── Mobile: phone GPS starts immediately
+    document.getElementById('gpsSourceLabel').textContent = 'GPS: Phone (Geolocation API)';
+    document.getElementById('gpsConnectBtn').style.display = 'none'; // not needed on mobile
+    log('Mobile — using phone GPS', 'ok');
+    startMobileGPS();
+  } else {
+    // ── Desktop: G-MOUSE USB GPS — user must press button
+    document.getElementById('gpsSourceLabel').textContent =
+      'GPS: G-MOUSE USB — press 📡 GPS Connect';
+    log('Desktop — G-MOUSE USB GPS. Click "📡 GPS Connect" to open COM port.', 'warn');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  GPS — MOBILE: Geolocation API
+// ═══════════════════════════════════════════════════════════
+function startMobileGPS() {
+  if (!navigator.geolocation) {
+    log('Geolocation API not available in this browser', 'err');
+    setStatus('gpsStatus', 'No API', 'pill-red');
+    return;
+  }
+  setStatus('gpsStatus', 'Searching…', 'pill-amber');
+  if (gpsWatcher !== null) navigator.geolocation.clearWatch(gpsWatcher);
+
+  gpsWatcher = navigator.geolocation.watchPosition(
+    pos => {
+      const c = pos.coords;
+      gpsCoords = { lat: c.latitude, lon: c.longitude, alt: c.altitude };
+      fillGPS({
+        lat:     c.latitude.toFixed(6),
+        lon:     c.longitude.toFixed(6),
+        alt:     c.altitude != null ? c.altitude.toFixed(1) : 'N/A (no baro)',
+        speed:   c.speed    != null ? (c.speed * 3.6).toFixed(1) + ' km/h' : 'N/A',
+        heading: c.heading  != null ? c.heading.toFixed(1) + '°' : 'N/A',
+        sats:    'N/A',
+        fix:     'Phone GPS',
+        acc:     '±' + c.accuracy.toFixed(1) + ' m',
+        time:    new Date(pos.timestamp).toLocaleTimeString(),
+        nmea:    '(Geolocation API — no raw NMEA on mobile)'
+      });
+      setStatus('gpsStatus', 'Fix ✓', 'pill-green');
+      live('gpsDot');
+    },
+    err => {
+      const r = {1:'Permission denied',2:'Position unavailable',3:'Timeout'};
+      log('GPS: ' + (r[err.code] || err.message), 'err');
+      setStatus('gpsStatus', 'No fix', 'pill-red');
+    },
+    { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 }
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+//  GPS — DESKTOP: G-MOUSE via Web Serial API
+//  Reads raw NMEA 0183 sentences at 9600 baud
+// ═══════════════════════════════════════════════════════════
+async function connectGPS() {
+  if (isMobile) {
+    log('Mobile: using phone GPS — no USB serial needed', 'warn');
+    return;
+  }
+  if (!('serial' in navigator)) {
+    log('Web Serial API not available — use Chrome or Edge on desktop', 'err');
+    alert('Web Serial API not supported.\nUse Chrome or Edge on desktop.');
+    return;
+  }
+
+  // Close any existing port
+  if (serialPort) {
+    try { await serialPort.close(); } catch (_) {}
+    serialPort = null;
+  }
+
+  try {
+    serialPort = await navigator.serial.requestPort();
+    // G-MOUSE default: 9600 8N1
+    await serialPort.open({ baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none' });
+    setStatus('gpsStatus', 'Receiving…', 'pill-amber');
+    log('G-MOUSE USB GPS port opened at 9600 baud', 'ok');
+    readNMEA();
+  } catch (e) {
+    log('GPS serial: ' + e.message, 'err');
+    setStatus('gpsStatus', 'Error', 'pill-red');
+  }
+}
+
+// ── NMEA stream reader ──────────────────────────────────────
+async function readNMEA() {
+  const decoder = new TextDecoderStream();
+  serialPort.readable.pipeTo(decoder.writable);   // fire-and-forget pipe
+  const reader = decoder.readable.getReader();
+  let buf = '';
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line.startsWith('$')) parseNMEA(line);
+      }
+    }
+  } catch (e) {
+    if (!e.message?.includes('closed')) log('NMEA stream: ' + e.message, 'err');
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// ── NMEA 0183 sentence parser ───────────────────────────────
+// Sentences used:
+//   $GPGGA / $GNGGA — position, altitude, fix quality, satellites, HDOP
+//   $GPRMC / $GNRMC — speed (knots), true heading, date
+function parseNMEA(sentence) {
+  // Checksum validation
+  const star = sentence.lastIndexOf('*');
+  if (star !== -1) {
+    const body = sentence.slice(1, star);
+    let cs = 0;
+    for (let i = 0; i < body.length; i++) cs ^= body.charCodeAt(i);
+    const expected = sentence.slice(star + 1, star + 3).toUpperCase();
+    const actual   = cs.toString(16).toUpperCase().padStart(2, '0');
+    if (actual !== expected) return;  // discard corrupt sentence
+  }
+
+  const f    = sentence.split(',');
+  const type = f[0].slice(1);   // strip leading $
+
+  // ── GGA: primary fix data ──────────────────────────────
+  if (type === 'GPGGA' || type === 'GNGGA') {
+    if (!f[2] || !f[4]) return;  // no position yet
+    const lat = nmeaDeg(f[2], f[3]);
+    const lon = nmeaDeg(f[4], f[5]);
+    if (isNaN(lat) || isNaN(lon)) return;
+
+    const fixLabels = [
+      'No fix', 'GPS fix', 'DGPS fix', 'PPS fix',
+      'RTK fixed', 'RTK float', 'Estimated', 'Manual', 'Simulation'
+    ];
+    const fixQ  = fixLabels[parseInt(f[6])] || ('Fix ' + f[6]);
+    const sats  = parseInt(f[7]) || 0;
+    const hdop  = f[8] || '—';
+    const alt   = f[9] ? parseFloat(f[9]).toFixed(1) + ' m' : '—';
+    const utcT  = nmeaUTC(f[1]);
+
+    gpsCoords = { lat, lon, alt: parseFloat(f[9]) || null };
+
+    fillGPS({
+      lat:  lat.toFixed(6),
+      lon:  lon.toFixed(6),
+      alt,
+      sats: sats + ' sats',
+      fix:  fixQ,
+      acc:  'HDOP ' + hdop,
+      time: utcT,
+      nmea: sentence
+    });
+
+    // Only mark green on real fix (quality ≥ 1)
+    if (parseInt(f[6]) >= 1) {
+      setStatus('gpsStatus', 'Fix ✓ (' + sats + ' sats)', 'pill-green');
+      live('gpsDot');
+      document.getElementById('gpsSourceLabel').textContent =
+        'GPS: G-MOUSE USB | ' + lat.toFixed(4) + ', ' + lon.toFixed(4);
+    } else {
+      setStatus('gpsStatus', 'Searching…', 'pill-amber');
+    }
+
+    log('GGA lat=' + lat.toFixed(5) + ' lon=' + lon.toFixed(5) +
+        ' alt=' + f[9] + 'm sats=' + sats, 'nmea');
+  }
+
+  // ── RMC: speed + heading ───────────────────────────────
+  if (type === 'GPRMC' || type === 'GNRMC') {
+    if (f[2] !== 'A') return;   // A = active, V = void
+    const spd = f[7] ? (parseFloat(f[7]) * 1.852).toFixed(1) + ' km/h' : '—';
+    const hdg = f[8] ? parseFloat(f[8]).toFixed(1) + '°' : '—';
+    document.getElementById('gpsSpeed').textContent   = spd;
+    document.getElementById('gpsHeading').textContent = hdg;
+    document.getElementById('gpsRawNMEA').textContent = sentence;
+  }
+}
+
+// ddmm.mmmm,N/S/E/W → decimal degrees
+function nmeaDeg(raw, dir) {
+  if (!raw) return NaN;
+  const dot = raw.indexOf('.');
+  const deg = parseInt(raw.slice(0, dot - 2));
+  const min = parseFloat(raw.slice(dot - 2)) / 60;
+  const dd  = deg + min;
+  return (dir === 'S' || dir === 'W') ? -dd : dd;
+}
+
+// hhmmss.ss → HH:MM:SS UTC
+function nmeaUTC(raw) {
+  if (!raw || raw.length < 6) return raw || '—';
+  return raw.slice(0, 2) + ':' + raw.slice(2, 4) + ':' + raw.slice(4, 6) + ' UTC';
+}
+
+// Update GPS table cells (only fills defined keys)
+function fillGPS(d) {
+  const set = (id, v) => { if (v !== undefined) document.getElementById(id).textContent = v; };
+  set('gpsLat',     d.lat);
+  set('gpsLon',     d.lon);
+  set('gpsAlt',     d.alt);
+  set('gpsSpeed',   d.speed);
+  set('gpsHeading', d.heading);
+  set('gpsSats',    d.sats);
+  set('gpsFix',     d.fix);
+  set('gpsAcc',     d.acc);
+  set('gpsTime',    d.time);
+  set('gpsRawNMEA', d.nmea);
+}
+
+function live(dotId) {
+  document.getElementById(dotId).classList.add('live');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SDR CONNECT
+// ═══════════════════════════════════════════════════════════
+async function connectDevice() {
+  const t = document.getElementById('deviceSelect').value;
+  if (t === 'hackrf') await connectHackRF();
+  else                await connectRTLSDR();
+}
+
+async function connectRTLSDR() {
+  try {
+    const lib = window.webrtlsdr;
+    if (!lib) throw new Error('webrtlsdr library not loaded (check CDN / ad-blocker)');
+    rtlsdrDevice = await lib.connect();
+    setStatus('sdrStatus', 'RTL-SDR ✓', 'pill-green');
+    log('RTL-SDR connected — set frequency in left panel', 'ok');
+  } catch (e) {
+    log('RTL-SDR: ' + e.message, 'err');
+    setStatus('sdrStatus', 'Error', 'pill-red');
+    alert('RTL-SDR connect failed:\n' + e.message +
+      '\n\nRequires: Chrome/Edge · Zadig WinUSB driver · HTTPS or localhost');
+  }
+}
+
+function startLiveRTL() {
+  if (loopHandle) clearInterval(loopHandle);
+  loopHandle = setInterval(async () => {
+    if (!rtlsdrDevice || !measuring) return;
     try {
-      sdr = await webrtlsdr.connect();
-      document.getElementById('sdrStatus').textContent = 'Connected';
-      startLive();
-    } catch(e) { alert("RTL-SDR not found – make sure Zadig driver is installed"); }
-  }
+      renderAll(await rtlsdrDevice.getPowerSpectrum(FFT_SIZE));
+    } catch (e) {
+      log('RTL-SDR read error: ' + e.message, 'err');
+      stopMeasuring();
+    }
+  }, 150);
+  log('RTL-SDR acquisition running', 'ok');
+}
 
-  function startLive() {
-    setInterval(async () => {
-      if (!sdr) return;
-      const data = await sdr.getPowerSpectrum(512);
-      drawSpectrum(data);
-      updateStats(data);
-    }, 180);
-  }
+async function connectHackRF() {
+  if (!navigator.usb) { alert('WebUSB not available. Use Chrome or Edge.'); return; }
+  try {
+    hackrfDevice = await navigator.usb.requestDevice({
+      filters: [{ vendorId: HACKRF_VID, productId: HACKRF_PID }]
+    });
+    await hackrfDevice.open();
+    await hackrfDevice.selectConfiguration(1);
+    await hackrfDevice.claimInterface(0);
 
-  function drawSpectrum(data) {
-    spectrumCtx.clearRect(0,0,800,220);
-    spectrumCtx.fillStyle = '#1e40af';
-    for(let i=0; i<data.length; i++){
-      const h = (data[i] + 80) * 2.6;
-      spectrumCtx.fillRect(i*1.55, 220-h, 1.5, h);
+    await hCtrlOut(HACKRF_SET_SAMPLE_RATE, 0, 0, pack2u32(10_000_000, 1));
+    await hCtrlOut(HACKRF_SET_FREQ,        0, 0, pack2u32(433, 920_000));
+    await hCtrlIn (HACKRF_SET_LNA_GAIN,    0, 40);
+    await hCtrlIn (HACKRF_SET_VGA_GAIN,    0, 20);
+    await hCtrlOut(HACKRF_SET_AMP_ENABLE,  0, 0, new Uint8Array([0]));
+    await hackrfSetMode(HACKRF_MODE_RX);
+
+    setStatus('sdrStatus', 'HackRF ✓', 'pill-green');
+    log('HackRF RX: 433.920 MHz | 10 Msps | LNA 40 dB | VGA 20 dB', 'ok');
+  } catch (e) {
+    hackrfDevice = null;
+    log('HackRF: ' + e.message, 'err');
+    setStatus('sdrStatus', 'Error', 'pill-red');
+    alert('HackRF failed:\n' + e.message +
+      '\n\nRequires: Chrome/Edge · Zadig WinUSB (Win) or udev rule (Linux) · HTTPS/localhost');
+  }
+}
+
+function pack2u32(a, b) {
+  const buf = new ArrayBuffer(8), dv = new DataView(buf);
+  dv.setUint32(0, a, true); dv.setUint32(4, b, true);
+  return buf;
+}
+async function hCtrlOut(req, val, idx, data) {
+  const d = data instanceof ArrayBuffer ? data : data.buffer;
+  await hackrfDevice.controlTransferOut(
+    { requestType:'vendor', recipient:'device', request:req, value:val, index:idx }, d);
+}
+async function hCtrlIn(req, val, idx) {
+  await hackrfDevice.controlTransferIn(
+    { requestType:'vendor', recipient:'device', request:req, value:val, index:idx }, 1);
+}
+async function hackrfSetMode(mode) {
+  await hackrfDevice.controlTransferOut(
+    { requestType:'vendor', recipient:'device',
+      request: HACKRF_SET_TRANSCEIVER_MODE, value: mode, index: 0 },
+    new Uint8Array(0));
+}
+
+function startLiveHackRF() {
+  async function rxLoop() {
+    while (measuring && hackrfDevice) {
+      let result;
+      try {
+        result = await hackrfDevice.transferIn(1, TRANSFER_BYTES);
+      } catch (e) {
+        log('HackRF transfer error: ' + e.message, 'err');
+        hackrfDevice = null; measuring = false;
+        setStatus('sdrStatus', 'Error', 'pill-red');
+        setStatus('measStatus', 'Stopped', 'pill-red');
+        return;
+      }
+      if (!result?.data || result.data.byteLength < FFT_SIZE * 2) continue;
+
+      // ── Welch PSD: Hann-windowed DFT averaged over blocks ──
+      const raw  = new Uint8Array(result.data.buffer);
+      const nBlk = Math.floor(raw.length / 2 / FFT_SIZE);
+      if (nBlk < 1) continue;
+
+      const acc = new Float64Array(FFT_SIZE);
+      for (let b = 0; b < nBlk; b++) {
+        const off = b * FFT_SIZE;
+        for (let k = 0; k < FFT_SIZE; k++) {
+          let re = 0, im = 0;
+          const w2 = (2 * Math.PI * k) / FFT_SIZE;
+          for (let n = 0; n < FFT_SIZE; n++) {
+            const idx = (off + n) * 2;
+            const I   = (raw[idx]   - 128) / 128;
+            const Q   = (raw[idx+1] - 128) / 128;
+            const ang = w2 * n, wn = HANN[n];
+            re += wn * (I * Math.cos(ang) + Q * Math.sin(ang));
+            im += wn * (-I * Math.sin(ang) + Q * Math.cos(ang));
+          }
+          acc[k] += re * re + im * im;
+        }
+      }
+
+      // Normalise → dBm (adjust CAL_OFFSET after calibration with reference signal)
+      const CAL_OFFSET_DBM = -40;
+      const norm = nBlk * HANN_POWER;
+      const spec = new Float32Array(FFT_SIZE);
+      for (let k = 0; k < FFT_SIZE; k++)
+        spec[k] = 10 * Math.log10(acc[k] / norm + 1e-30) + CAL_OFFSET_DBM;
+
+      renderAll(fftShift(spec));
     }
   }
+  rxLoop();
+  log('HackRF RX acquisition running', 'ok');
+}
 
-  function updateStats(data) {
-    const peak = Math.max(...data).toFixed(1);
-    document.getElementById('peakLevel').textContent = peak;
-    document.getElementById('peak').textContent = peak;
-    document.getElementById('bandMean').textContent = (peak - 5).toFixed(2);
-    document.getElementById('specMean').textContent = (peak - 15).toFixed(2);
+function fftShift(a) {
+  const h = a.length >> 1, o = new Float32Array(a.length);
+  for (let i = 0; i < h; i++) o[i] = a[i+h];
+  for (let i = h; i < a.length; i++) o[i] = a[i-h];
+  return o;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  RENDER — called ONLY with real spectrum data
+// ═══════════════════════════════════════════════════════════
+function renderAll(spectrum) {
+  document.getElementById('specIdle').style.display = 'none';
+  document.getElementById('bandIdle').style.display = 'none';
+  drawSpectrum(spectrum);
+  drawBand(spectrum);
+  updateStats(spectrum);
+  pushTimeline(spectrum);
+}
+
+const specCtx = document.getElementById('spectrumCanvas').getContext('2d');
+function drawSpectrum(data) {
+  const w = specCtx.canvas.width  = specCtx.canvas.offsetWidth  || 300;
+  const h = specCtx.canvas.height = specCtx.canvas.offsetHeight || 180;
+  specCtx.clearRect(0, 0, w, h);
+  const F = -90, R = 100, bw = w / data.length;
+  for (let i = 0; i < data.length; i++) {
+    const n = Math.min(1, Math.max(0, (data[i] - F) / R));
+    specCtx.fillStyle = `hsl(${220 - n*180},90%,${40 + n*30}%)`;
+    specCtx.fillRect(i * bw, h - n * h, bw - 0.3, n * h + 1);
   }
+  specCtx.fillStyle = '#334155'; specCtx.font = '8px monospace';
+  specCtx.fillText('−Fs/2', 2, h-2);
+  specCtx.fillText('DC',    w/2-8, h-2);
+  specCtx.fillText('+Fs/2', w-34, h-2);
+}
 
-  function startMeasuring() { document.getElementById('measStatus').textContent = 'Measuring'; }
-  function stopMeasuring() { document.getElementById('measStatus').textContent = 'Stopped'; }
-  function getSpectrum() { alert("Snapshot saved (same as your MATLAB)"); }
-  function getGPS() { navigator.geolocation.getCurrentPosition(p => alert(`GPS: ${p.coords.latitude.toFixed(4)}, ${p.coords.longitude.toFixed(4)}`)); }
+const bandCtx = document.getElementById('bandCanvas').getContext('2d');
+function drawBand(data) {
+  const w = bandCtx.canvas.width  = bandCtx.canvas.offsetWidth  || 150;
+  const h = bandCtx.canvas.height = bandCtx.canvas.offsetHeight || 120;
+  const s = data.length >> 2, e = data.length - s;
+  bandCtx.clearRect(0, 0, w, h);
+  const F = -90, R = 100, bw = w / (e - s);
+  for (let i = s; i < e; i++) {
+    const n = Math.min(1, Math.max(0, (data[i] - F) / R));
+    bandCtx.fillStyle = `hsl(${200 - n*120},85%,${45 + n*25}%)`;
+    bandCtx.fillRect((i-s)*bw, h - n*h, bw - 0.3, n*h + 1);
+  }
+}
 
-  // Timeline
-  window.onload = () => {
-    const tl = document.getElementById('timelineCanvas').getContext('2d');
-    timelineChart = new Chart(tl, {type:'line', data:{labels:[], datasets:[{label:'Power dBm', borderColor:'#3b82f6', data:[]}]}, options:{animation:false, scales:{y:{min:-80,max:20}}}});
-    setInterval(() => {
-      timelineChart.data.labels.push(new Date().toLocaleTimeString().slice(0,8));
-      timelineChart.data.datasets[0].data.push(Math.random()*40 - 55);
-      if(timelineChart.data.labels.length > 30) { timelineChart.data.labels.shift(); timelineChart.data.datasets[0].data.shift(); }
-      timelineChart.update('none');
-    }, 700);
-  };
+function updateStats(data) {
+  sampleCount++;
+  const arr      = Array.from(data);
+  const peak     = Math.max(...arr);
+  const specMean = arr.reduce((s, v) => s + v, 0) / arr.length;
+  const s1 = arr.length >> 2, e1 = arr.length - s1;
+  const bandMean = arr.slice(s1, e1).reduce((a, v) => a + v, 0) / (e1 - s1);
+
+  document.getElementById('peak').textContent     = peak.toFixed(2);
+  document.getElementById('specMean').textContent = specMean.toFixed(2);
+  document.getElementById('bandMean').textContent = bandMean.toFixed(2);
+  document.getElementById('count').textContent    = sampleCount;
+
+  // Levels bar: bandMean from −90 → +10 dBm maps to 0 → 100%
+  const pct = Math.min(100, Math.max(0, bandMean + 90));
+  document.getElementById('levelsBar').style.height = pct + '%';
+  document.getElementById('levelsNum').textContent  = bandMean.toFixed(1);
+
+  // Log every 10 samples (with real GPS if available)
+  if (sampleCount % 10 === 0) {
+    csvLog.push({
+      ts:        new Date().toISOString(),
+      gpsSrc:    isMobile ? 'phone' : 'G-MOUSE',
+      lat:       gpsCoords ? gpsCoords.lat.toFixed(6) : '',
+      lon:       gpsCoords ? gpsCoords.lon.toFixed(6) : '',
+      alt:       gpsCoords?.alt != null ? gpsCoords.alt.toFixed(1) : '',
+      peak:      peak.toFixed(2),
+      bandMean:  bandMean.toFixed(2),
+      specMean:  specMean.toFixed(2)
+    });
+    document.getElementById('logCount').textContent = csvLog.length;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TIMELINE — only driven by real renderAll() calls
+// ═══════════════════════════════════════════════════════════
+let timelineChart = null;
+function buildTimeline() {
+  timelineChart = new Chart(
+    document.getElementById('timelineCanvas').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'Peak [dBm]',      borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,.08)',
+          data:[], pointRadius:0, tension:0.3, fill:true },
+        { label: 'Band mean [dBm]', borderColor:'#22c55e', backgroundColor:'transparent',
+          data:[], pointRadius:0, tension:0.3, fill:false }
+      ]
+    },
+    options: {
+      animation: false,
+      plugins: { legend: { labels: { color:'#64748b', font:{size:9} } } },
+      scales: {
+        y: { min:-90, max:10, ticks:{color:'#64748b',font:{size:8}}, grid:{color:'#1e293b'} },
+        x: { ticks:{color:'#64748b',font:{size:8},maxTicksLimit:8},  grid:{color:'#1e293b'} }
+      }
+    }
+  });
+}
+
+function pushTimeline(spectrum) {
+  if (!timelineChart) return;
+  const arr  = Array.from(spectrum);
+  const peak = Math.max(...arr);
+  const s1 = arr.length >> 2, e1 = arr.length - s1;
+  const bm   = arr.slice(s1, e1).reduce((a, v) => a + v, 0) / (e1 - s1);
+
+  timelineChart.data.labels.push(new Date().toLocaleTimeString().slice(0, 8));
+  timelineChart.data.datasets[0].data.push(+peak.toFixed(2));
+  timelineChart.data.datasets[1].data.push(+bm.toFixed(2));
+  if (timelineChart.data.labels.length > 120) {
+    timelineChart.data.labels.shift();
+    timelineChart.data.datasets[0].data.shift();
+    timelineChart.data.datasets[1].data.shift();
+  }
+  timelineChart.update('none');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MEASUREMENT CONTROL
+// ═══════════════════════════════════════════════════════════
+function startMeasuring() {
+  if (!hackrfDevice && !rtlsdrDevice) {
+    log('No SDR connected — press "Connect SDR" first', 'warn');
+    alert('Connect an SDR device first.');
+    return;
+  }
+  if (measuring) return;
+  measuring = true;
+  setStatus('measStatus', 'Measuring', 'pill-green');
+  log('Measurement started', 'ok');
+  if (hackrfDevice) startLiveHackRF();
+  else              startLiveRTL();
+}
+
+function stopMeasuring() {
+  measuring = false;
+  if (loopHandle) { clearInterval(loopHandle); loopHandle = null; }
+  setStatus('measStatus', 'Stopped', 'pill-red');
+  log('Measurement stopped');
+  if (hackrfDevice) {
+    hackrfSetMode(HACKRF_MODE_OFF).catch(() => {});
+    log('HackRF RX disabled');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  EXPORT
+// ═══════════════════════════════════════════════════════════
+function snapshotSpectrum() {
+  if (sampleCount === 0) { log('No spectrum data yet', 'warn'); return; }
+  const a    = document.createElement('a');
+  a.download = 'spectrum_' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.png';
+  a.href     = document.getElementById('spectrumCanvas').toDataURL('image/png');
+  a.click();
+  log('Spectrum PNG saved', 'ok');
+}
+
+function exportCSV() {
+  if (!csvLog.length) { log('No log records yet', 'warn'); return; }
+  const hdr  = 'timestamp,gps_source,latitude,longitude,altitude_m,peak_dBm,band_mean_dBm,spec_mean_dBm\n';
+  const rows = csvLog.map(r =>
+    `${r.ts},${r.gpsSrc},${r.lat},${r.lon},${r.alt},${r.peak},${r.bandMean},${r.specMean}`
+  ).join('\n');
+  const url = URL.createObjectURL(new Blob([hdr + rows], { type: 'text/csv' }));
+  const a   = document.createElement('a');
+  a.download = 'mmn_log_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.href = url; a.click();
+  URL.revokeObjectURL(url);
+  log('CSV exported — ' + csvLog.length + ' records', 'ok');
+}
+
+// ═══════════════════════════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════════════════════════
+function setStatus(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className   = 'pill ' + cls;
+}
 </script>
+
+<!-- RTL-SDR WebUSB library (desktop) -->
+<script src="https://unpkg.com/@jtarrio/webrtlsdr@latest/dist/webrtlsdr.js"
+        onerror="console.warn('webrtlsdr CDN unavailable')"></script>
+
 </body>
 </html>
