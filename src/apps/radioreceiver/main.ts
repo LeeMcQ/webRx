@@ -61,6 +61,14 @@ import { OptionsNBFM } from "@jtarrio/signals/demod/demod-nbfm.js";
 import { OptionsAM } from "@jtarrio/signals/demod/demod-am.js";
 import { OptionsSSB } from "@jtarrio/signals/demod/demod-ssb.js";
 import { OptionsCW } from "@jtarrio/signals/demod/demod-cw.js";
+import { SdrProvider } from "../../devices/provider.js";
+import type { ConnectedSdr, SdrKind } from "../../devices/provider.js";
+import { HackRF } from "../../devices/hackrf.js";
+import { gps } from "../../gps/gps.js";
+import type { GpsSource, GpsStatus } from "../../gps/gps.js";
+import { dspStatus } from "../../dsp/wasm.js";
+import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
+import type { ConnectedSdrInfo } from "./settings.js";
 
 type Frequency = {
   center: number;
@@ -150,6 +158,11 @@ export class RadioReceiverMain extends LitElement {
         .stereoStatus=${this.stereoStatus}
         .gain=${this.gain}
         .gainDisabled=${this.gainDisabled}
+        .maxFrequency=${this.maxFrequency}
+        .deviceLabel=${this.deviceLabel()}
+        .dspActive=${this.dspActive}
+        .gpsLabel=${this.gpsLabel()}
+        .gpsState=${this.gpsDot()}
         @rr-start=${this.onStart}
         @rr-stop=${this.onStop}
         @rr-presets=${this.onPresets}
@@ -177,6 +190,22 @@ export class RadioReceiverMain extends LitElement {
         .biasTee=${this.biasTee}
         .lowFrequencyMethod=${this.lowFrequencyMethod}
         .performanceTradeoff=${this.performanceTradeoff}
+        .sdrKind=${this.sdrKind}
+        .connectedSdr=${this.connectedSdr}
+        .hackrfAmp=${this.hackrfAmp}
+        .dspActive=${this.dspActive}
+        .dspSimd=${this.dspSimd}
+        .wasmDsp=${this.wasmDsp}
+        .gpsSource=${this.gpsSource}
+        .gpsStatus=${this.gpsStatus}
+        .canInstall=${this.canInstall}
+        @rr-sdr-kind-changed=${this.onSdrKindChange}
+        @rr-choose-device=${this.onChooseDevice}
+        @rr-hackrf-amp-changed=${this.onHackrfAmpChange}
+        @rr-wasm-dsp-changed=${this.onWasmDspChange}
+        @rr-gps-source-changed=${this.onGpsSourceChange}
+        @rr-gps-connect=${this.onGpsConnect}
+        @rr-install-app=${this.onInstallApp}
         @rr-sample-rate-changed=${this.onSampleRateChange}
         @rr-ppm-changed=${this.onPpmChange}
         @rr-fft-size-changed=${this.onFftSizeChange}
@@ -218,6 +247,14 @@ export class RadioReceiverMain extends LitElement {
   private demodulator: Demodulator;
   private sampleCounter: SampleCounter;
   private radio: Radio;
+  private sdrProvider: SdrProvider;
+  private openSdr?: ConnectedSdr;
+  private onGpsChange = () => {
+    this.gpsStatus = { ...gps.status };
+  };
+  private onInstallChange = () => {
+    this.canInstall = canInstallApp();
+  };
   private availableModes = new Map(getSchemes().map((s) => [s, getMode(s)]));
   private centerFrequencyScroller?: CenterFrequencyScroller;
 
@@ -256,6 +293,16 @@ export class RadioReceiverMain extends LitElement {
     settings: { open: false, position: undefined },
     presets: { open: false, position: undefined, size: undefined },
   };
+  @state() private sdrKind: SdrKind = "auto";
+  @state() private connectedSdr?: ConnectedSdrInfo;
+  @state() private hackrfAmp: boolean = false;
+  @state() private maxFrequency: number = 1800000000;
+  @state() private wasmDsp: boolean = true;
+  @state() private dspActive: boolean = dspStatus().active;
+  @state() private dspSimd: boolean = dspStatus().simd;
+  @state() private gpsSource: GpsSource = gps.savedSource();
+  @state() private gpsStatus: GpsStatus = gps.status;
+  @state() private canInstall: boolean = canInstallApp();
   @state() private presetSortColumn: string = "frequency";
   @state() private presets: Preset[] = [];
 
@@ -273,8 +320,13 @@ export class RadioReceiverMain extends LitElement {
     this.spectrum.size = this.fftSize;
     this.demodulator = new Demodulator(this.getDemodulatorOptions());
     this.sampleCounter = new SampleCounter(20);
+    this.sdrProvider = new SdrProvider({
+      kind: () => this.configProvider.get().device,
+      hackrfAmp: () => this.configProvider.get().hackrfAmp,
+      onConnect: (sdr) => this.onSdrConnected(sdr),
+    });
     this.radio = new Radio(
-      new RtlProvider(),
+      new RtlProvider(this.sdrProvider),
       CompositeReceiver.of(this.spectrum, this.demodulator, this.sampleCounter),
     );
 
@@ -347,11 +399,94 @@ export class RadioReceiverMain extends LitElement {
     super.connectedCallback();
     this.resizeObserver = new ResizeObserver(() => this.onScreenResize());
     this.resizeObserver.observe(document.body);
+    gps.addEventListener("change", this.onGpsChange);
+    onInstallAvailabilityChange(this.onInstallChange);
+    // Reopen the GPS the user chose last time (no prompt for phone GPS once allowed,
+    // and a previously granted G-MOUSE port reconnects silently).
+    if (gps.hasSavedChoice()) gps.resume();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.resizeObserver?.disconnect();
+    gps.removeEventListener("change", this.onGpsChange);
+  }
+
+  // ── device / GPS / engine ─────────────────────────────────
+
+  private deviceLabel(): string {
+    if (!this.connectedSdr) {
+      return this.sdrKind === "hackrf" ? "HackRF · press ▶" : this.sdrKind === "rtlsdr" ? "RTL-SDR · press ▶" : "SDR · press ▶";
+    }
+    const rate = this.radio.getSampleRate();
+    return `${this.connectedSdr.name} · ${(rate / 1e6).toLocaleString(undefined, { maximumFractionDigits: 3 })} Msps`;
+  }
+
+  private gpsLabel(): string {
+    const st = this.gpsStatus;
+    if (st.state === "off") return "GPS off";
+    if (st.fix) {
+      const acc = st.fix.accuracyM !== undefined ? ` ±${st.fix.accuracyM.toFixed(0)} m` : "";
+      return `${st.fix.lat.toFixed(4)}, ${st.fix.lon.toFixed(4)}${acc}`;
+    }
+    if (st.state === "error") return "GPS error";
+    return st.source === "gmouse" ? "G-MOUSE searching…" : "GPS searching…";
+  }
+
+  private gpsDot(): "" | "ok" | "warn" | "err" {
+    const st = this.gpsStatus.state;
+    return st === "fix" ? "ok" : st === "error" ? "err" : st === "off" ? "" : "warn";
+  }
+
+  private onSdrConnected(sdr: ConnectedSdr) {
+    this.openSdr = sdr;
+    this.connectedSdr = { kind: sdr.kind, name: sdr.name, detail: sdr.detail };
+    this.maxFrequency = sdr.maxFrequency;
+  }
+
+  private onSdrKindChange(e: Event) {
+    const target = e.target as RrSettings;
+    this.sdrKind = target.sdrKind;
+    this.connectedSdr = undefined;
+    this.sdrProvider.forgetDevice();
+    this.maxFrequency = this.sdrKind === "hackrf" ? 6_000_000_000 : 1_800_000_000;
+    this.configProvider.update((cfg) => (cfg.device = target.sdrKind));
+  }
+
+  private onChooseDevice() {
+    this.sdrProvider.forgetDevice();
+    this.connectedSdr = undefined;
+  }
+
+  private onHackrfAmpChange(e: Event) {
+    const target = e.target as RrSettings;
+    this.hackrfAmp = target.hackrfAmp;
+    this.configProvider.update((cfg) => (cfg.hackrfAmp = target.hackrfAmp));
+    const dev = this.openSdr?.device;
+    if (this.radio.isPlaying() && dev instanceof HackRF) dev.setAmpEnabled(target.hackrfAmp);
+  }
+
+  private onWasmDspChange(e: Event) {
+    const target = e.target as RrSettings;
+    this.wasmDsp = target.wasmDsp;
+    this.configProvider.update((cfg) => (cfg.wasmDsp = target.wasmDsp));
+    this.needsReload = true;
+  }
+
+  private onGpsSourceChange(e: Event) {
+    const target = e.target as RrSettings;
+    this.gpsSource = target.gpsSource;
+    // Phone GPS and "off" apply immediately; G-MOUSE waits for "Connect GPS…" (needs a click).
+    if (target.gpsSource !== "gmouse") gps.start(target.gpsSource);
+    else gps.stop();
+  }
+
+  private onGpsConnect() {
+    gps.start(this.gpsSource, { pickPort: true });
+  }
+
+  private onInstallApp() {
+    promptInstallApp();
   }
 
   protected firstUpdated(changed: PropertyValues): void {
@@ -379,6 +514,10 @@ export class RadioReceiverMain extends LitElement {
     this.setPpm(cfg.ppm);
     this.setFftSize(cfg.fftSize);
     this.enableBiasTee(cfg.biasTee);
+    this.sdrKind = cfg.device;
+    this.hackrfAmp = cfg.hackrfAmp;
+    this.wasmDsp = cfg.wasmDsp;
+    this.maxFrequency = cfg.device === "hackrf" ? 6_000_000_000 : 1_800_000_000;
     this.fmDeemph = cfg.fmDeemph;
     this.performanceTradeoff = cfg.performanceTradeoff;
     this.minDecibels = cfg.minDecibels;
@@ -820,9 +959,18 @@ export class RadioReceiverMain extends LitElement {
 
   private onRadioEvent(e: RadioEvent) {
     switch (e.detail.type) {
-      case "started":
+      case "started": {
         this.playing = true;
+        // The device may run at a different rate than requested (HackRF: 2–20 Msps).
+        const actual = this.radio.getSampleRate();
+        if (actual !== this.bandwidth) {
+          this.bandwidth = actual;
+          this.sampleRate = actual;
+          this.configProvider.update((cfg) => (cfg.sampleRate = actual));
+          this.setTunedFrequency(this.frequency.center + this.frequency.offset);
+        }
         break;
+      }
       case "stopped":
         this.playing = false;
         break;

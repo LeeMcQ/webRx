@@ -1,9 +1,35 @@
 {
-  "name": "Radio Receiver",
+  "id": "./",
+  "name": "webRx Radio Receiver",
+  "short_name": "webRx",
+  "description": "Software-defined radio in the browser for RTL-SDR and HackRF, with an RF monitoring dashboard and GPS-tagged logging.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "categories": ["utilities", "productivity"],
   "icons": [
+    { "src": "./icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "./icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "./icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" },
     { "src": "./favicon.png", "type": "image/png", "sizes": "120x120" }
   ],
-  "start_url": "./",
-  "display": "standalone",
+  "shortcuts": [
+    {
+      "name": "Radio receiver",
+      "short_name": "Receiver",
+      "url": "./index.html",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "MMN monitor",
+      "short_name": "Monitor",
+      "url": "./thesis-view.html",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
   "prefer_related_applications": false
 }

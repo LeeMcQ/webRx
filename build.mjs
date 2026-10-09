@@ -5,6 +5,7 @@ import { glob } from "glob";
 import esbuildPluginTsc from "esbuild-plugin-tsc";
 import { program } from "commander";
 import buildCommands from "./build_settings.mjs";
+import { wasmDspPlugin } from "./build_dsp_plugin.mjs";
 
 program.option("--clean", "Clean output directory");
 program.option("--dist", "Enable distribution mode");
@@ -38,11 +39,13 @@ async function compile(src) {
       ".html": "copy",
       ".json": "copy",
       ".png": "copy",
+      ".wasm": "copy",
       ".ttf": "file",
       ".woff": "file",
       ".woff2": "file",
     },
-    plugins: [esbuildPluginTsc({ force: true })],
+    // The WASM shim plugin must run first so it can redirect the DSP modules.
+    plugins: [wasmDspPlugin(), esbuildPluginTsc({ force: true })],
   });
 }
 
@@ -110,7 +113,7 @@ async function main() {
     });
   }
 
-  if (actions.build) run(buildCommands);
+  if (actions.build) await run(buildCommands);
 }
 
 main();

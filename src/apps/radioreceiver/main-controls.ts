@@ -51,6 +51,54 @@ export class RrMainControls extends WindowDelegate(LitElement) {
           }
         }
 
+        .status {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-bottom: 6px;
+          max-width: 46ch;
+        }
+
+        .chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          font-size: 0.78em;
+          line-height: 1.2;
+          padding: 3px 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(127, 127, 127, 0.35);
+          background: rgba(127, 127, 127, 0.08);
+          color: inherit;
+          cursor: pointer;
+          text-decoration: none;
+          white-space: nowrap;
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          min-height: 0;
+        }
+
+        .dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: #94a3b8;
+          flex: none;
+        }
+
+        .dot.ok {
+          background: #22c55e;
+        }
+
+        .dot.warn {
+          background: #f59e0b;
+        }
+
+        .dot.err {
+          background: #ef4444;
+        }
+
         label[for="centerFrequency"],
         label[for="tunedFrequency"],
         label[for="tuningStep"] {
@@ -99,12 +147,26 @@ export class RrMainControls extends WindowDelegate(LitElement) {
             ><button id="help">${Icons.Help}</button></a
           >`
         : nothing}
+      <div class="status">
+        <button class="chip" id="deviceChip" title="Device settings" @click=${this.onSettings}>
+          <span class="dot ${this.playing ? "ok" : ""}"></span>${this.deviceLabel}
+        </button>
+        <button class="chip" id="dspChip" title="DSP engine" @click=${this.onSettings}>
+          <span class="dot ${this.dspActive ? "ok" : "warn"}"></span>${this.dspActive ? "Rust/WASM DSP" : "JS DSP"}
+        </button>
+        <button class="chip" id="gpsChip" title="GPS settings" @click=${this.onSettings}>
+          <span class="dot ${this.gpsState}"></span>${this.gpsLabel}
+        </button>
+        <a class="chip" id="monitorLink" href="thesis-view.html" title="Open the MMN monitor"
+          >📊 Monitor</a
+        >
+      </div>
       <div>
         <label for="centerFrequency">Center frequency: </label
         ><rr-frequency-input
           id="centerFrequency"
           .min=${0}
-          .max=${1800000000}
+          .max=${this.maxFrequency}
           .frequency=${this.centerFrequency}
           .scale=${this.scale}
           .step=${this.tuningStep}
@@ -116,8 +178,8 @@ export class RrMainControls extends WindowDelegate(LitElement) {
         <label for="tunedFrequency">Tuned frequency: </label
         ><rr-frequency-input
           id="tunedFrequency"
-          min=${0}
-          max=${1800000000}
+          .min=${0}
+          .max=${this.maxFrequency}
           .frequency=${this.tunedFrequency}
           .scale=${this.scale}
           .step=${this.tuningStep}
@@ -229,6 +291,11 @@ export class RrMainControls extends WindowDelegate(LitElement) {
   @property({ attribute: false }) stereoStatus: boolean = false;
   @property({ attribute: false }) gain: number | null = null;
   @property({ attribute: false }) gainDisabled: boolean = false;
+  @property({ attribute: false }) maxFrequency: number = 1800000000;
+  @property({ attribute: false }) deviceLabel: string = "No SDR";
+  @property({ attribute: false }) dspActive: boolean = false;
+  @property({ attribute: false }) gpsLabel: string = "GPS off";
+  @property({ attribute: false }) gpsState: "" | "ok" | "warn" | "err" = "";
   @state() private savedGain: number = 0;
   @query("rr-window") protected window?: RrWindow;
 
