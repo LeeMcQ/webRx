@@ -1,5 +1,8 @@
-// MMN Map Visualizer — opens signal-level recordings as a heatmap, a coloured
-// route, an interpolated coverage estimate, or a transmitter location estimate.
+// MMN Map Visualizer — opens signal-level recordings as a heatmap, pins
+// coloured by level (the thesis scatter map), an interpolated coverage estimate
+// (natural neighbour, as in the thesis) or a transmitter location estimate,
+// with the calibrated noise-floor threshold applied (thesis §4.3.4) and the
+// licensed-vs-measured coverage comparison of §4.3.5.
 // Recordings come from the Monitor (saved on this device), from CSV files
 // (picker, drag & drop, desktop "Open with"), or shared from other Android apps.
 
@@ -20,6 +23,8 @@ import {
   toCsv,
 } from "../../storage/recordings.js";
 import { gps } from "../../gps/gps.js";
+import { inverseDistance, jet, jetCss, jetGradient, makeGrid, naturalNeighbour } from "./interp.js";
+import { compareCoverage, compassName, parseSite } from "./licence.js";
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 
 type View = "heat" | "route" | "coverage" | "source";
@@ -45,7 +50,20 @@ let nextFileIndex = 0;
 const prefs = loadPrefs();
 
 function loadPrefs() {
-  const d = { view: "heat" as View, measure: "", colourMode: "gradient", heatRadius: 25, grid: 60, reach: 200, topPct: 25 };
+  const d = {
+    view: "heat" as View,
+    measure: "",
+    colourMode: "gradient",
+    heatRadius: 25,
+    grid: 60,
+    reach: 200,
+    topPct: 25,
+    nf: "above" as "above" | "all" | "below",
+    nfFloor: null as number | null,
+    nfGuard: 5,
+    method: "nn" as "nn" | "idw",
+    joinRoute: false,
+  };
   try {
     return { ...d, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") };
   } catch (_) {
@@ -77,9 +95,9 @@ new ResizeObserver(() => map.invalidateSize()).observe($("map"));
 
 // ── colours ────────────────────────────────────────────────────
 
+/** MATLAB jet scale, as on the thesis maps. */
 function gradient(t: number): string {
-  const x = Math.max(0, Math.min(1, t));
-  return `hsl(${240 - x * 240}, 85%, ${45 + x * 10}%)`;
+  return jetCss(t);
 }
 function classic(v: number): string {
   return v > -35 ? "#ff0000" : v > -40 ? "#ffaa00" : v > -45 ? "#00cc00" : "#0099ff";
@@ -181,15 +199,41 @@ function candidates(): MapPoint[] {
   );
 }
 
+/** Threshold entered by hand for files recorded without a calibration. */
+function manualThreshold(): number | undefined {
+  return prefs.nfFloor !== null && Number.isFinite(prefs.nfFloor) ? prefs.nfFloor + (Number(prefs.nfGuard) || 0) : undefined;
+}
+
+/** Above the noise-floor threshold? undefined when neither a calibration nor a manual threshold applies. */
+function verdict(p: MapPoint): boolean | undefined {
+  if (p.above !== undefined) return p.above;
+  if (p.threshold !== undefined) {
+    const v = p.values.band_mean_level_db ?? p.values[measureKey()];
+    return Number.isFinite(v) ? v >= p.threshold : undefined;
+  }
+  const thr = manualThreshold();
+  if (thr === undefined) return undefined;
+  const v = p.values[measureKey()];
+  return Number.isFinite(v) ? v >= thr : undefined;
+}
+
+function passesNoiseFloor(p: MapPoint): boolean {
+  if (prefs.nf === "all") return true;
+  const a = verdict(p);
+  return prefs.nf === "above" ? a !== false : a === false;
+}
+
 function shown(): MapPoint[] {
   const key = measureKey();
-  return candidates().filter((p) => p.values[key] >= lo && p.values[key] <= hi);
+  return candidates().filter((p) => p.values[key] >= lo && p.values[key] <= hi && passesNoiseFloor(p));
 }
 
 function autoRange() {
   updateUnits();
   const key = measureKey();
-  const vals = candidates().map((p) => p.values[key]);
+  // Scale the colours to what's plotted (e.g. only the pins above the noise floor).
+  let vals = candidates().filter(passesNoiseFloor).map((p) => p.values[key]);
+  if (!vals.length) vals = candidates().map((p) => p.values[key]);
   if (!vals.length) return;
   dataMin = Math.floor(Math.min(...vals));
   dataMax = Math.ceil(Math.max(...vals));
@@ -254,11 +298,19 @@ function popupHtml(p: MapPoint): string {
     p.freqHz ? `${(p.freqHz / 1e6).toFixed(3)} MHz` : "",
     p.device ?? "",
     p.accuracyM !== undefined ? `GPS ±${p.accuracyM.toFixed(0)} m` : "",
+    p.spacingM !== undefined ? `${p.spacingM.toFixed(1)} m from the previous pin` : "",
+    p.samples !== undefined ? `${p.samples} spectra averaged` : "",
     ds ? `${ds.name} · row ${p.row}` : "",
   ]
     .filter(Boolean)
     .join("<br>");
-  return `${vals}<br><span style="color:#8a9bb5">${extra}<br>${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}</span>`;
+  const a = verdict(p);
+  const thr = p.threshold ?? manualThreshold();
+  const nf =
+    a === undefined
+      ? ""
+      : `<br><span style="color:${a ? "#4ade80" : "#94a3b8"}">${a ? "Above" : "Below"} the noise-floor threshold (${thr?.toFixed(1)})</span>`;
+  return `${vals}${nf}<br><span style="color:#8a9bb5">${extra}<br>${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}</span>`;
 }
 
 function render() {
@@ -267,8 +319,19 @@ function render() {
   const pts = shown();
   $("sourceResult").textContent = "";
   updateLegend(pts.length > 0);
+  updateNoiseFloorInfo();
+  drawTimeline();
+  renderTx();
   if (!pts.length) {
-    status(datasets.length ? "No points in this range — try Auto range" : "Open a recording to begin");
+    status(
+      !datasets.length
+        ? "Open a recording to begin"
+        : prefs.nf === "below"
+          ? "No pins below the noise floor"
+          : candidates().length
+            ? "No pins in this range — try Auto range or All pins"
+            : "No points in this range — try Auto range"
+    );
     updateSummary(pts);
     return;
   }
@@ -281,13 +344,13 @@ function render() {
         blur: Math.round(prefs.heatRadius * 0.6),
         max: 1,
         minOpacity: 0.35,
-        gradient: { 0: "#2b2bd9", 0.35: "#16c2c2", 0.6: "#2fd12f", 0.8: "#e6d21f", 1: "#e63232" },
+        gradient: { 0: "#000080", 0.15: "#0000ff", 0.35: "#00ffff", 0.6: "#ffff00", 0.85: "#ff0000", 1: "#800000" },
       })
       .addTo(map);
     status(`${pts.length} points · heatmap`);
   } else if (view === "route") {
     drawRoute(pts, key);
-    status(`${pts.length} points · route`);
+    status(`${pts.length} pins`);
   } else if (view === "coverage") {
     drawCoverage(pts, key);
   } else {
@@ -299,10 +362,21 @@ function render() {
   if (missing > 0 && !filtered) {
     status(`${$("status").textContent} · ${missing} other points have no “${measures.find((m) => m.key === key)?.label ?? key}”`);
   }
+  const hiddenBelow = prefs.nf === "above" ? candidates().filter((p) => verdict(p) === false).length : 0;
+  if (hiddenBelow) status(`${$("status").textContent} · ${hiddenBelow} below the noise floor hidden`);
   updateSummary(pts);
 }
 
 function drawRoute(pts: MapPoint[], key: string) {
+  if (prefs.joinRoute) drawRouteLines(pts, key);
+  for (const p of pts) {
+    L.circleMarker([p.lat, p.lon], { radius: 6, color: "#0b1220", weight: 1.2, fillColor: colourFor(p.values[key]), fillOpacity: 0.95 })
+      .bindPopup(() => popupHtml(p))
+      .addTo(dataLayer);
+  }
+}
+
+function drawRouteLines(pts: MapPoint[], key: string) {
   const byFile = new Map<number, MapPoint[]>();
   for (const p of pts) {
     if (!byFile.has(p.file)) byFile.set(p.file, []);
@@ -319,83 +393,53 @@ function drawRoute(pts: MapPoint[], key: string) {
           [a.lat, a.lon],
           [b.lat, b.lon],
         ],
-        { color: colourFor(b.values[key]), weight: 5, opacity: 0.85, interactive: false }
+        { color: colourFor(b.values[key]), weight: 4, opacity: 0.6, interactive: false }
       ).addTo(dataLayer);
     }
-  }
-  for (const p of pts) {
-    L.circleMarker([p.lat, p.lon], { radius: 6, color: "#0b1220", weight: 1.5, fillColor: colourFor(p.values[key]), fillOpacity: 0.95 })
-      .bindPopup(() => popupHtml(p))
-      .addTo(dataLayer);
   }
 }
 
 function drawCoverage(pts: MapPoint[], key: string) {
   const n = Number(prefs.grid) || 60;
-  const reach = Number(prefs.reach) || 300;
+  const reach = Number(prefs.reach) || 200;
   const P = projector(pts);
   const xy = pts.map((p) => ({ x: P.x(p.lon), y: P.y(p.lat), v: p.values[key] }));
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const q of xy) {
-    minX = Math.min(minX, q.x);
-    maxX = Math.max(maxX, q.x);
-    minY = Math.min(minY, q.y);
-    maxY = Math.max(maxY, q.y);
-  }
-  const pad = Math.max(reach * 0.5, 0.05 * Math.max(maxX - minX, maxY - minY));
-  minX -= pad;
-  maxX += pad;
-  minY -= pad;
-  maxY += pad;
-  const cell = Math.max((maxX - minX) / n, (maxY - minY) / n, 1);
-  // Bucket points by `reach` so each cell only looks at nearby measurements.
-  const buckets = new Map<string, typeof xy>();
-  const bk = (x: number, y: number) => `${Math.floor(x / reach)},${Math.floor(y / reach)}`;
-  for (const q of xy) {
-    const k = bk(q.x, q.y);
-    if (!buckets.has(k)) buckets.set(k, []);
-    buckets.get(k)!.push(q);
-  }
+  const t0 = performance.now();
+  const g0 = makeGrid(xy, n, reach * 0.5);
+  const grid = prefs.method === "idw" ? inverseDistance(xy, g0, reach) : naturalNeighbour(xy, g0, reach);
+  const ms = Math.round(performance.now() - t0);
+  // Paint the grid into an image (north up) and lay it over the map.
+  const cv = document.createElement("canvas");
+  cv.width = grid.nx;
+  cv.height = grid.ny;
+  const ctx = cv.getContext("2d")!;
+  const img = ctx.createImageData(grid.nx, grid.ny);
+  const span = Math.max(1e-6, hi - lo);
   let cells = 0;
-  for (let y = minY; y < maxY; y += cell) {
-    for (let x = minX; x < maxX; x += cell) {
-      const cx = x + cell / 2;
-      const cy = y + cell / 2;
-      const bx = Math.floor(cx / reach);
-      const by = Math.floor(cy / reach);
-      let sw = 0;
-      let sv = 0;
-      for (let i = -1; i <= 1; i++)
-        for (let j = -1; j <= 1; j++) {
-          const list = buckets.get(`${bx + i},${by + j}`);
-          if (!list) continue;
-          for (const q of list) {
-            const d2 = (q.x - cx) ** 2 + (q.y - cy) ** 2;
-            if (d2 > reach * reach) continue;
-            const w = 1 / (d2 + 25);
-            sw += w;
-            sv += w * q.v;
-          }
-        }
-      if (!sw) continue;
-      const v = sv / sw;
-      L.rectangle(
-        [
-          [P.lat(y), P.lon(x)],
-          [P.lat(y + cell), P.lon(x + cell)],
-        ],
-        { stroke: false, fillColor: gradient((v - lo) / Math.max(1e-6, hi - lo)), fillOpacity: 0.5, interactive: false }
-      ).addTo(dataLayer);
+  for (let j = 0; j < grid.ny; j++)
+    for (let i = 0; i < grid.nx; i++) {
+      const v = grid.values[j * grid.nx + i];
+      if (!Number.isFinite(v)) continue;
+      const [r, g, b] = jet((v - lo) / span);
+      const o = ((grid.ny - 1 - j) * grid.nx + i) * 4;
+      img.data[o] = r;
+      img.data[o + 1] = g;
+      img.data[o + 2] = b;
+      img.data[o + 3] = 255;
       cells++;
     }
-  }
+  ctx.putImageData(img, 0, 0);
+  const bounds = L.latLngBounds(
+    [P.lat(grid.y0), P.lon(grid.x0)],
+    [P.lat(grid.y0 + grid.ny * grid.cell), P.lon(grid.x0 + grid.nx * grid.cell)]
+  );
+  L.imageOverlay(cv.toDataURL(), bounds, { opacity: 0.6, interactive: false, className: "smooth" }).addTo(dataLayer);
   for (const p of pts) {
     L.circleMarker([p.lat, p.lon], { radius: 2.5, stroke: false, fillColor: "#e2e8f0", fillOpacity: 0.9 }).bindPopup(() => popupHtml(p)).addTo(dataLayer);
   }
-  status(`Coverage estimate · ${cells} cells of ${Math.round(cell)} m · from ${pts.length} points`);
+  status(
+    `${prefs.method === "idw" ? "Inverse distance" : "Natural neighbour"} · ${cells} cells of ${Math.round(grid.cell)} m from ${pts.length} pins · ${ms} ms`
+  );
 }
 
 function drawSource(pts: MapPoint[], key: string) {
@@ -456,6 +500,9 @@ function updateLegend(show: boolean) {
   if (!show) return;
   const m = measures.find((x) => x.key === measureKey());
   const classicMode = prefs.colourMode === "classic" && view === "route";
+  (lg.querySelector(".bar") as HTMLElement).style.background = classicMode
+    ? "linear-gradient(90deg, #0099ff 0 25%, #00cc00 25% 50%, #ffaa00 50% 75%, #ff0000 75%)"
+    : jetGradient();
   $("legendTitle").textContent = `${m?.label ?? "Level"}${classicMode ? " · classic steps" : ""}`;
   $("legendLo").textContent = classicMode ? "≤ −45" : `${lo.toFixed(1)} ${units}`;
   $("legendHi").textContent = classicMode ? "> −35 dBm" : `${hi.toFixed(1)} ${units}`;
@@ -479,6 +526,7 @@ function updateSummary(pts: MapPoint[]) {
   const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : NaN;
   const rows: [string, string][] = [
     ["Points shown", `${pts.length} of ${candidates().length}`],
+    ["Above noise floor", aboveText()],
     ["Files", String(datasets.filter((d) => d.visible).length)],
     ["Minimum", vals.length ? `${Math.min(...vals).toFixed(1)} ${units}` : "—"],
     ["Mean", vals.length ? `${mean.toFixed(1)} ${units}` : "—"],
@@ -489,6 +537,193 @@ function updateSummary(pts: MapPoint[]) {
   $("summary").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
   const total = allPoints().length;
   $("chipPoints").textContent = `${total} point${total === 1 ? "" : "s"} · ${datasets.length} file${datasets.length === 1 ? "" : "s"}`;
+}
+
+function aboveText(): string {
+  const c = candidates();
+  const known = c.filter((p) => verdict(p) !== undefined);
+  if (!known.length) return "no threshold";
+  const up = known.filter((p) => verdict(p)).length;
+  return `${up} of ${known.length} (${Math.round((up / known.length) * 100)}%)`;
+}
+
+/** Explains which threshold applies, and the storage saving of keeping only pins above it (§4.3.4). */
+function updateNoiseFloorInfo() {
+  document.querySelectorAll<HTMLButtonElement>("[data-nf]").forEach((b) => b.classList.toggle("on", b.dataset.nf === prefs.nf));
+  const m = manualThreshold();
+  $("nfThr").textContent = m !== undefined ? `${m.toFixed(1)} ${units}` : "—";
+  const c = candidates();
+  const calibrated = c.filter((p) => p.threshold !== undefined);
+  const thresholds = [...new Set(calibrated.map((p) => p.threshold!.toFixed(1)))];
+  const known = c.filter((p) => verdict(p) !== undefined);
+  const below = known.filter((p) => verdict(p) === false).length;
+  const parts: string[] = [];
+  if (calibrated.length) {
+    const nf = calibrated.find((p) => p.noiseFloor !== undefined)?.noiseFloor;
+    parts.push(
+      `${calibrated.length} pins carry a calibration: threshold ${thresholds.length === 1 ? thresholds[0] : thresholds.join(" / ")} ${units}` +
+        (nf !== undefined && thresholds.length === 1 ? ` (noise floor ${nf.toFixed(1)} + ${(Number(thresholds[0]) - nf).toFixed(1)} dB)` : "") +
+        "."
+    );
+  }
+  const uncal = c.length - calibrated.length;
+  if (uncal) parts.push(m !== undefined ? `${uncal} pins without a calibration use ${m.toFixed(1)} ${units}.` : `${uncal} pins have no calibration — enter their noise floor above to filter them.`);
+  if (known.length) parts.push(`${below} of ${known.length} pins (${Math.round((below / known.length) * 100)}%) are below the threshold — keeping only those above saves that much storage.`);
+  $("nfInfo").textContent = parts.join(" ");
+}
+
+// ── timeline (thesis Data Viewer, Appendix A-4) ─────────────────
+
+let timelinePts: { p: MapPoint; x: number }[] = [];
+
+function drawTimeline() {
+  const cv = $<HTMLCanvasElement>("timeline");
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(1, Math.round(cv.clientWidth * dpr));
+  const H = Math.max(1, Math.round(cv.clientHeight * dpr));
+  if (cv.width !== W || cv.height !== H) {
+    cv.width = W;
+    cv.height = H;
+  }
+  const ctx = cv.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+  const key = measureKey();
+  const pts = candidates().filter((p) => p.values[key] >= lo && p.values[key] <= hi);
+  timelinePts = [];
+  ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+  if (pts.length < 2) {
+    ctx.fillStyle = "#64748b";
+    ctx.fillText("Level over time appears here", 8 * dpr, 18 * dpr);
+    return;
+  }
+  const timed = pts.every((p) => p.t !== undefined);
+  const xs = timed ? pts.map((p) => p.t!) : pts.map((_, i) => i);
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const left = 34 * dpr;
+  const bottom = 14 * dpr;
+  const pw = W - left - 6 * dpr;
+  const ph = H - bottom - 6 * dpr;
+  const X = (v: number) => left + ((v - x0) / Math.max(1e-9, x1 - x0)) * pw;
+  const Y = (v: number) => 6 * dpr + (1 - (v - lo) / Math.max(1e-6, hi - lo)) * ph;
+  ctx.strokeStyle = "rgba(148,163,184,0.15)";
+  ctx.fillStyle = "#64748b";
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + ((hi - lo) * k) / 4;
+    ctx.beginPath();
+    ctx.moveTo(left, Math.round(Y(v)) + 0.5);
+    ctx.lineTo(left + pw, Math.round(Y(v)) + 0.5);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(0), 2 * dpr, Y(v) + 3 * dpr);
+  }
+  if (timed) {
+    const f = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    ctx.fillText(f(x0), left, H - 2 * dpr);
+    const e = f(x1);
+    ctx.fillText(e, left + pw - ctx.measureText(e).width, H - 2 * dpr);
+  }
+  const thr = pts.find((p) => p.threshold !== undefined)?.threshold ?? manualThreshold();
+  if (thr !== undefined && thr >= lo && thr <= hi) {
+    ctx.save();
+    ctx.setLineDash([5 * dpr, 4 * dpr]);
+    ctx.strokeStyle = "#f87171";
+    ctx.beginPath();
+    ctx.moveTo(left, Y(thr));
+    ctx.lineTo(left + pw, Y(thr));
+    ctx.stroke();
+    ctx.restore();
+  }
+  const r = Math.max(1.5, Math.min(3, 600 / pts.length)) * dpr;
+  pts.forEach((p, i) => {
+    const x = X(xs[i]);
+    const y = Y(p.values[key]);
+    const below = verdict(p) === false;
+    ctx.fillStyle = below ? "#475569" : gradient((p.values[key] - lo) / Math.max(1e-6, hi - lo));
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    timelinePts.push({ p, x: x / dpr });
+  });
+}
+
+// ── licensed vs measured coverage (§4.3.5) ─────────────────────
+
+const TX_KEY = "webrx.map.tx";
+type Tx = { name: string; site: string; radiusKm: number | null };
+let tx: Tx = (() => {
+  try {
+    return { name: "", site: "", radiusKm: null, ...JSON.parse(localStorage.getItem(TX_KEY) || "{}") };
+  } catch (_) {
+    return { name: "", site: "", radiusKm: null };
+  }
+})();
+const txLayer = L.layerGroup().addTo(map);
+
+function saveTx() {
+  try {
+    localStorage.setItem(TX_KEY, JSON.stringify(tx));
+  } catch (_) {}
+}
+
+function sectorWedge(site: { lat: number; lon: number }, fromDeg: number, toDeg: number, radiusM: number): [number, number][] {
+  const out: [number, number][] = [[site.lat, site.lon]];
+  const kLat = 1 / 110_540;
+  const kLon = 1 / (111_320 * Math.cos((site.lat * Math.PI) / 180));
+  for (let a = fromDeg; a <= toDeg + 1e-9; a += (toDeg - fromDeg) / 8) {
+    const r = (a * Math.PI) / 180;
+    out.push([site.lat + Math.cos(r) * radiusM * kLat, site.lon + Math.sin(r) * radiusM * kLon]);
+  }
+  return out;
+}
+
+function renderTx() {
+  txLayer.clearLayers();
+  const box = $("txResult");
+  if (!tx.site.trim()) {
+    box.innerHTML = "";
+    return;
+  }
+  const site = parseSite(tx.site);
+  if (!site) {
+    box.innerHTML = `<span class="caveat">Couldn't read the site position. Use e.g. 18E42 02 / 33S27 55 or −33.4653, 18.7006.</span>`;
+    return;
+  }
+  const R = (tx.radiusKm ?? 0) * 1000;
+  const name = tx.name.trim() || "Transmitter";
+  L.marker([site.lat, site.lon], { icon: L.divIcon({ className: "pin", html: "🗼", iconSize: [30, 30], iconAnchor: [15, 26] }) })
+    .bindPopup(`<b>${esc(name)}</b><br>${site.lat.toFixed(5)}, ${site.lon.toFixed(5)}${R ? `<br>Licensed coverage radius ${tx.radiusKm} km` : ""}`)
+    .addTo(txLayer);
+  if (R) L.circle([site.lat, site.lon], { radius: R, color: "#f59e0b", weight: 2, dashArray: "8 6", fill: false, interactive: false }).addTo(txLayer);
+  const pins = candidates().map((p) => ({ lat: p.lat, lon: p.lon, above: verdict(p) !== false }));
+  if (!pins.length) {
+    box.textContent = "Load a recording to compare.";
+    return;
+  }
+  const c = compareCoverage(site, R, pins);
+  const step = 360 / c.sectors;
+  c.reachM.forEach((r, s) => {
+    if (!Number.isFinite(r)) return;
+    const beyond = R > 0 && r > R;
+    L.polygon(sectorWedge(site, s * step - step / 2, s * step + step / 2, r), {
+      stroke: false,
+      fillColor: beyond ? "#22d3ee" : "#60a5fa",
+      fillOpacity: 0.16,
+      interactive: false,
+    }).addTo(txLayer);
+  });
+  const km = (m: number) => `${(m / 1000).toFixed(m < 10_000 ? 2 : 1)} km`;
+  const pct = (x: number) => `${x >= 0 ? "+" : "−"}${Math.abs(Math.round(x * 100))}%`;
+  const driven = c.driven.filter(Boolean).length;
+  const lines = [
+    `Furthest pin above the noise floor: <b>${km(c.furthestM)}</b> ${Number.isFinite(c.furthestBearing) ? compassName(c.furthestBearing) : ""} of the site.`,
+  ];
+  if (R) {
+    lines.push(`Licensed radius ${km(R)} → measured reach <b>${pct(c.reachDelta)}</b>.`);
+    lines.push(`Pins above the noise floor beyond the licensed radius: <b>${c.beyondCount} of ${c.aboveCount}</b> (${c.aboveCount ? Math.round((c.beyondCount / c.aboveCount) * 100) : 0}%).`);
+    lines.push(`Measured coverage area over the ${driven} of ${c.sectors} directions driven: <b>${pct(c.areaDelta)}</b> vs the licence.`);
+  } else lines.push(`Enter the licensed coverage radius to compare.`);
+  lines.push(`<span class="hint">Shaded wedges: furthest above-threshold pin per direction (light blue beyond the licensed circle). Directions not driven are left out.</span>`);
+  box.innerHTML = lines.join("<br>");
 }
 
 function fit() {
@@ -645,7 +880,7 @@ function exportShown() {
     status("Nothing to export in this view");
     return;
   }
-  const cols = ["timestamp", "file", "device", "center_freq_hz", "latitude", "longitude", "gps_accuracy_m", ...measures.map((m) => m.key), "units"];
+  const cols = ["timestamp", "file", "device", "center_freq_hz", "latitude", "longitude", "gps_accuracy_m", ...measures.map((m) => m.key), "units", "threshold_db", "above_threshold"];
   const rows = pts.map((p) => {
     const r: Record<string, string | number> = {
       timestamp: p.t !== undefined ? new Date(p.t).toISOString() : "",
@@ -656,6 +891,8 @@ function exportShown() {
       longitude: p.lon.toFixed(6),
       gps_accuracy_m: p.accuracyM ?? "",
       units,
+      threshold_db: (p.threshold ?? manualThreshold())?.toFixed(2) ?? "",
+      above_threshold: verdict(p) === undefined ? "" : verdict(p) ? 1 : 0,
     };
     for (const m of measures) r[m.key] = Number.isFinite(p.values[m.key]) ? p.values[m.key] : "";
     return r;
@@ -789,6 +1026,88 @@ export async function initMap() {
     prefs.grid = Number(grid.value);
     savePrefs();
     render();
+  });
+  // Noise floor (§4.3.4)
+  document.querySelectorAll<HTMLButtonElement>("[data-nf]").forEach((b) =>
+    b.addEventListener("click", () => {
+      prefs.nf = b.dataset.nf as typeof prefs.nf;
+      savePrefs();
+      if (!manualRange) autoRange();
+      render();
+    })
+  );
+  const nfFloor = $<HTMLInputElement>("nfFloor");
+  const nfGuard = $<HTMLInputElement>("nfGuard");
+  nfFloor.value = prefs.nfFloor !== null ? String(prefs.nfFloor) : "";
+  nfGuard.value = String(prefs.nfGuard);
+  const onNf = () => {
+    const f = parseFloat(nfFloor.value.replace("−", "-"));
+    prefs.nfFloor = Number.isFinite(f) ? f : null;
+    const g = parseFloat(nfGuard.value);
+    prefs.nfGuard = Number.isFinite(g) ? g : 5;
+    savePrefs();
+    if (!manualRange) autoRange();
+    render();
+  };
+  nfFloor.addEventListener("change", onNf);
+  nfGuard.addEventListener("change", onNf);
+  const method = $<HTMLSelectElement>("covMethod");
+  method.value = prefs.method;
+  method.addEventListener("change", () => {
+    prefs.method = method.value === "idw" ? "idw" : "nn";
+    savePrefs();
+    render();
+  });
+  const join = $<HTMLInputElement>("joinRoute");
+  join.checked = !!prefs.joinRoute;
+  join.addEventListener("change", () => {
+    prefs.joinRoute = join.checked;
+    savePrefs();
+    render();
+  });
+  // Timeline: tap to find the pin.
+  const tl = $<HTMLCanvasElement>("timeline");
+  tl.addEventListener("click", (e) => {
+    if (!timelinePts.length) return;
+    const x = e.clientX - tl.getBoundingClientRect().left;
+    let best = timelinePts[0];
+    for (const t of timelinePts) if (Math.abs(t.x - x) < Math.abs(best.x - x)) best = t;
+    map.setView([best.p.lat, best.p.lon], Math.max(map.getZoom(), 16));
+    L.popup().setLatLng([best.p.lat, best.p.lon]).setContent(popupHtml(best.p)).openOn(map);
+  });
+  new ResizeObserver(() => drawTimeline()).observe(tl);
+  // Licensed vs measured (§4.3.5)
+  const txName = $<HTMLInputElement>("txName");
+  const txSite = $<HTMLInputElement>("txSite");
+  const txRadius = $<HTMLInputElement>("txRadius");
+  txName.value = tx.name;
+  txSite.value = tx.site;
+  txRadius.value = tx.radiusKm !== null ? String(tx.radiusKm) : "";
+  const applyTx = (fitToo: boolean) => {
+    const r = parseFloat(txRadius.value);
+    tx = { name: txName.value, site: txSite.value, radiusKm: Number.isFinite(r) && r > 0 ? r : null };
+    saveTx();
+    renderTx();
+    const site = parseSite(tx.site);
+    if (fitToo && site) {
+      const pts = candidates();
+      const b = L.latLngBounds([[site.lat, site.lon]]);
+      for (const p of pts) b.extend([p.lat, p.lon]);
+      if (tx.radiusKm) b.extend(L.latLng(site.lat, site.lon).toBounds(tx.radiusKm * 2000));
+      map.fitBounds(b.pad(0.08), { maxZoom: 15 });
+    }
+  };
+  $("txApply").addEventListener("click", () => applyTx(true));
+  for (const el of [txName, txSite, txRadius]) el.addEventListener("change", () => applyTx(false));
+  $("txExample").addEventListener("click", () => {
+    txName.value = "100.1 FM Malmesbury (thesis Table 4.1)";
+    txSite.value = "18E42 02 / 33S27 55";
+    applyTx(true);
+    if (!txRadius.value) txRadius.focus();
+  });
+  $("txClear").addEventListener("click", () => {
+    txName.value = txSite.value = txRadius.value = "";
+    applyTx(false);
   });
   bindRange("heatRadius", "heatRadius", "heatRadiusVal", (v) => `${v} px`);
   bindRange("reach", "reach", "reachVal", (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} km` : `${v} m`));

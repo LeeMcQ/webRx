@@ -48,6 +48,7 @@
         .side { max-height: none; overflow: visible; }
         header { position: static; flex-wrap: nowrap; }
         .brand small { display: none; }
+        .brand { flex: none; }
         .brand b { white-space: nowrap; }
         .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-width: 0; }
         .chips::-webkit-scrollbar { display: none; }
@@ -88,6 +89,17 @@
       .seg button.on { background: var(--accent); color: #fff; }
       .opts { margin-top: 10px; }
       .opts[hidden] { display: none; }
+      [hidden] { display: none !important; }
+      .seg.seg3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .inline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .inline input { width: 92px; }
+      .check { display: flex; align-items: center; gap: 8px; font-size: 13px; min-height: 30px; }
+      .check input { width: 18px; height: 18px; accent-color: var(--accent); }
+      #timeline { width: 100%; height: 150px; display: block; background: #070d18; border-radius: 8px; cursor: crosshair; }
+      .txres { font-size: 13px; line-height: 1.5; margin-top: 8px; }
+      .txres b { font-variant-numeric: tabular-nums; }
+      .caveat { color: #fbbf24; }
+      .leaflet-image-layer.smooth { image-rendering: auto; }
 
       table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
       td { padding: 5px 4px; border-bottom: 1px solid var(--line); }
@@ -98,7 +110,7 @@
       .legend { position: absolute; left: 12px; bottom: 26px; z-index: 900; background: rgba(11,18,32,.88); border: 1px solid var(--line);
         border-radius: 10px; padding: 8px 10px; font: 11px var(--mono); min-width: 190px; pointer-events: none; }
       .legend .bar { height: 10px; border-radius: 5px; margin: 4px 0;
-        background: linear-gradient(90deg, hsl(240,85%,45%), hsl(180,85%,48%), hsl(120,85%,50%), hsl(60,85%,52%), hsl(0,85%,55%)); }
+        background: linear-gradient(90deg, #000080, #0000ff, #0080ff, #00ffff, #80ff80, #ffff00, #ff8000, #ff0000, #800000); }
       .legend .ends { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
       .status { position: absolute; right: 12px; top: 12px; z-index: 900; background: rgba(11,18,32,.88); border: 1px solid var(--line);
         border-radius: 10px; padding: 6px 10px; font: 12px var(--mono); max-width: 70%; }
@@ -184,11 +196,30 @@
           </div>
         </section>
 
+        <section class="card">
+          <h2>Noise floor <span class="spacer"></span><span class="hint" style="margin:0">§4.3.4</span></h2>
+          <div class="seg seg3" id="nfSeg">
+            <button data-nf="above" class="on">Above noise floor</button>
+            <button data-nf="all">All pins</button>
+            <button data-nf="below">Below only</button>
+          </div>
+          <div class="field" style="margin-top:10px">
+            <label for="nfFloor">For files without a calibration: noise floor + guard band</label>
+            <div class="inline">
+              <input id="nfFloor" type="number" step="0.1" placeholder="e.g. −25.1" inputmode="decimal" aria-label="Noise floor" />
+              <span>+</span>
+              <input id="nfGuard" type="number" step="0.5" value="5" inputmode="decimal" aria-label="Guard band (dB)" />
+              <span>dB = <b id="nfThr">—</b></span>
+            </div>
+          </div>
+          <p class="hint" id="nfInfo"></p>
+        </section>
+
         <section class="card viewcard">
           <h2>View</h2>
           <div class="seg" id="viewSeg">
             <button data-view="heat" class="on">Heatmap</button>
-            <button data-view="route">Route</button>
+            <button data-view="route">Pins</button>
             <button data-view="coverage">Coverage</button>
             <button data-view="source">Source</button>
           </div>
@@ -199,22 +230,46 @@
             <div class="field">
               <label for="colourMode">Colours</label>
               <select id="colourMode">
-                <option value="gradient">Gradient across the level range</option>
+                <option value="gradient">Jet scale across the level range (thesis maps)</option>
                 <option value="classic">Classic steps (−35 / −40 / −45 dBm)</option>
               </select>
             </div>
+            <label class="check"><input type="checkbox" id="joinRoute" /> Join pins with the route line</label>
+            <p class="hint">One pin per recorded sample, coloured by level — the scatter map of thesis Figs 4.6 and 4.8.</p>
           </div>
           <div class="opts" id="opt-coverage" hidden>
+            <div class="field"><label for="covMethod">Interpolation</label>
+              <select id="covMethod"><option value="nn">Natural neighbour (thesis Figs 4.7 / 4.9)</option><option value="idw">Inverse distance</option></select>
+            </div>
             <div class="field"><label for="gridSize">Grid detail</label>
               <select id="gridSize"><option value="40">Fast (40 × 40)</option><option value="60" selected>Normal (60 × 60)</option><option value="100">Fine (100 × 100)</option></select>
             </div>
             <div class="field"><label for="reach">Only fill within <span id="reachVal"></span> of a measurement</label><input type="range" id="reach" min="25" max="2000" step="25" value="200" /></div>
-            <p class="hint">Inverse-distance interpolation between measured points; blank where there's no nearby data.</p>
+            <p class="hint caveat">Interpolated values are calculated where nothing was measured — a picture of the trend, not a clear indication of coverage (thesis §4.2.2.2). Blank where no pin is within reach.</p>
           </div>
           <div class="opts" id="opt-source" hidden>
             <div class="field"><label for="topPct">Use the strongest <span id="topPctVal"></span> of points</label><input type="range" id="topPct" min="5" max="100" step="5" value="25" /></div>
             <div id="sourceResult" class="hint"></div>
           </div>
+        </section>
+
+        <section class="card">
+          <h2>Timeline</h2>
+          <canvas id="timeline" aria-label="Level over time"></canvas>
+          <p class="hint">Tap the chart to find that pin on the map. Dashed line: threshold.</p>
+        </section>
+
+        <section class="card">
+          <h2>Licensed vs measured coverage <span class="spacer"></span><span class="hint" style="margin:0">§4.3.5</span></h2>
+          <div class="field"><label for="txName">Station</label><input id="txName" placeholder="e.g. 100.1 FM Malmesbury" /></div>
+          <div class="field"><label for="txSite">Transmitter site (licence format or decimal)</label><input id="txSite" placeholder="18E42 02 / 33S27 55  or  −33.4653, 18.7006" /></div>
+          <div class="field"><label for="txRadius">Licensed (predicted) coverage radius, km</label><input id="txRadius" type="number" min="0" step="0.1" inputmode="decimal" /></div>
+          <div class="row">
+            <button class="btn small primary" id="txApply">Compare</button>
+            <button class="btn small ghost" id="txExample">Table 4.1 site</button>
+            <button class="btn small ghost" id="txClear">Clear</button>
+          </div>
+          <div class="txres" id="txResult"></div>
         </section>
 
         <section class="card">
@@ -226,7 +281,7 @@
 
     <div class="viewbar"><div class="seg" id="viewSegMobile">
       <button data-view="heat" class="on">Heatmap</button>
-      <button data-view="route">Route</button>
+      <button data-view="route">Pins</button>
       <button data-view="coverage">Coverage</button>
       <button data-view="source">Source</button>
     </div></div>

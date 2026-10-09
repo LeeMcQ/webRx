@@ -17,7 +17,9 @@
     "typecheck": "tsc --noEmit -p .",
     "docs": "node ./build.mjs --dist && rm -rf docs && cp -r dist/apps/radioreceiver docs",
     "test:compass": "node bench/run.mjs compass.test",
-    "test:map": "node bench/run.mjs map.test"
+    "test:map": "node bench/run.mjs map.test",
+    "test:sampling": "node bench/run.mjs sampling.test",
+    "test:coverage": "node bench/run.mjs coverage.test"
   },
   "devDependencies": {
     "browser-sync": "^3.0.3",

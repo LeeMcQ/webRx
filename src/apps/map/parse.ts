@@ -2,6 +2,8 @@
 // • webRx monitor exports (named columns, ISO timestamps, units column)
 // • older files with power/level columns, or no header at all
 // • European spreadsheet exports (semicolon delimiter, decimal comma)
+// • the thesis MATLAB Frequency Mapping tool (no header: longitude, latitude,
+//   peak, band mean, spectrum mean, MATLAB datenum time — Appendix A-2)
 // It finds the latitude/longitude and measurement columns, repairs the usual
 // coordinate mistakes (swapped columns, missing minus sign on South African
 // latitudes) and reports what it did so nothing happens silently.
@@ -17,6 +19,13 @@ export type MapPoint = {
   freqHz?: number;
   device?: string;
   accuracyM?: number;
+  /** Calibrated threshold stored with the pin (thesis §4.3.4). */
+  threshold?: number;
+  noiseFloor?: number;
+  /** Recorded verdict: band mean at or above the threshold. */
+  above?: boolean;
+  spacingM?: number;
+  samples?: number;
   file: number;
   row: number;
 };
@@ -135,8 +144,13 @@ const RX = {
   device: /^(device|source|sdr|receiver|instrument)$/,
   units: /^(units?)$/,
   acc: /(^|_)(gps_accuracy|accuracy|hacc|acc)(_|$)/,
+  threshold: /(^|_)threshold(_db)?$/,
+  noiseFloor: /(^|_)noise_floor(_db)?$/,
+  above: /^above(_threshold)?$/,
+  spacing: /^pin_spacing(_m)?$/,
+  samples: /^samples_averaged$/,
   measure: /(power|level|rssi|rsrp|rsrq|sinr|snr|dbm|dbfs|dbuv|signal|strength|field|pwr|(^|_)db($|_))/,
-  notMeasure: /(freq|calib|accuracy|altitude|(^|_)alt($|_)|sats|compass|course|heading|sample_rate|rate_hz|quality|(^|_)lat|(^|_)lon|time|units?$)/,
+  notMeasure: /(freq|calib|accuracy|altitude|(^|_)alt($|_)|sats|compass|course|heading|sample_rate|rate_hz|quality|(^|_)lat|(^|_)lon|time|units?$|threshold|noise_floor|above|spacing|samples|guard|gain|bandwidth|bw_hz)/,
 };
 
 export function prettyLabel(header: string): string {
@@ -169,10 +183,19 @@ function median(xs: number[]): number {
   return a.length ? a[Math.floor(a.length / 2)] : NaN;
 }
 
+/** MATLAB serial date number (days since year 0, laptop local time) → epoch ms. */
+export function fromDatenum(v: number): number {
+  const d = new Date((v - 719529) * 86_400_000);
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()).getTime();
+}
+
+const isDatenum = (v: number) => v >= 693_962 && v <= 767_011; // 1900–2100
+
 function parseTime(raw: string | undefined): number | undefined {
   if (!raw) return undefined;
   const s = raw.trim();
   if (!s) return undefined;
+  if (/^\d{6}(\.\d+)?$/.test(s) && isDatenum(Number(s))) return fromDatenum(Number(s));
   if (/^\d{10}(\.\d+)?$/.test(s)) return Number(s) * 1000;
   if (/^\d{13}$/.test(s)) return Number(s);
   const t = Date.parse(s.includes("T") || /\d{4}-\d{2}-\d{2} /.test(s) ? s.replace(" ", "T") : s);
@@ -241,6 +264,11 @@ export function parseMeasurementCsv(text: string, name: string, fileIndex = 0): 
   let device = -1;
   let units = -1;
   let acc = -1;
+  let thr = -1;
+  let nfl = -1;
+  let abv = -1;
+  let spc = -1;
+  let smp = -1;
   let measureCols: number[] = [];
 
   if (hasHeader) {
@@ -253,24 +281,35 @@ export function parseMeasurementCsv(text: string, name: string, fileIndex = 0): 
       else if (device < 0 && RX.device.test(n)) device = i;
       else if (units < 0 && RX.units.test(n)) units = i;
       else if (acc < 0 && RX.acc.test(n)) acc = i;
+      else if (thr < 0 && RX.threshold.test(n)) thr = i;
+      else if (nfl < 0 && RX.noiseFloor.test(n)) nfl = i;
+      else if (abv < 0 && RX.above.test(n)) abv = i;
+      else if (spc < 0 && RX.spacing.test(n)) spc = i;
+      else if (smp < 0 && RX.samples.test(n)) smp = i;
       if (RX.measure.test(n) && !RX.notMeasure.test(n) && stats[i]?.numeric > 0.5) measureCols.push(i);
     });
     measureCols = measureCols.filter((i) => ![lat, lon, time, freq, device, units, acc].includes(i));
   }
 
   // Numeric fallback for anything the header didn't settle.
-  const used = () => new Set([lat, lon, time, freq, device, units, acc, ...measureCols]);
+  const used = () => new Set([lat, lon, time, freq, device, units, acc, thr, nfl, abv, spc, smp, ...measureCols]);
+  // MATLAB datenum time column (thesis tool) when no header named one.
+  if (time < 0) {
+    const dn = stats.find((st) => st.numeric > 0.8 && !used().has(st.idx) && isDatenum(st.min) && isDatenum(st.max));
+    if (dn) time = dn.idx;
+  }
   if (lat < 0 || lon < 0) {
     const coord = stats.filter(
       (s) => s.numeric > 0.8 && !used().has(s.idx) && Math.abs(s.min) <= 180 && Math.abs(s.max) <= 180 && s.span < 3 && Math.abs(s.mean) > 1 && !(s.monotonic && s.ints)
     );
     let pick: [number, number] | null = null;
-    for (const a of coord)
+    // Try the coordinate pairs in column order (lat,lon before any level columns) and stop at the first that fits.
+    outer: for (const a of coord)
       for (const b of coord) {
         if (a.idx === b.idx) continue;
         if (inRegion(a.mean, b.mean) || inRegion(-Math.abs(a.mean), b.mean)) {
           pick = [a.idx, b.idx];
-          break;
+          break outer;
         }
       }
     if (!pick && coord.length >= 2) {
@@ -300,9 +339,20 @@ export function parseMeasurementCsv(text: string, name: string, fileIndex = 0): 
     return result;
   }
 
+  // Thesis MATLAB tool: no header, three level columns and a datenum time.
+  const matlab = !hasHeader && measureCols.length === 3 && time >= 0 && isDatenum(stats[time].min);
+  const MATLAB_MEASURES = [
+    { key: "peak_power_db", label: "Peak power (dB)" },
+    { key: "band_mean_level_db", label: "Band mean level (dB)" },
+    { key: "spectrum_mean_level_db", label: "Spectrum mean level (dB)" },
+  ];
   result.measures = measureCols.map((i, k) =>
-    hasHeader ? { key: norm(header[i]), label: prettyLabel(header[i]) } : { key: `band_${k + 1}`, label: `Band ${k + 1}` }
+    hasHeader ? { key: norm(header[i]), label: prettyLabel(header[i]) } : matlab ? MATLAB_MEASURES[k] : { key: `band_${k + 1}`, label: `Band ${k + 1}` }
   );
+  if (matlab) {
+    result.units = "dBm";
+    notes.push("Read as the thesis MATLAB tool format (longitude, latitude, peak, band mean, spectrum mean, time)");
+  }
 
   // Coordinate repairs, decided once per file from the medians.
   const latMed = median(body.map((r) => toNum(r[lat], decimalComma)));
@@ -362,6 +412,16 @@ export function parseMeasurementCsv(text: string, name: string, fileIndex = 0): 
     if (acc >= 0) {
       const v = toNum(r[acc], decimalComma);
       if (Number.isFinite(v)) p.accuracyM = v;
+    }
+    const num = (c: number) => (c >= 0 ? toNum(r[c], decimalComma) : NaN);
+    if (Number.isFinite(num(thr))) p.threshold = num(thr);
+    if (Number.isFinite(num(nfl))) p.noiseFloor = num(nfl);
+    if (Number.isFinite(num(spc))) p.spacingM = num(spc);
+    if (Number.isFinite(num(smp))) p.samples = num(smp);
+    if (abv >= 0) {
+      const a = (r[abv] ?? "").trim().toLowerCase();
+      if (a === "1" || a === "true" || a === "yes") p.above = true;
+      else if (a === "0" || a === "false" || a === "no") p.above = false;
     }
     result.points.push(p);
   });
