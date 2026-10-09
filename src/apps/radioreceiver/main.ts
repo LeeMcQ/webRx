@@ -64,7 +64,9 @@ import { OptionsCW } from "@jtarrio/signals/demod/demod-cw.js";
 import { SdrProvider } from "../../devices/provider.js";
 import type { ConnectedSdr, SdrKind } from "../../devices/provider.js";
 import { HackRF } from "../../devices/hackrf.js";
-import { gps } from "../../gps/gps.js";
+import { gps, isMobileDevice } from "../../gps/gps.js";
+import { compass, formatHeading } from "../../gps/compass.js";
+import type { CompassStatus } from "../../gps/compass.js";
 import type { GpsSource, GpsStatus } from "../../gps/gps.js";
 import { dspStatus } from "../../dsp/wasm.js";
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
@@ -198,6 +200,8 @@ export class RadioReceiverMain extends LitElement {
         .wasmDsp=${this.wasmDsp}
         .gpsSource=${this.gpsSource}
         .gpsStatus=${this.gpsStatus}
+        .compassStatus=${this.compassStatus}
+        @rr-compass-toggle=${this.onCompassToggle}
         .canInstall=${this.canInstall}
         @rr-sdr-kind-changed=${this.onSdrKindChange}
         @rr-choose-device=${this.onChooseDevice}
@@ -252,6 +256,9 @@ export class RadioReceiverMain extends LitElement {
   private onGpsChange = () => {
     this.gpsStatus = { ...gps.status };
   };
+  private onCompassChange = () => {
+    this.compassStatus = { ...compass.status };
+  };
   private onInstallChange = () => {
     this.canInstall = canInstallApp();
   };
@@ -302,6 +309,7 @@ export class RadioReceiverMain extends LitElement {
   @state() private dspSimd: boolean = dspStatus().simd;
   @state() private gpsSource: GpsSource = gps.savedSource();
   @state() private gpsStatus: GpsStatus = gps.status;
+  @state() private compassStatus: CompassStatus = compass.status;
   @state() private canInstall: boolean = canInstallApp();
   @state() private presetSortColumn: string = "frequency";
   @state() private presets: Preset[] = [];
@@ -400,6 +408,8 @@ export class RadioReceiverMain extends LitElement {
     this.resizeObserver = new ResizeObserver(() => this.onScreenResize());
     this.resizeObserver.observe(document.body);
     gps.addEventListener("change", this.onGpsChange);
+    compass.addEventListener("change", this.onCompassChange);
+    if (isMobileDevice() && compass.wasEnabled() && !compass.needsPermissionTap()) compass.start();
     onInstallAvailabilityChange(this.onInstallChange);
     // Reopen the GPS the user chose last time (no prompt for phone GPS once allowed,
     // and a previously granted G-MOUSE port reconnects silently).
@@ -410,6 +420,7 @@ export class RadioReceiverMain extends LitElement {
     super.disconnectedCallback();
     this.resizeObserver?.disconnect();
     gps.removeEventListener("change", this.onGpsChange);
+    compass.removeEventListener("change", this.onCompassChange);
   }
 
   // ── device / GPS / engine ─────────────────────────────────
@@ -427,7 +438,9 @@ export class RadioReceiverMain extends LitElement {
     if (st.state === "off") return "GPS off";
     if (st.fix) {
       const acc = st.fix.accuracyM !== undefined ? ` ±${st.fix.accuracyM.toFixed(0)} m` : "";
-      return `${st.fix.lat.toFixed(4)}, ${st.fix.lon.toFixed(4)}${acc}`;
+      const c = this.compassStatus;
+      const dir = c.state === "on" && c.heading !== undefined ? ` · ${formatHeading(c.heading)}` : "";
+      return `${st.fix.lat.toFixed(4)}, ${st.fix.lon.toFixed(4)}${acc}${dir}`;
     }
     if (st.state === "error") return "GPS error";
     return st.source === "gmouse" ? "G-MOUSE searching…" : "GPS searching…";
@@ -479,6 +492,12 @@ export class RadioReceiverMain extends LitElement {
     // Phone GPS and "off" apply immediately; G-MOUSE waits for "Connect GPS…" (needs a click).
     if (target.gpsSource !== "gmouse") gps.start(target.gpsSource);
     else gps.stop();
+  }
+
+  private onCompassToggle() {
+    const st = compass.status.state;
+    if (st === "on" || st === "starting") compass.stop();
+    else compass.start();
   }
 
   private onGpsConnect() {

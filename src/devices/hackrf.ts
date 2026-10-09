@@ -89,6 +89,19 @@ export function sampleRateParams(rate: number): { freqHz: number; divider: numbe
   return { freqHz: Math.round(rate), divider: 1 };
 }
 
+function isAndroid(): boolean {
+  return typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+}
+
+/** What to do when the HackRF can't be claimed, worded for the platform. */
+export function claimHelp(): string {
+  const common =
+    "The HackRF is in use by something else. Close any other webRx tab (Receiver or Monitor) that is using it";
+  return isAndroid()
+    ? `${common}, and any SDR app on the phone. Unplug the HackRF, plug it back in, and if Android asks which app should open it, dismiss the prompt. Then press Start again.`
+    : `${common}, and other SDR software (SDR#, SDR++, GQRX, hackrf_transfer). Then press Start again.`;
+}
+
 export const HACKRF_MIN_SAMPLE_RATE = 2_000_000;
 export const HACKRF_MAX_SAMPLE_RATE = 20_000_000;
 export const HACKRF_MIN_FREQUENCY = 1_000_000;
@@ -136,21 +149,49 @@ export class HackRF implements RtlDevice {
   /** Keep at most ~0.5 s of samples queued; older data is dropped to bound latency. */
   private maxBuffered = 0;
 
-  /** Opens and initialises a HackRF. */
-  static async open(device: USBDevice, options?: HackRFOptions): Promise<HackRF> {
-    try {
+  /**
+   * Opens the device and claims interface 0, recovering from the usual causes of
+   * "Unable to claim interface": a session left over from an earlier attempt in
+   * this page (reuse it, or close and reopen), or a stuck USB state (port reset).
+   */
+  static async claim(device: USBDevice): Promise<void> {
+    const iface0 = () => device.configuration?.interfaces?.find((i) => i.interfaceNumber === 0);
+    const attempt = async () => {
       if (!device.opened) await device.open();
       if (!device.configuration || device.configuration.configurationValue !== 1) {
         await device.selectConfiguration(1);
       }
-      await device.claimInterface(0);
-    } catch (e) {
-      throw new RadioError(
-        "Could not open the HackRF. Close other SDR software (SDR#, GQRX, hackrf_transfer) and try again.",
-        RadioErrorType.UsbTransferError,
-        { cause: e }
-      );
+      if (!iface0()?.claimed) await device.claimInterface(0);
+    };
+    let last: unknown;
+    const recoveries: (() => Promise<void>)[] = [
+      async () => {},
+      async () => {
+        if (device.opened) await device.close();
+      },
+      async () => {
+        if (!device.opened) await device.open();
+        await device.reset();
+        await new Promise((r) => setTimeout(r, 300));
+      },
+    ];
+    for (const recover of recoveries) {
+      try {
+        await recover();
+      } catch (_) {}
+      try {
+        await attempt();
+        return;
+      } catch (e) {
+        last = e;
+      }
     }
+    throw new RadioError(claimHelp(), RadioErrorType.UsbTransferError, { cause: last });
+  }
+
+  /** Opens and initialises a HackRF. */
+  static async open(device: USBDevice, options?: HackRFOptions): Promise<HackRF> {
+    await HackRF.claim(device);
     const boardId = await HackRF.readByte(device, Req.BOARD_ID_READ);
     const firmware = await HackRF.readString(device, Req.VERSION_STRING_READ);
     const info: HackRFInfo = {

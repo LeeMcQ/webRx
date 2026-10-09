@@ -5,6 +5,8 @@ import { SDR_KIND_LABELS } from "../../devices/provider.js";
 import type { SdrKind } from "../../devices/provider.js";
 import { GPS_SOURCE_LABELS, formatLatLon } from "../../gps/gps.js";
 import type { GpsSource, GpsStatus } from "../../gps/gps.js";
+import { formatHeading } from "../../gps/compass.js";
+import type { CompassStatus } from "../../gps/compass.js";
 import { RrWindow, WindowDelegate } from "../../ui/controls/window.js";
 import "../../ui/controls/frequency-input.js";
 import "../../ui/controls/window.js";
@@ -172,6 +174,17 @@ export class RrSettings extends WindowDelegate(LitElement) {
               ${st.fix.accuracyM !== undefined ? html` ±${st.fix.accuracyM.toFixed(0)} m` : nothing}
               ${st.fix.satellites !== undefined ? html` · ${st.fix.satellites} sats` : nothing}`
           : st.message ?? (st.state === "off" ? "Off" : st.state)}
+      </div>
+      <div class="row">
+        <label>Compass: </label>
+        <span class=${this.compassStatus.state === "on" ? "ok" : this.compassStatus.state === "off" ? "" : "warn"}
+          >${this.compassStatus.state === "on"
+            ? formatHeading(this.compassStatus.heading)
+            : this.compassStatus.message ?? (this.compassStatus.state === "off" ? "Off" : this.compassStatus.state)}</span
+        >
+        <button id="compassToggle" @click=${this.onCompassToggle}>
+          ${this.compassStatus.state === "on" || this.compassStatus.state === "starting" ? "Turn off" : "Turn on"}
+        </button>
       </div>`;
   }
 
@@ -372,6 +385,7 @@ export class RrSettings extends WindowDelegate(LitElement) {
   @property({ attribute: false }) gpsSource: GpsSource = "off";
   @property({ attribute: false }) gpsStatus: GpsStatus = { source: "off", state: "off" };
   @property({ attribute: false }) canInstall: boolean = false;
+  @property({ attribute: false }) compassStatus: CompassStatus = { state: "off" };
   @query("rr-window") protected window?: RrWindow;
 
   private onSdrKindChange(e: Event) {
@@ -400,6 +414,10 @@ export class RrSettings extends WindowDelegate(LitElement) {
 
   private onGpsConnect() {
     this.dispatchEvent(new SimpleEvent("rr-gps-connect"));
+  }
+
+  private onCompassToggle() {
+    this.dispatchEvent(new SimpleEvent("rr-compass-toggle"));
   }
 
   private onInstall() {
@@ -551,5 +569,6 @@ declare global {
     "rr-gps-source-changed": Event;
     "rr-gps-connect": Event;
     "rr-install-app": Event;
+    "rr-compass-toggle": Event;
   }
 }

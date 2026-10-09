@@ -197,13 +197,20 @@ export class GpsService extends EventTarget {
         });
       },
       (err) => {
+        // Phones report brief "unavailable"/timeout blips between good fixes;
+        // keep a recent fix instead of flipping to an error. The stale-fix
+        // watchdog reports a real loss after STALE_MS.
+        const fix = this._status.fix;
+        if (err.code !== 1 && fix && Date.now() - fix.timestamp < STALE_MS) return;
         const msg =
           err.code === 1
             ? "Location permission denied — allow it in the browser's site settings"
             : err.code === 2
               ? "Position unavailable — turn on location services"
               : "Timed out waiting for a fix — move to open sky";
-        this.update({ ...this._status, source: "phone", state: err.code === 3 ? "searching" : "error", message: msg });
+        const state: GpsState = err.code === 1 ? "error" : "searching";
+        if (this._status.state === state && this._status.message === msg) return;
+        this.update({ ...this._status, source: "phone", state, message: msg });
       },
       { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 }
     );

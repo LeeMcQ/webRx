@@ -19,6 +19,8 @@ import {
   isMobileDevice,
 } from "../../gps/gps.js";
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
+import { compass, formatHeading } from "../../gps/compass.js";
+import { LiveMap } from "../../ui/livemap.js";
 
 type Mode = SdrKind | "wifi" | "cellular";
 type Settings = {
@@ -47,6 +49,8 @@ type LogRow = {
   alt: string;
   acc: string;
   sats: string;
+  compass: string;
+  course: string;
   peak: string;
   peakHz: number | "";
   band: string;
@@ -470,6 +474,8 @@ function gpsColumns() {
     alt: f?.altM !== undefined ? f.altM.toFixed(1) : "",
     acc: f?.accuracyM !== undefined ? f.accuracyM.toFixed(1) : "",
     sats: f?.satellites !== undefined ? String(f.satellites) : "",
+    compass: compass.status.state === "on" && compass.status.heading !== undefined ? compass.status.heading.toFixed(0) : "",
+    course: f?.headingDeg !== undefined ? f.headingDeg.toFixed(0) : "",
   };
 }
 
@@ -503,6 +509,7 @@ function addRecord() {
     });
   }
   $("stRecords").textContent = String(records.length);
+  refreshMapPoints();
 }
 
 function exportCsv() {
@@ -522,6 +529,8 @@ function exportCsv() {
     "altitude_m",
     "gps_accuracy_m",
     "gps_sats",
+    "compass_deg",
+    "course_deg",
     "peak_power_db",
     "peak_freq_hz",
     "band_mean_level_db",
@@ -543,6 +552,8 @@ function exportCsv() {
       r.alt,
       r.acc,
       r.sats,
+      r.compass,
+      r.course,
       r.peak,
       r.peakHz,
       r.band,
@@ -985,7 +996,7 @@ function renderGps() {
   set("gpsLon", f ? `${f.lon.toFixed(6)}°` : "—");
   set("gpsAlt", f?.altM !== undefined ? `${f.altM.toFixed(1)} m` : "—");
   set("gpsSpeed", f?.speedKmh !== undefined ? `${f.speedKmh.toFixed(1)} km/h` : "—");
-  set("gpsHeading", f?.headingDeg !== undefined ? `${f.headingDeg.toFixed(1)}°` : "—");
+  set("gpsHeading", f?.headingDeg !== undefined ? formatHeading(f.headingDeg) : "—");
   set(
     "gpsSats",
     f?.satellites !== undefined
@@ -1024,6 +1035,10 @@ function renderGps() {
 let lastGpsMsg = "";
 gps.addEventListener("change", () => {
   renderGps();
+  const f = gps.fix;
+  if (f && liveMap && gps.status.state === "fix") {
+    liveMap.setFix({ lat: f.lat, lon: f.lon, accuracyM: f.accuracyM, speedKmh: f.speedKmh, courseDeg: f.headingDeg, timestamp: f.timestamp });
+  }
   const st = gps.status;
   const msg = st.state === "fix" ? `fix ${st.fix?.fixLabel}` : st.message ?? st.state;
   if (msg !== lastGpsMsg) {
@@ -1033,6 +1048,70 @@ gps.addEventListener("change", () => {
     }
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+//  Compass + map
+// ═══════════════════════════════════════════════════════════════════
+
+let liveMap: LiveMap | null = null;
+
+function renderCompass() {
+  const st = compass.status;
+  const h = st.heading;
+  $("gpsCompass").textContent =
+    st.state === "on"
+      ? `${formatHeading(h)}${st.accuracy !== undefined ? ` (±${Math.round(st.accuracy)}°)` : ""}${st.source === "relative" ? " (relative)" : ""}`
+      : st.state === "off"
+        ? "Off — tap Compass"
+        : st.message ?? st.state;
+  const needle = document.getElementById("compassNeedle");
+  if (needle) needle.style.transform = `rotate(${st.state === "on" && h !== undefined ? h : 0}deg)`;
+  const rose = document.getElementById("compassRose");
+  if (rose) rose.classList.toggle("live", st.state === "on");
+  const btn = document.getElementById("btnCompass") as HTMLButtonElement | null;
+  if (btn) btn.textContent = st.state === "on" || st.state === "starting" ? "🧭 Compass on" : "🧭 Compass";
+  liveMap?.setHeading(st.state === "on" && st.source !== "relative" ? h : undefined);
+}
+
+compass.addEventListener("change", renderCompass);
+
+function refreshMapPoints() {
+  if (!liveMap) return;
+  const pts = records
+    .filter((r) => r.lat !== "" && r.lon !== "")
+    .map((r) => ({
+      lat: Number(r.lat),
+      lon: Number(r.lon),
+      level: Number(r.band),
+      label: `${new Date(r.ts).toLocaleTimeString()} · ${r.device} · band ${r.band} dB · peak ${r.peak} dB`,
+    }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && Number.isFinite(p.level));
+  liveMap.setMeasurements(pts);
+}
+
+function initMap() {
+  const el = document.getElementById("liveMap");
+  if (!el) return;
+  try {
+    liveMap = new LiveMap(el, {
+      onStats: (s) => {
+        $("mapDistance").textContent = s.distanceM >= 1000 ? `${(s.distanceM / 1000).toFixed(2)} km` : `${Math.round(s.distanceM)} m`;
+        $("mapFollow").textContent = s.following ? "following" : "free";
+      },
+    });
+  } catch (e: any) {
+    el.textContent = `Map unavailable: ${e?.message ?? e}`;
+    return;
+  }
+  $("btnMapCentre").addEventListener("click", () => liveMap?.centre());
+  $("btnMapFit").addEventListener("click", () => liveMap?.fitAll());
+  $("btnMapClear").addEventListener("click", () => {
+    liveMap?.clearTrack();
+    log("Map track cleared");
+  });
+  const f = gps.fix;
+  if (f) liveMap.setFix({ lat: f.lat, lon: f.lon, accuracyM: f.accuracyM, speedKmh: f.speedKmh, courseDeg: f.headingDeg, timestamp: f.timestamp });
+}
 
 async function connectGps() {
   const src = ($("gpsSource") as HTMLSelectElement).value as GpsSource;
@@ -1325,6 +1404,16 @@ export function initMonitor() {
     readNetworkInfo();
     log("Network Info API not available (Firefox/Safari)", "wn");
   }
+
+  initMap();
+  $("btnCompass").addEventListener("click", () => {
+    const st = compass.status.state;
+    if (st === "on" || st === "starting") compass.stop();
+    else compass.start();
+  });
+  // Android starts the compass straight away; iOS needs a tap on the Compass button.
+  renderCompass();
+  if (isMobileDevice() && compass.wasEnabled() && !compass.needsPermissionTap()) compass.start();
 
   // GPS: phone GPS starts automatically on mobile; on desktop a granted G-MOUSE reconnects.
   renderGps();
