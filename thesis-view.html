@@ -229,6 +229,35 @@
       .recbox .btns { margin: 0; }
       .recbox #btnOpenMap { grid-column: 1 / -1; }
       .rechead .spacer { flex: 1; }
+      [hidden] { display: none !important; }
+      #calSeconds { width: auto; min-width: 90px; }
+      .calline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .calline .spacer, .calhead .spacer, .calstep .inline .spacer { flex: 1; }
+      .lbl.warn { color: #fbbf24; }
+      .btn.small { min-height: 30px; padding: 3px 10px; font-size: 12px; }
+      .caldlg { width: min(760px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); padding: 14px 16px; border-radius: 14px;
+        border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+      .caldlg::backdrop { background: rgba(2, 6, 14, 0.7); }
+      .calhead { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+      .calstep { border-top: 1px solid var(--line); padding: 10px 0; }
+      .calstep h3 { margin: 0 0 6px; font-size: 14px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+      .calstep .inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .checks { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 4px; font-size: 13px; }
+      .checks li.ok::before { content: "✓ "; color: #4ade80; }
+      .checks li.warn::before { content: "⚠ "; color: #fbbf24; }
+      .checks li.bad::before { content: "✗ "; color: #f87171; }
+      .checks li.info::before { content: "ℹ "; color: #60a5fa; }
+      .steps { margin: 0 0 8px; padding-left: 20px; font-size: 13px; color: var(--muted); }
+      .calprog { height: 6px; border-radius: 3px; background: var(--panel-2); margin-top: 8px; overflow: hidden; display: none; }
+      .calprog.on { display: block; }
+      .calprog i { display: block; height: 100%; width: 0; background: var(--accent, #3b82f6); transition: width 0.2s linear; }
+      .calres { font-size: 13px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+      .calres b { font-size: 15px; }
+      .calcurrent { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); margin-bottom: 4px; }
+      .calcurrent:empty { display: none; }
+      #calChart { width: 100%; height: 190px; display: block; background: #070d18; border-radius: 8px; margin-top: 6px; }
+      .calkey { margin: 4px 0 2px; display: flex; gap: 10px; flex-wrap: wrap; }
+      .calkey .band { color: rgba(59, 130, 246, 0.5); }
       .btn:disabled { opacity: 0.45; cursor: default; }
     </style>
   </head>
@@ -269,7 +298,7 @@
 
         <div class="pair">
           <section class="card">
-            <h2>Band detail <span class="spacer"></span><span class="lbl">centre 50%</span></h2>
+            <h2>Band detail <span class="spacer"></span><span class="lbl" id="bandLbl">centre 50%</span></h2>
             <canvas id="band"></canvas>
           </section>
           <section class="card">
@@ -366,8 +395,27 @@
               <input id="cal" type="number" step="0.1" value="0" />
             </div>
             <div class="field sdr">
-              <label for="logEvery">Log every (s)</label>
-              <input id="logEvery" type="number" min="0.2" step="0.1" value="1" />
+              <label for="bwKHz">Measurement bandwidth (kHz)</label>
+              <input id="bwKHz" type="number" min="1" step="1" placeholder="50% of span" inputmode="numeric" />
+            </div>
+            <div class="field full">
+              <label for="logMode">Place a pin</label>
+              <div class="inline">
+                <select id="logMode" style="flex:1">
+                  <option value="distance">Every … metres travelled (spatial sampling)</option>
+                  <option value="time">Every … seconds</option>
+                </select>
+                <input id="spacingM" type="number" min="1" step="1" value="5" list="spacingPresets" inputmode="numeric" style="width:88px" aria-label="Metres between pins" />
+                <input id="logEvery" type="number" min="0.2" step="0.1" value="1" inputmode="decimal" style="width:88px" aria-label="Seconds between records" />
+              </div>
+              <datalist id="spacingPresets"><option value="5"></option><option value="25"></option><option value="100"></option><option value="250"></option></datalist>
+            </div>
+            <div class="field" id="distFormulaField">
+              <label for="distFormula">Distance between pins</label>
+              <select id="distFormula">
+                <option value="haversine">Haversine (Eq 3-2)</option>
+                <option value="euclidean">Euclidean × 111 319 m (Eq 3-6)</option>
+              </select>
             </div>
             <label class="check sdr" id="ampRow"><input id="amp" type="checkbox" /> HackRF RF amp (+14 dB)</label>
             <label class="check sdr"><input id="dcRemove" type="checkbox" checked /> Hide DC spike</label>
@@ -388,7 +436,13 @@
               <span class="lbl" id="recSaved"></span>
             </div>
             <div class="lbl" id="recMeta">Press Start to record</div>
-            <label class="check"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
+            <div class="calline">
+              <span class="lbl" id="calStatus">Not calibrated</span>
+              <span class="spacer"></span>
+              <button class="btn ghost small" id="btnCalibrate" title="Pre-drive noise-floor calibration">🎚 Calibrate</button>
+            </div>
+            <div class="lbl" id="recHint"></div>
+            <label class="check" id="needFixRow"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
             <div class="btns">
               <button class="btn primary" id="btnOpenMap" title="Open this recording in the MMN map">🗺 Open in Map</button>
               <button class="btn ghost" id="btnCSV" title="Save this recording as a CSV file">⬇ CSV</button>
@@ -460,6 +514,83 @@
       <button class="btn go" id="mBtnStart">▶ Start</button>
       <button class="btn stop" id="mBtnStop">■ Stop</button>
     </div>
+
+    <dialog id="calDlg" class="caldlg" aria-labelledby="calTitle">
+      <div class="calhead">
+        <b id="calTitle">Pre-drive calibration</b>
+        <span class="spacer"></span>
+        <button class="btn ghost small" id="calClose" aria-label="Close">✕</button>
+      </div>
+      <p class="hint">
+        Measure the receiver's own noise and the vehicle's noise at the settings you'll drive with, then set the
+        threshold a guard band above the noise floor (thesis §3.4 and §4.3.1). Pins below the threshold are kept but
+        flagged, and the map hides them by default.
+      </p>
+      <div class="calcurrent" id="calCurrent"></div>
+
+      <section class="calstep">
+        <h3>1 · Check the setup</h3>
+        <ul class="checks" id="calChecks"></ul>
+        <div class="inline">
+          <button class="btn primary small" id="calConnect">Connect receiver</button>
+          <button class="btn ghost small" id="calFixGain">Use a fixed gain</button>
+          <span class="spacer"></span>
+          <label for="calSeconds" class="lbl">Measure for</label>
+          <select id="calSeconds">
+            <option value="5">5 s</option>
+            <option value="10">10 s</option>
+            <option value="30">30 s</option>
+            <option value="60">60 s</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="calstep">
+        <h3>2 · Receiver noise — 50 Ω dummy load <span class="lbl">§3.4.4.2</span></h3>
+        <ol class="steps">
+          <li>Remove the antenna and fit the 50 Ω dummy load to the antenna port.</li>
+          <li>If you can, move the receiver away from the laptop or phone on a USB extension cable.</li>
+        </ol>
+        <div class="inline">
+          <button class="btn primary" id="calMeasure1">Measure receiver noise</button>
+          <button class="btn ghost small" id="calSkip1">Skip (no dummy load)</button>
+        </div>
+        <div class="calprog" id="calProg1"><i></i></div>
+        <div class="calres" id="calRes1"></div>
+      </section>
+
+      <section class="calstep">
+        <h3>3 · Vehicle noise — antenna on, engine running <span class="lbl">§3.4.4.3 · §4.3.1</span></h3>
+        <ol class="steps">
+          <li>Refit the antenna exactly as it will be for the drive (roof mount, ferrite choke, short coax).</li>
+          <li>Start the engine and switch on the air-con, lights and radio.</li>
+          <li>Run the laptop from its battery — not an inverter or car charger.</li>
+        </ol>
+        <div class="inline"><button class="btn primary" id="calMeasure2">Measure vehicle noise</button></div>
+        <div class="calprog" id="calProg2"><i></i></div>
+        <div class="calres" id="calRes2"></div>
+      </section>
+
+      <canvas id="calChart" aria-label="Noise spectra"></canvas>
+      <div class="lbl calkey">
+        <span style="color:#60a5fa">━</span> receiver (dummy load) <span style="color:#f59e0b">━</span> vehicle
+        <span style="color:#f87171">┅</span> threshold <span class="band">▮</span> measurement band
+      </div>
+
+      <section class="calstep">
+        <h3>4 · Threshold</h3>
+        <div class="inline">
+          <label for="calGuard">Guard band (dB)</label>
+          <input id="calGuard" type="number" step="0.5" min="0" value="5" inputmode="decimal" style="width:80px" />
+          <span class="lbl">3–5 dB §2.4.3.3 · 5 dB pilot §4.3.4 · 10 dB §3.4.6</span>
+        </div>
+        <div class="calres" id="calRes3"></div>
+        <div class="inline">
+          <button class="btn primary" id="calSave" disabled>Save calibration</button>
+          <button class="btn ghost" id="calCsv" disabled>⬇ Calibration CSV</button>
+        </div>
+      </section>
+    </dialog>
 
     <script src="monitor.js"></script>
   </body>
