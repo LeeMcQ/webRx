@@ -72,6 +72,9 @@ function blankConfig(): RawConfig {
         biasTee: false,
       },
       performanceTradeoff: "cpu",
+      device: "auto",
+      hackrfAmp: false,
+      wasmDsp: true,
       minDecibels: -90,
       maxDecibels: -20,
       presets: {
@@ -127,6 +130,12 @@ type ConfigV1 = {
   lowFrequencyMethod: ConfigV1LowFrequencyMethod;
   /** The performance trade-off: cpu, latency, or quality. */
   performanceTradeoff: ConfigV1PerformanceTradeoff;
+  /** Which SDR family to open: auto, rtlsdr or hackrf. */
+  device: "auto" | "rtlsdr" | "hackrf";
+  /** Whether the HackRF +14 dB RF amplifier is enabled. */
+  hackrfAmp: boolean;
+  /** Whether to use the Rust/WebAssembly DSP core (takes effect after reload). */
+  wasmDsp: boolean;
   /** Minimum number of decibels for scope. */
   minDecibels: number;
   /** Maximum number of decibels for scope. */

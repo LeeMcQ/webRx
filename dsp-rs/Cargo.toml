@@ -1,0 +1,21 @@
+[package]
+name = "webrx-dsp"
+version = "0.1.0"
+edition = "2021"
+description = "Rust/WebAssembly DSP core for webRx: SIMD FIR filters, decimators, FFT and spectrum estimation."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustfft = { version = "6.4", default-features = false, features = ["wasm_simd"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true

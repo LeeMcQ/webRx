@@ -10,7 +10,12 @@
     "serve": "browser-sync start --server \"dist/\" --files \"dist/\" --startPath \"apps/radioreceiver\"",
     "watch": "npm run build && run-p serve build-on-change",
     "dist": "nx build radioreceiver",
-    "deploy": "gh-pages -d dist/apps/radioreceiver"
+    "deploy": "gh-pages -d dist/apps/radioreceiver",
+    "build:wasm": "dsp-rs/build.sh",
+    "bench:dsp": "node bench/run.mjs dsp_benchmark",
+    "test:devices": "node bench/run.mjs devices.test",
+    "typecheck": "tsc --noEmit -p .",
+    "docs": "node ./build.mjs --dist && rm -rf docs && cp -r dist/apps/radioreceiver docs"
   },
   "devDependencies": {
     "browser-sync": "^3.0.3",
