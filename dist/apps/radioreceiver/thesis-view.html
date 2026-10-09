@@ -218,6 +218,18 @@
       }
       .actionbar .btn { flex: 1; }
       @media (max-width: 1000px) { .actionbar { display: flex; } .desktop-only { display: none; } }
+      .recbox { margin-top: 10px; border: 1px solid var(--line, #1e2a3f); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+      .rechead { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .rechead b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+      .recdot { width: 10px; height: 10px; border-radius: 50%; background: #475569; flex: none; }
+      .recdot.on { background: #ef4444; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); animation: recpulse 1.6s infinite; }
+      @keyframes recpulse { 70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
+      .lbl.ok { color: #4ade80; }
+      .lbl.err { color: #f87171; }
+      .recbox .btns { margin: 0; }
+      .recbox #btnOpenMap { grid-column: 1 / -1; }
+      .rechead .spacer { flex: 1; }
+      .btn:disabled { opacity: 0.45; cursor: default; }
     </style>
   </head>
   <body>
@@ -232,6 +244,7 @@
         <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
         <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
         <button class="chip" id="btnInstall" hidden>⬇ Install app</button>
+        <a class="chip" href="map.html" title="Open recordings on the MMN map">🗺 Map</a>
         <a class="chip" href="index.html" title="Open the full radio receiver">📻 Receiver</a>
       </div>
     </header>
@@ -367,10 +380,23 @@
             <button class="btn go" id="btnStart">▶ Start</button>
             <button class="btn stop" id="btnStop">■ Stop</button>
           </div>
-          <div class="btns" style="margin-top:8px">
-            <button class="btn ghost" id="btnSnap">📷 Snapshot</button>
-            <button class="btn ghost" id="btnCSV">⬇ Export CSV</button>
-            <button class="btn ghost" id="btnClear">🗑 Clear log</button>
+          <div class="recbox" aria-live="polite">
+            <div class="rechead">
+              <span class="recdot" id="recDot" aria-hidden="true"></span>
+              <b id="recName">No recording yet</b>
+              <span class="spacer"></span>
+              <span class="lbl" id="recSaved"></span>
+            </div>
+            <div class="lbl" id="recMeta">Press Start to record</div>
+            <label class="check"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
+            <div class="btns">
+              <button class="btn primary" id="btnOpenMap" title="Open this recording in the MMN map">🗺 Open in Map</button>
+              <button class="btn ghost" id="btnCSV" title="Save this recording as a CSV file">⬇ CSV</button>
+              <button class="btn ghost" id="btnShare" title="Send the CSV to another app (email, Drive, WhatsApp…)" hidden>↗ Share</button>
+              <button class="btn ghost" id="btnClear" title="Keep this recording and start a new one">＋ New recording</button>
+              <button class="btn ghost" id="btnSnap" title="Save the spectrum and waterfall as a picture">📷 Snapshot</button>
+            </div>
+            <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
           </div>
         </section>
 
