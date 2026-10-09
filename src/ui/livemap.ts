@@ -24,6 +24,8 @@ export type MapMeasurement = {
   lon: number;
   level: number;
   label: string;
+  /** Below the calibrated noise-floor threshold: drawn small and grey. */
+  below?: boolean;
 };
 
 const TRACK_KEY = "webrx.map.track";
@@ -130,8 +132,13 @@ export class LiveMap {
     let lo = Infinity;
     let hi = -Infinity;
     for (const m of list) {
+      if (m.below) continue;
       lo = Math.min(lo, m.level);
       hi = Math.max(hi, m.level);
+    }
+    if (!Number.isFinite(lo)) {
+      lo = Math.min(...list.map((m) => m.level));
+      hi = Math.max(...list.map((m) => m.level));
     }
     // At least a 10 dB window, centred on the data, so a steady signal shows
     // mid-scale instead of looking "weak".
@@ -139,11 +146,11 @@ export class LiveMap {
     const base = (lo + hi) / 2 - span / 2;
     for (const m of list) {
       L.circleMarker([m.lat, m.lon], {
-        radius: 6,
+        radius: m.below ? 3.5 : 6,
         weight: 1,
-        color: "#0b1220",
-        fillColor: levelColor((m.level - base) / span),
-        fillOpacity: 0.9,
+        color: m.below ? "#64748b" : "#0b1220",
+        fillColor: m.below ? "#475569" : levelColor((m.level - base) / span),
+        fillOpacity: m.below ? 0.6 : 0.9,
       })
         .bindTooltip(m.label)
         .addTo(this.points);

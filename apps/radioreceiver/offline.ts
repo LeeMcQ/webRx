@@ -13,7 +13,7 @@
 
 import { addToInbox } from "../../src/storage/recordings.js";
 
-const VERSION = "v4";
+const VERSION = "v5";
 const CACHE_NAME = `radioreceiver-${VERSION}`;
 const APP_STATIC_RESOURCES = [
   "./",

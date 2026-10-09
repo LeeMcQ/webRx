@@ -1,5 +1,5 @@
 // Importer tests: every CSV style the MMN map has to open.
-import { parseMeasurementCsv, detectDelimiter, toNum } from "../src/apps/map/parse.js";
+import { parseMeasurementCsv, detectDelimiter, toNum, fromDatenum } from "../src/apps/map/parse.js";
 import { toCsv, csvFileName } from "../src/storage/recordings.js";
 
 declare const process: { exit(code: number): never };
@@ -65,6 +65,38 @@ const h = parseMeasurementCsv(csv, "rt.csv");
 check("writer → reader round trip", h.points.length === 1 && h.points[0].device === 'HackRF "Pro", unit 2' && h.points[0].values.band_mean_level_db === -31.5, h.points[0]);
 check("file name", /^mmn_hackrf-pro_95\.5MHz_\d{4}-\d{2}-\d{2}_\d{4}\.csv$/.test(csvFileName({ startedAt: Date.now(), summary: "HackRF Pro · 95.5 MHz" })), csvFileName({ startedAt: Date.now(), summary: "HackRF Pro · 95.5 MHz" }));
 check("toNum unicode minus + unit", toNum("−45.5 dBm", false) === -45.5);
+
+// 8. Thesis MATLAB tool output (Appendix A-2): no header; lon, lat (N/S dropped), peak, band mean, spectrum mean, datenum.
+const mat = [
+  "18.465623,33.412550,-27.1,-29.205972,-31.0,738128.773250",
+  "18.466909,33.413254,-25.9,-27.735385,-30.2,738128.773482",
+  "18.467945,33.413945,-26.4,-28.187192,-30.8,738128.773718",
+].join("\n");
+const m = parseMeasurementCsv(mat, "matlab.csv");
+check("MATLAB: 3 points in Malmesbury area", m.points.length === 3 && m.points.every((p) => p.lat < -33.4 && p.lat > -33.42 && p.lon > 18.46 && p.lon < 18.47), m.points.map((p) => [p.lat, p.lon]));
+check("MATLAB: measures named like webRx", m.measures.map((x) => x.key).join() === "peak_power_db,band_mean_level_db,spectrum_mean_level_db", m.measures);
+check("MATLAB: band mean value", m.points[0].values.band_mean_level_db === -29.205972, m.points[0].values);
+const d0 = new Date(m.points[0].t!);
+check("MATLAB datenum → 3 Dec 2020 18:33 local", d0.getFullYear() === 2020 && d0.getMonth() === 11 && d0.getDate() === 3 && d0.getHours() === 18 && d0.getMinutes() === 33, d0.toString());
+check("datenum 738128.5 = 3 Dec 2020 12:00 (MATLAB epoch)", (() => { const d = new Date(fromDatenum(738128.5)); return d.getDate() === 3 && d.getHours() === 12 && d.getMinutes() === 0; })());
+check("MATLAB: units dBm, note", m.units === "dBm" && m.notes.some((n) => /MATLAB/.test(n)), { u: m.units, n: m.notes });
+
+// 9. Thesis Table 4.1 layout: headers say Latitude/Longitude but the columns are swapped.
+const t41 = ["Latitude,Longitude,Power level,Date and Time", "18.465623,-33.412550,-29.205972,738128.773250", "18.466909,-33.413254,-27.735385,738128.773482"].join("\n");
+const t = parseMeasurementCsv(t41, "table41.csv");
+check("Table 4.1: swapped columns corrected", t.points.length === 2 && t.points[0].lat === -33.41255 && t.points[0].lon === 18.465623, t.points[0]);
+check("Table 4.1: time from datenum", t.points[0].t !== undefined && new Date(t.points[0].t).getFullYear() === 2020);
+
+// 10. webRx pins with calibration columns.
+const cal = [
+  "timestamp,device,center_freq_hz,latitude,longitude,peak_power_db,band_mean_level_db,units,sampling,pin_spacing_m,samples_averaged,gain_db,noise_floor_db,threshold_db,above_threshold",
+  "2026-10-09T08:00:00Z,HackRF Pro,100100000,-33.46,18.72,-40.1,-49.9,dBFS,distance 5 m,,4,30,-57.3,-52.3,1",
+  "2026-10-09T08:00:02Z,HackRF Pro,100100000,-33.4601,18.7201,-48.2,-55.0,dBFS,distance 5 m,6.0,4,30,-57.3,-52.3,0",
+].join("\n");
+const c2 = parseMeasurementCsv(cal, "cal.csv");
+check("calibration columns are not measures", c2.measures.map((x) => x.key).join() === "peak_power_db,band_mean_level_db", c2.measures);
+check("threshold / floor / verdict read", c2.points[0].threshold === -52.3 && c2.points[0].noiseFloor === -57.3 && c2.points[0].above === true && c2.points[1].above === false, c2.points);
+check("pin spacing + samples read", c2.points[1].spacingM === 6 && c2.points[1].samples === 4, c2.points[1]);
 
 console.log(failures ? `\n${failures} failed` : "\nAll map importer tests passed.");
 process.exit(failures ? 1 : 0);

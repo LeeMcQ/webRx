@@ -22,6 +22,19 @@ import {
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
+import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
+import {
+  Calibration,
+  CalibrationSettings,
+  CalibrationStep,
+  DEFAULT_GUARD_DB,
+  calibrationCsv,
+  loadCalibration,
+  mismatches,
+  newCalibrationId,
+  reduceSpectrum,
+  saveCalibration,
+} from "../../calibration/calibration.js";
 import {
   RecordingRow,
   RecordingSession,
@@ -52,6 +65,13 @@ type Settings = {
   peakHold: boolean;
   biasTee: boolean;
   needFix: boolean;
+  /** "distance": a pin every spacingM metres (thesis §3.5); "time": every logEvery seconds. */
+  logMode: "distance" | "time";
+  spacingM: number;
+  distFormula: DistanceFormula;
+  /** Measurement bandwidth in kHz around the centre; null = centre 50 % of the span. */
+  bwKHz: number | null;
+  calSeconds: number;
 };
 
 const STORE_KEY = "webrx.monitor";
@@ -69,6 +89,11 @@ const DEFAULTS: Settings = {
   peakHold: true,
   biasTee: false,
   needFix: false,
+  logMode: "distance",
+  spacingM: 5,
+  distFormula: "haversine",
+  bwKHz: null,
+  calSeconds: 10,
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -99,6 +124,12 @@ let dirty = false;
 let lastStats: { peak: number; peakHz: number; band: number; spec: number } | null = null;
 let netInfo: { quality: number; rssi: number; rtt: number | null; dl: number; type: string; eff: string } | null = null;
 const timeline: { peak: number; band: number }[] = [];
+/** Readings since the last pin, averaged per frequency bin (thesis §3.5.4). */
+const pinAvg = new PowerAverager();
+const sampler = new SpatialSampler({ spacingM: 5, formula: "haversine", jitterGuard: true });
+let pinHint = "";
+/** Set while a calibration step is measuring; blocks go there instead of into records. */
+let calRun: { avg: PowerAverager; from: number; until: number; done: () => void } | null = null;
 let yLo = -100;
 let yHi = -20;
 
@@ -115,10 +146,16 @@ function loadSettings(): Settings {
   }
 }
 
+let bound = false;
+
 function saveSettings() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(cfg));
   } catch (_) {}
+  if (bound) {
+    renderRecording();
+    dirty = true;
+  }
 }
 
 function isSdrMode(m: Mode = cfg.mode): m is SdrKind {
@@ -300,6 +337,10 @@ async function start() {
   if (running) return;
   if (!(await connect())) return;
   running = true;
+  pinAvg.reset();
+  lastLogAt = performance.now();
+  lastFixT = 0;
+  pinHint = cfg.logMode === "distance" ? "Measuring…" : "";
   const my = ++session;
   $("specIdle").style.display = "none";
   $("measState").textContent = "Measuring";
@@ -423,39 +464,28 @@ function processBlock(bytes: Uint8Array) {
     timeline.push({ peak: lastStats.peak, band: lastStats.band });
     if (timeline.length > 240) timeline.shift();
   }
-  if (running && now - lastLogAt >= cfg.logEvery * 1000) {
-    lastLogAt = now;
-    addRecord();
+  if (calRun) {
+    // Calibration: skip the first moments after the stream starts, then average.
+    if (now >= calRun.from) calRun.avg.addSpectrum(raw, cfg.cal);
+    if (now >= calRun.until) calRun.done();
+  } else if (running) {
+    pinAvg.addSpectrum(raw, cfg.cal);
+    if (cfg.logMode === "time" && now - lastLogAt >= cfg.logEvery * 1000) {
+      lastLogAt = now;
+      addRecord();
+    }
   }
   dirty = true;
 }
 
-/** Peak, and mean power (linear average, shown in dB) over the band (centre 50%) and the whole span. */
+/** Live levels from the smoothed trace: peak and mean inside the measurement bandwidth, mean over the span. */
 function computeStats() {
-  const n = spec.length;
-  let pk = -Infinity;
-  let pkIdx = 0;
-  let sumAll = 0;
-  let sumBand = 0;
-  const b0 = n >> 2;
-  const b1 = n - b0;
-  for (let k = 0; k < n; ++k) {
-    const v = spec[k];
-    if (v > pk) {
-      pk = v;
-      pkIdx = k;
-    }
-    const lin = Math.pow(10, v / 10);
-    sumAll += lin;
-    if (k >= b0 && k < b1) sumBand += lin;
-  }
-  const peakHz = cfg.freqMHz * 1e6 + ((pkIdx - n / 2) * cfg.sampleRate) / n;
-  return {
-    peak: pk,
-    peakHz,
-    band: 10 * Math.log10(sumBand / (b1 - b0)),
-    spec: 10 * Math.log10(sumAll / n),
-  };
+  const l = spectrumLevels(spec, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
+  return { peak: l.peak, peakHz: l.peakHz, band: l.band, spec: l.spec };
+}
+
+function bwHz(): number | null {
+  return isSdrMode() && cfg.bwKHz ? cfg.bwKHz * 1000 : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -483,6 +513,16 @@ const COLUMNS = [
   "units",
   "calibration_db",
   "net_quality_pct",
+  // Thesis §3.5 / §3.4: how the pin was taken and how it compares with the noise floor.
+  "sampling",
+  "pin_spacing_m",
+  "samples_averaged",
+  "measurement_bw_hz",
+  "gain_db",
+  "noise_floor_db",
+  "threshold_db",
+  "above_threshold",
+  "calibration_id",
 ];
 /** Unfinished recordings younger than this continue after a reload. */
 const RESUME_WITHIN_MS = 24 * 3600 * 1000;
@@ -491,6 +531,7 @@ const TAIL_KEY = "webrx.monitor.unsaved";
 
 let rec: RecordingSession | null = null;
 let positioned = 0;
+let aboveCount = 0;
 let skippedNoFix = 0;
 let saveTimer: number | null = null;
 let saveChain: Promise<void> = Promise.resolve();
@@ -544,48 +585,153 @@ function ensureRecording(): RecordingSession {
   return rec;
 }
 
-function addRecord() {
+/** The calibration that applies to the current settings, if any. */
+function activeCalibration(): Calibration | null {
+  const c = loadCalibration();
+  return c && isSdrMode() && !mismatches(c, currentCalSettings()).length ? c : null;
+}
+
+function currentCalSettings(): CalibrationSettings {
+  return {
+    // Until a receiver is connected, assume it's the one the calibration was made with.
+    device: sdr?.name ?? loadCalibration()?.device ?? "SDR",
+    centerHz: Math.round(cfg.freqMHz * 1e6),
+    sampleRate: cfg.sampleRate,
+    bwHz: bwHz(),
+    fftSize: cfg.fftSize,
+    gain: cfg.gain,
+    amp: cfg.amp,
+    biasTee: cfg.biasTee,
+    calDb: cfg.cal,
+    units: currentUnits(),
+  };
+}
+
+function samplingLabel() {
+  return cfg.logMode === "distance" ? `distance ${cfg.spacingM} m (${cfg.distFormula === "euclidean" ? "Eq 3-6" : "haversine"})` : `time ${cfg.logEvery} s`;
+}
+
+/** Records one pin from everything averaged since the previous one. */
+function addRecord(spacingM?: number) {
   const g = gpsColumns();
-  if (cfg.needFix && g.latitude === "") {
+  if (cfg.logMode === "time" && cfg.needFix && g.latitude === "") {
     skippedNoFix++;
+    pinAvg.reset();
     renderRecording();
     return;
   }
   let row: RecordingRow | null = null;
-  const base = { timestamp: new Date().toISOString(), ...g, units: currentUnits(), calibration_db: cfg.cal };
-  if (isSdrMode() && lastStats) {
+  const base = { timestamp: new Date().toISOString(), ...g, units: currentUnits(), calibration_db: cfg.cal, sampling: samplingLabel() };
+  if (spacingM === undefined && g.latitude !== "") {
+    const prev = [...rows()].reverse().find((x) => x.latitude !== "");
+    if (prev) spacingM = haversineM(Number(prev.latitude), Number(prev.longitude), Number(g.latitude), Number(g.longitude));
+  }
+  if (isSdrMode()) {
+    const mean = pinAvg.meanSpectrum();
+    if (!mean) return;
+    const l = spectrumLevels(mean, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
+    const cal = activeCalibration();
+    const above = cal ? (l.band >= cal.thresholdDb ? 1 : 0) : "";
     row = {
       ...base,
       device: sdr?.name ?? "SDR",
       center_freq_hz: Math.round(cfg.freqMHz * 1e6),
       sample_rate_hz: cfg.sampleRate,
-      peak_power_db: lastStats.peak.toFixed(2),
-      peak_freq_hz: Math.round(lastStats.peakHz),
-      band_mean_level_db: lastStats.band.toFixed(2),
-      spectrum_mean_level_db: lastStats.spec.toFixed(2),
+      peak_power_db: l.peak.toFixed(2),
+      peak_freq_hz: Math.round(l.peakHz),
+      band_mean_level_db: l.band.toFixed(2),
+      spectrum_mean_level_db: l.spec.toFixed(2),
       net_quality_pct: "",
+      pin_spacing_m: spacingM !== undefined ? spacingM.toFixed(1) : "",
+      samples_averaged: pinAvg.blocks,
+      measurement_bw_hz: bwHz() ?? Math.round(cfg.sampleRate / 2),
+      gain_db: cfg.gain ?? "auto",
+      noise_floor_db: cal ? cal.noiseFloorDb.toFixed(2) : "",
+      threshold_db: cal ? cal.thresholdDb.toFixed(2) : "",
+      above_threshold: above,
+      calibration_id: cal ? cal.id : "",
     };
   } else if (netInfo) {
+    const m = pinAvg.meanLevels();
+    const rssi = Number.isFinite(m.rssi) ? m.rssi : netInfo.rssi;
     row = {
       ...base,
       device: cfg.mode === "wifi" ? "Wi-Fi (estimated)" : "Cellular (estimated)",
       center_freq_hz: "",
       sample_rate_hz: "",
-      peak_power_db: String(netInfo.rssi),
+      peak_power_db: rssi.toFixed(1),
       peak_freq_hz: "",
-      band_mean_level_db: String(netInfo.rssi),
+      band_mean_level_db: rssi.toFixed(1),
       spectrum_mean_level_db: netInfo.rtt !== null ? String(netInfo.rtt) : "",
       net_quality_pct: String(netInfo.quality),
+      pin_spacing_m: spacingM !== undefined ? spacingM.toFixed(1) : "",
+      samples_averaged: pinAvg.levelCount || 1,
+      measurement_bw_hz: "",
+      gain_db: "",
+      noise_floor_db: "",
+      threshold_db: "",
+      above_threshold: "",
+      calibration_id: "",
     };
   }
+  pinAvg.reset();
   if (!row) return;
   const r = ensureRecording();
   r.rows.push(row);
   r.updatedAt = Date.now();
   if (row.latitude !== "") positioned++;
+  if (row.above_threshold === 1) aboveCount++;
   scheduleSave();
   renderRecording();
   refreshMapPoints();
+}
+
+// ── spatial sampling: a pin each time the vehicle has moved the set distance ──
+
+let lastFixT = 0;
+
+function onGpsForPins() {
+  const f = gps.fix;
+  sampler.opts.spacingM = cfg.spacingM;
+  sampler.opts.formula = cfg.distFormula;
+  if (cfg.logMode !== "distance") return;
+  if (!running || calRun) {
+    pinHint = "";
+    return;
+  }
+  if (!f || gps.status.state !== "fix") {
+    pinHint = "Waiting for a GPS fix — pins need a position";
+    renderRecording();
+    return;
+  }
+  if (f.timestamp === lastFixT) return;
+  lastFixT = f.timestamp;
+  const hasData = isSdrMode() ? pinAvg.blocks > 0 : pinAvg.levelCount > 0;
+  const pos = { lat: f.lat, lon: f.lon, t: f.timestamp, accuracyM: f.accuracyM, speedKmh: f.speedKmh };
+  const d = sampler.decide(pos);
+  if (!d.place || !hasData) {
+    pinHint =
+      d.reason === "jitter"
+        ? `Standing still (GPS ±${Math.round(f.accuracyM ?? 0)} m) — next pin after ${cfg.spacingM} m of travel`
+        : !hasData
+          ? "Measuring…"
+          : `Next pin in ${Math.max(0, cfg.spacingM - d.distanceM).toFixed(1)} m`;
+    renderRecording();
+    return;
+  }
+  addRecord(d.reason === "first" ? undefined : d.distanceM);
+  sampler.commit(pos);
+  // Faster than the GPS can place pins at this spacing (thesis §3.5.3)?
+  if (d.distanceM > 2 * cfg.spacingM && (f.speedKmh ?? 0) > 1) {
+    pinHint = `Pins ${Math.round(d.distanceM)} m apart at ${Math.round(f.speedKmh!)} km/h — the GPS updates too slowly for ${cfg.spacingM} m`;
+  } else pinHint = `Pin placed · next in ${cfg.spacingM} m`;
+  renderRecording();
+}
+
+/** Continue spacing from the last positioned row of a restored recording. */
+function resumeSampler() {
+  const last = [...rows()].reverse().find((x) => x.latitude !== "" && x.latitude !== undefined);
+  sampler.resume(last ? { lat: Number(last.latitude), lon: Number(last.longitude), t: Date.parse(String(last.timestamp)) } : null);
 }
 
 // ── saving (debounced while measuring; immediately on stop / leaving the page) ──
@@ -672,9 +818,12 @@ async function restoreRecording() {
       if (tail && tail.meta.id === full.id) extra = tail.rows.slice(Math.max(0, full.rows.length - tail.from));
       rec = full;
       savedRows = full.rows.length;
+      full.columns = [...full.columns, ...COLUMNS.filter((c) => !full!.columns.includes(c))];
       full.rows.push(...extra);
       if (extra.length) full.updatedAt = Date.now();
       positioned = full.rows.filter((x) => x.latitude !== "" && x.latitude !== undefined).length;
+      aboveCount = full.rows.filter((x) => x.above_threshold === 1 || x.above_threshold === "1").length;
+      resumeSampler();
       log(`Continuing recording “${full.name}” — ${full.rows.length} records restored. Press ＋ New to start another.`, "ok");
       if (extra.length) saveNow();
     }
@@ -694,8 +843,11 @@ async function newRecording() {
   }
   rec = null;
   positioned = 0;
+  aboveCount = 0;
   skippedNoFix = 0;
   savedRows = 0;
+  sampler.reset();
+  pinAvg.reset();
   renderRecording();
   refreshMapPoints();
   log(running ? "New recording — logging continues" : "Ready for a new recording — press Start", "ok");
@@ -706,9 +858,15 @@ function renderRecording() {
   $("stRecords").textContent = String(n);
   $("recName").textContent = rec ? rec.name : "No recording yet";
   $("recDot").className = `recdot${running && rec ? " on" : ""}`;
-  const parts = rec ? [`${n} record${n === 1 ? "" : "s"}`, `${positioned} with GPS`] : [running ? "Waiting for the first record…" : "Press Start to record"];
+  const cal = activeCalibration();
+  const parts = rec
+    ? [`${n} pin${n === 1 ? "" : "s"}`, `${positioned} with GPS`]
+    : [running ? "Waiting for the first pin…" : "Press Start to record"];
+  if (rec && cal) parts.push(`${aboveCount} above noise floor (${n ? Math.round((aboveCount / n) * 100) : 0}%)`);
   if (skippedNoFix) parts.push(`${skippedNoFix} skipped (no GPS fix)`);
   $("recMeta").textContent = parts.join(" · ");
+  $("recHint").textContent = running ? pinHint : cfg.logMode === "distance" ? `A pin every ${cfg.spacingM} m of travel (spatial sampling)` : `A record every ${cfg.logEvery} s`;
+  renderCalStatus();
   const st = $("recSaved");
   if (saveError) {
     st.textContent = "⚠ not saved";
@@ -800,6 +958,342 @@ function snapshot() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Pre-drive calibration (thesis §3.4, §4.3.1)
+// ═══════════════════════════════════════════════════════════════════
+
+let draft: { inherent?: CalibrationStep; vehicle?: CalibrationStep } = {};
+let calBusy = false;
+
+const f1 = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : "—");
+
+function renderCalStatus() {
+  const el = document.getElementById("calStatus");
+  if (!el) return;
+  const c = loadCalibration();
+  if (!isSdrMode()) {
+    el.textContent = "Noise-floor calibration applies to SDR measurements";
+    el.className = "lbl";
+    return;
+  }
+  if (!c) {
+    el.textContent = "⚠ Not calibrated — calibrate before driving";
+    el.className = "lbl warn";
+    return;
+  }
+  const mm = mismatches(c, currentCalSettings());
+  if (mm.length) {
+    el.textContent = `⚠ Calibration doesn't match: ${mm.join(", ")} — recalibrate`;
+    el.className = "lbl warn";
+    return;
+  }
+  el.textContent = `Noise floor ${f1(c.noiseFloorDb)} · threshold ${f1(c.thresholdDb)} ${c.units} (+${c.guardDb} dB) · ${new Date(c.createdAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}`;
+  el.className = "lbl ok";
+}
+
+function renderCalChecks() {
+  const items: [string, string][] = [];
+  if (!isSdrMode()) items.push(["bad", "Choose an SDR source (RTL-SDR or HackRF) — calibration measures the SDR"]);
+  items.push(sdr ? ["ok", `${sdr.name} connected`] : ["bad", "Receiver not connected"]);
+  items.push([
+    "info",
+    `${String(+cfg.freqMHz.toFixed(3))} MHz · bandwidth ${cfg.bwKHz ? `${cfg.bwKHz} kHz` : "50% of span"} · ${formatRate(cfg.sampleRate)} · FFT ${cfg.fftSize} · cal. offset ${cfg.cal} dB`,
+  ]);
+  if (!cfg.bwKHz) items.push(["warn", "Set the measurement bandwidth to the channel you measure (pilot test: 150 kHz) — it sets what “band mean” covers"]);
+  items.push(
+    cfg.gain === null
+      ? ["warn", "Gain is on auto — the noise floor depends on gain (§3.4.6). Use a fixed gain for calibration and the drive."]
+      : ["ok", `Fixed gain ${cfg.gain} dB${sdr?.kind === "hackrf" ? `, RF amp ${cfg.amp ? "on" : "off"}` : ""}`]
+  );
+  const f = gps.fix;
+  items.push(
+    f && gps.status.state === "fix"
+      ? ["ok", `GPS fix ${formatLatLon(f)}${f.accuracyM !== undefined ? ` ±${Math.round(f.accuracyM)} m` : ""} — calibrate where you'll drive (§3.4.5)`]
+      : ["warn", "No GPS fix yet — not needed to calibrate, but needed for the drive"]
+  );
+  $("calChecks").innerHTML = items.map(([c, t]) => `<li class="${c}">${t.replace(/</g, "&lt;")}</li>`).join("");
+  $("calConnect").hidden = !!sdr || !isSdrMode();
+  $("calFixGain").hidden = cfg.gain !== null;
+
+  const c = loadCalibration();
+  const cur = $("calCurrent");
+  if (c) {
+    const mm = mismatches(c, currentCalSettings());
+    cur.innerHTML =
+      `Saved calibration: noise floor <b>${f1(c.noiseFloorDb)}</b>, threshold <b>${f1(c.thresholdDb)} ${c.units}</b> (+${c.guardDb} dB), ` +
+      `${(c.centerHz / 1e6).toFixed(3)} MHz, ${new Date(c.createdAt).toLocaleString()}` +
+      (mm.length ? `<br><span style="color:#fbbf24">Doesn't match the current settings: ${mm.join(", ")}</span>` : "");
+  } else cur.textContent = "";
+}
+
+function stepText(st: CalibrationStep, label: string) {
+  return `${label}: band mean <b>${f1(st.bandMeanDb)}</b> · peak ${f1(st.peakDb)} · span mean ${f1(st.spectrumMeanDb)} ${currentUnits()} <span class="lbl">(${st.blocks} spectra, ${st.durationS} s)</span>`;
+}
+
+function renderCalResults() {
+  const c = loadCalibration();
+  const inh = draft.inherent;
+  const veh = draft.vehicle;
+  $("calRes1").innerHTML = inh ? stepText(inh, "Receiver noise") : "";
+  $("calRes2").innerHTML = veh
+    ? stepText(veh, "Noise floor") + (inh ? `<br>The vehicle adds <b>${f1(veh.bandMeanDb - inh.bandMeanDb)} dB</b> over the receiver's own noise.` : "")
+    : "";
+  const guard = Number($<HTMLInputElement>("calGuard").value);
+  const floor = veh?.bandMeanDb ?? (c && !mismatches(c, currentCalSettings()).length ? c.noiseFloorDb : NaN);
+  $("calRes3").innerHTML = Number.isFinite(floor)
+    ? `Threshold = ${f1(floor)} + ${Number.isFinite(guard) ? guard : 0} dB = <b>${f1(floor + (Number.isFinite(guard) ? guard : 0))} ${currentUnits()}</b>. Pins with a band mean below it are flagged and hidden on the map.`
+    : "Measure the vehicle noise to set the threshold.";
+  $<HTMLButtonElement>("calSave").disabled = !Number.isFinite(floor) || !Number.isFinite(guard);
+  $<HTMLButtonElement>("calCsv").disabled = !veh && !inh && !c;
+  drawCalChart();
+}
+
+function drawCalChart() {
+  const cv = $<HTMLCanvasElement>("calChart");
+  const ctx = fitCanvas(cv);
+  const W = cv.width;
+  const H = cv.height;
+  const dpr = W / Math.max(1, cv.clientWidth);
+  ctx.clearRect(0, 0, W, H);
+  const saved = loadCalibration();
+  const useSaved = !draft.inherent && !draft.vehicle && saved;
+  const inh = draft.inherent ?? (useSaved ? saved!.inherent : undefined);
+  const veh = draft.vehicle ?? (useSaved ? saved!.vehicle : undefined);
+  const ref = veh ?? inh;
+  ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+  if (!ref) {
+    ctx.fillStyle = "#64748b";
+    ctx.fillText("Spectra appear here after each measurement", 10 * dpr, 20 * dpr);
+    return;
+  }
+  const guard = Number($<HTMLInputElement>("calGuard").value) || 0;
+  const thr = (veh?.bandMeanDb ?? NaN) + guard;
+  const all = [...(inh?.spectrum ?? []), ...(veh?.spectrum ?? [])];
+  let lo = Math.min(...all);
+  let hi = Math.max(...all, Number.isFinite(thr) ? thr : -Infinity);
+  lo = Math.floor(lo / 5) * 5 - 5;
+  hi = Math.ceil(hi / 5) * 5 + 5;
+  const left = 36 * dpr;
+  const bottom = 16 * dpr;
+  const pw = W - left - 6 * dpr;
+  const ph = H - bottom - 6 * dpr;
+  const y = (v: number) => 6 * dpr + (1 - (v - lo) / (hi - lo)) * ph;
+  const x = (i: number, n: number) => left + ((i + 0.5) / n) * pw;
+  ctx.strokeStyle = "rgba(148,163,184,0.15)";
+  ctx.fillStyle = "#64748b";
+  ctx.lineWidth = 1;
+  for (let v = lo; v <= hi; v += (hi - lo) / 5) {
+    ctx.beginPath();
+    ctx.moveTo(left, Math.round(y(v)) + 0.5);
+    ctx.lineTo(left + pw, Math.round(y(v)) + 0.5);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(0), 2 * dpr, y(v) + 3 * dpr);
+  }
+  ctx.fillText(`${(ref.freqStartHz / 1e6).toFixed(3)} MHz`, left, H - 3 * dpr);
+  const endLabel = `${(ref.freqStopHz / 1e6).toFixed(3)} MHz`;
+  ctx.fillText(endLabel, left + pw - ctx.measureText(endLabel).width, H - 3 * dpr);
+  // measurement band
+  const span = ref.freqStopHz - ref.freqStartHz;
+  const [b0, b1] = bandBins(1000, span, bwHz());
+  ctx.fillStyle = "rgba(59,130,246,0.12)";
+  ctx.fillRect(left + (b0 / 1000) * pw, 6 * dpr, ((b1 - b0) / 1000) * pw, ph);
+  const trace = (sp: number[] | undefined, colour: string) => {
+    if (!sp?.length) return;
+    ctx.beginPath();
+    sp.forEach((v, i) => (i ? ctx.lineTo(x(i, sp.length), y(v)) : ctx.moveTo(x(i, sp.length), y(v))));
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 1.2 * dpr;
+    ctx.stroke();
+  };
+  trace(inh?.spectrum, "#60a5fa");
+  trace(veh?.spectrum, "#f59e0b");
+  if (Number.isFinite(thr)) {
+    ctx.save();
+    ctx.setLineDash([6 * dpr, 4 * dpr]);
+    ctx.strokeStyle = "#f87171";
+    ctx.beginPath();
+    ctx.moveTo(left, y(thr));
+    ctx.lineTo(left + pw, y(thr));
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = "#f87171";
+    ctx.fillText(`threshold ${thr.toFixed(1)}`, left + 4 * dpr, y(thr) - 4 * dpr);
+  }
+}
+
+async function measureStep(which: "inherent" | "vehicle") {
+  if (calBusy) return;
+  if (!isSdrMode()) {
+    log("Calibration needs an SDR source — choose RTL-SDR or HackRF", "wn");
+    return;
+  }
+  calBusy = true;
+  const n = which === "inherent" ? 1 : 2;
+  const buttons = ["calMeasure1", "calMeasure2", "calSkip1", "calSave"].map((id) => $<HTMLButtonElement>(id));
+  buttons.forEach((b) => (b.disabled = true));
+  const prog = $(`calProg${n}`);
+  const bar = prog.querySelector("i") as HTMLElement;
+  $(`calRes${n}`).textContent = "Starting the receiver…";
+  const avg = new PowerAverager();
+  const secs = cfg.calSeconds;
+  let finish!: () => void;
+  const finished = new Promise<void>((r) => (finish = r));
+  calRun = { avg, from: Infinity, until: Infinity, done: () => {
+    calRun = null;
+    finish();
+  } };
+  let startedHere = false;
+  let ticker = 0;
+  try {
+    if (!running) {
+      await start();
+      startedHere = running;
+      if (!running) throw new Error("the receiver didn't start");
+    }
+    const t0 = performance.now();
+    // Let the tuner and USB stream settle before averaging.
+    calRun!.from = t0 + 800;
+    calRun!.until = t0 + 800 + secs * 1000;
+    prog.classList.add("on");
+    $(`calRes${n}`).textContent = `Measuring for ${secs} s…`;
+    ticker = setInterval(() => {
+      bar.style.width = `${Math.min(100, ((performance.now() - t0) / (800 + secs * 1000)) * 100)}%`;
+    }, 200) as unknown as number;
+    // Safety net if the stream stops.
+    const guard = setTimeout(() => calRun?.done(), 800 + secs * 1000 + 6000);
+    await finished;
+    clearTimeout(guard);
+    const mean = avg.meanSpectrum();
+    if (!mean) throw new Error("no spectra arrived — is the receiver streaming?");
+    const l = spectrumLevels(mean, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
+    const step: CalibrationStep = {
+      measuredAt: Date.now(),
+      durationS: secs,
+      blocks: avg.blocks,
+      bandMeanDb: l.band,
+      peakDb: l.peak,
+      spectrumMeanDb: l.spec,
+      spectrum: reduceSpectrum(mean),
+      freqStartHz: cfg.freqMHz * 1e6 - cfg.sampleRate / 2,
+      freqStopHz: cfg.freqMHz * 1e6 + cfg.sampleRate / 2,
+    };
+    draft[which] = step;
+    log(`Calibration — ${which === "inherent" ? "receiver (dummy load)" : "vehicle"} noise: band mean ${f1(l.band)} ${currentUnits()} over ${avg.blocks} spectra`, "ok");
+  } catch (e: any) {
+    calRun = null;
+    $(`calRes${n}`).textContent = `Couldn't measure: ${e?.message ?? e}`;
+    log(`Calibration failed: ${e?.message ?? e}`, "er");
+  } finally {
+    clearInterval(ticker);
+    bar.style.width = "0";
+    prog.classList.remove("on");
+    if (startedHere) await stop();
+    buttons.forEach((b) => (b.disabled = false));
+    calBusy = false;
+    renderCalChecks();
+    renderCalResults();
+  }
+}
+
+function saveDraftCalibration() {
+  const guard = Number($<HTMLInputElement>("calGuard").value);
+  if (!Number.isFinite(guard)) return;
+  const prev = loadCalibration();
+  const f = gps.status.state === "fix" ? gps.fix : null;
+  let c: Calibration;
+  if (draft.vehicle) {
+    c = {
+      ...currentCalSettings(),
+      id: newCalibrationId(),
+      createdAt: Date.now(),
+      lat: f?.lat,
+      lon: f?.lon,
+      inherent: draft.inherent,
+      vehicle: draft.vehicle,
+      noiseFloorDb: draft.vehicle.bandMeanDb,
+      guardDb: guard,
+      thresholdDb: draft.vehicle.bandMeanDb + guard,
+    };
+  } else if (prev && !mismatches(prev, currentCalSettings()).length) {
+    c = { ...prev, guardDb: guard, thresholdDb: prev.noiseFloorDb + guard };
+  } else return;
+  saveCalibration(c);
+  log(`Calibration saved: noise floor ${f1(c.noiseFloorDb)} + ${c.guardDb} dB → threshold ${f1(c.thresholdDb)} ${c.units}`, "ok");
+  draft = {};
+  renderCalChecks();
+  renderCalResults();
+  renderRecording();
+  dirty = true;
+}
+
+function calibrationForExport(): Calibration | null {
+  if (draft.inherent || draft.vehicle) {
+    const guard = Number($<HTMLInputElement>("calGuard").value) || 0;
+    const floor = (draft.vehicle ?? draft.inherent)!.bandMeanDb;
+    return { ...currentCalSettings(), id: "draft", createdAt: Date.now(), inherent: draft.inherent, vehicle: draft.vehicle, noiseFloorDb: floor, guardDb: guard, thresholdDb: floor + guard };
+  }
+  return loadCalibration();
+}
+
+function openCalibration() {
+  const dlg = $<HTMLDialogElement>("calDlg");
+  draft = {};
+  const c = loadCalibration();
+  $<HTMLInputElement>("calGuard").value = String(c?.guardDb ?? DEFAULT_GUARD_DB);
+  $<HTMLSelectElement>("calSeconds").value = String(cfg.calSeconds);
+  ["calRes1", "calRes2"].forEach((id) => ($(id).textContent = ""));
+  renderCalChecks();
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+  renderCalResults();
+}
+
+function bindCalibration() {
+  const dlg = $<HTMLDialogElement>("calDlg");
+  $("btnCalibrate").addEventListener("click", openCalibration);
+  $("calClose").addEventListener("click", () => {
+    if (calBusy) return;
+    dlg.close();
+  });
+  dlg.addEventListener("cancel", (e) => {
+    if (calBusy) e.preventDefault();
+  });
+  $("calConnect").addEventListener("click", async () => {
+    await connect();
+    updateButtons();
+    renderCalChecks();
+  });
+  $("calFixGain").addEventListener("click", () => {
+    const g = $<HTMLInputElement>("gain");
+    $<HTMLInputElement>("gainAuto").checked = false;
+    g.disabled = false;
+    g.dispatchEvent(new Event("input"));
+    renderCalChecks();
+    renderCalResults();
+  });
+  $<HTMLSelectElement>("calSeconds").addEventListener("change", (e) => {
+    cfg.calSeconds = Number((e.target as HTMLSelectElement).value) || 10;
+    saveSettings();
+  });
+  $("calMeasure1").addEventListener("click", () => measureStep("inherent"));
+  $("calMeasure2").addEventListener("click", () => measureStep("vehicle"));
+  $("calSkip1").addEventListener("click", () => {
+    draft.inherent = undefined;
+    $("calRes1").textContent = "Skipped — the vehicle measurement alone sets the noise floor.";
+    renderCalResults();
+  });
+  $("calGuard").addEventListener("input", renderCalResults);
+  $("calSave").addEventListener("click", saveDraftCalibration);
+  $("calCsv").addEventListener("click", () => {
+    const c = calibrationForExport();
+    if (!c) return;
+    const d = new Date(c.createdAt);
+    const pad = (x: number) => String(x).padStart(2, "0");
+    const name = `mmn_calibration_${String(+(c.centerHz / 1e6).toFixed(3))}MHz_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+    deliverCsv(calibrationCsv(c), name, "download");
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Network Information API (Wi-Fi / cellular estimates)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -868,7 +1362,8 @@ function pushNetworkSample() {
   lastStats = { peak: info.rssi, peakHz: 0, band: info.rssi, spec: info.rtt ?? NaN };
   timeline.push({ peak: info.rssi, band: -110 + (info.quality / 100) * 120 });
   if (timeline.length > 240) timeline.shift();
-  addRecord();
+  pinAvg.addLevels({ rssi: info.rssi });
+  if (cfg.logMode === "time") addRecord();
   pushWaterfall();
   dirty = true;
 }
@@ -950,9 +1445,30 @@ function drawSpectrum() {
     ctx.fillText("noise floor", left + 4 * dpr, H - 4 * dpr);
     ctx.fillText("estimated level (not RF power)", left + pw / 2 - 70 * dpr, H - 4 * dpr);
   }
-  // band (centre 50%) shading
-  ctx.fillStyle = "rgba(59,130,246,0.06)";
-  ctx.fillRect(left + pw / 4, 0, pw / 2, ph);
+  // measurement band shading (bandwidth setting, or centre 50%)
+  {
+    const nb = spec.length || cfg.fftSize;
+    const [b0, b1] = bandBins(nb, cfg.sampleRate, bwHz());
+    ctx.fillStyle = "rgba(59,130,246,0.08)";
+    ctx.fillRect(left + (b0 / nb) * pw, 0, ((b1 - b0) / nb) * pw, ph);
+  }
+  // calibrated threshold line
+  {
+    const c = activeCalibration();
+    if (c && isSdrMode()) {
+      ctx.save();
+      ctx.setLineDash([6 * dpr, 4 * dpr]);
+      ctx.strokeStyle = "rgba(248,113,113,0.85)";
+      ctx.lineWidth = 1 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(left, y(c.thresholdDb));
+      ctx.lineTo(left + pw, y(c.thresholdDb));
+      ctx.stroke();
+      ctx.fillStyle = "rgba(248,113,113,0.95)";
+      ctx.fillText(`threshold ${c.thresholdDb.toFixed(1)}`, left + 4 * dpr, y(c.thresholdDb) - 3 * dpr);
+      ctx.restore();
+    }
+  }
   if (!frames) return;
 
   const n = spec.length;
@@ -1071,9 +1587,8 @@ function drawBand() {
     return;
   }
   const n = spec.length;
-  const s = n >> 2;
-  const e = n - s;
-  const cols = Math.min(e - s, Math.floor(W / 2));
+  const [s, e] = bandBins(n, cfg.sampleRate, bwHz());
+  const cols = Math.max(1, Math.min(e - s, Math.floor(W / 2)));
   const bw = W / cols;
   for (let i = 0; i < cols; ++i) {
     const k0 = s + Math.floor((i * (e - s)) / cols);
@@ -1158,6 +1673,8 @@ function updateReadout() {
   } else {
     for (const id of ["roCenter", "roSpan", "roRbw", "stRate"]) $(id).textContent = "—";
   }
+  const bw = bwHz();
+  $("bandLbl").textContent = bw ? `${bw / 1000} kHz measurement band` : "centre 50%";
 }
 
 function frame() {
@@ -1224,6 +1741,7 @@ function renderGps() {
 let lastGpsMsg = "";
 gps.addEventListener("change", () => {
   renderGps();
+  onGpsForPins();
   const f = gps.fix;
   if (f && liveMap && gps.status.state === "fix") {
     liveMap.setFix({ lat: f.lat, lon: f.lon, accuracyM: f.accuracyM, speedKmh: f.speedKmh, courseDeg: f.headingDeg, timestamp: f.timestamp });
@@ -1272,7 +1790,10 @@ function refreshMapPoints() {
       lat: Number(r.latitude),
       lon: Number(r.longitude),
       level: Number(r.band_mean_level_db),
-      label: `${new Date(String(r.timestamp)).toLocaleTimeString()} · ${r.device} · band ${r.band_mean_level_db} · peak ${r.peak_power_db} ${r.units}`,
+      below: r.above_threshold === 0 || r.above_threshold === "0",
+      label:
+        `${new Date(String(r.timestamp)).toLocaleTimeString()} · ${r.device} · band ${r.band_mean_level_db} · peak ${r.peak_power_db} ${r.units}` +
+        (r.threshold_db !== "" && r.threshold_db !== undefined ? ` · ${r.above_threshold === 1 || r.above_threshold === "1" ? "above" : "below"} threshold ${r.threshold_db}` : ""),
     }))
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && Number.isFinite(p.level));
   liveMap.setMeasurements(pts);
@@ -1484,6 +2005,49 @@ function bind() {
     logEvery.value = String(cfg.logEvery);
     saveSettings();
   });
+  const logMode = $<HTMLSelectElement>("logMode");
+  const spacing = $<HTMLInputElement>("spacingM");
+  const formula = $<HTMLSelectElement>("distFormula");
+  const showLogMode = () => {
+    const dist = cfg.logMode === "distance";
+    spacing.hidden = !dist;
+    logEvery.hidden = dist;
+    $("distFormulaField").hidden = !dist;
+    $("needFixRow").hidden = dist; // pins always need a position
+  };
+  logMode.value = cfg.logMode;
+  spacing.value = String(cfg.spacingM);
+  formula.value = cfg.distFormula;
+  showLogMode();
+  logMode.addEventListener("change", () => {
+    cfg.logMode = logMode.value === "time" ? "time" : "distance";
+    showLogMode();
+    pinHint = "";
+    saveSettings();
+  });
+  spacing.addEventListener("change", () => {
+    cfg.spacingM = Math.max(1, Number(spacing.value) || 5);
+    spacing.value = String(cfg.spacingM);
+    sampler.opts.spacingM = cfg.spacingM;
+    saveSettings();
+  });
+  formula.addEventListener("change", () => {
+    cfg.distFormula = formula.value === "euclidean" ? "euclidean" : "haversine";
+    sampler.opts.formula = cfg.distFormula;
+    saveSettings();
+  });
+  sampler.opts.spacingM = cfg.spacingM;
+  sampler.opts.formula = cfg.distFormula;
+  const bw = $<HTMLInputElement>("bwKHz");
+  bw.value = cfg.bwKHz ? String(cfg.bwKHz) : "";
+  bw.addEventListener("change", () => {
+    const v = Number(bw.value);
+    cfg.bwKHz = Number.isFinite(v) && v > 0 && v * 1000 < cfg.sampleRate ? v : null;
+    bw.value = cfg.bwKHz ? String(cfg.bwKHz) : "";
+    saveSettings();
+    updateReadout();
+  });
+  bindCalibration();
 
   const bindCheck = (id: string, key: "amp" | "dcRemove" | "peakHold" | "biasTee", apply?: () => void) => {
     const el = $<HTMLInputElement>(id);
@@ -1584,6 +2148,7 @@ function bind() {
   });
   window.addEventListener("pagehide", onPageHidden);
   new ResizeObserver(() => (dirty = true)).observe(document.body);
+  bound = true;
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -56,6 +56,13 @@ Works in Chrome and Edge on Windows, macOS, Linux, ChromeOS and Android (USB-OTG
 
 Live spectrum with peak hold, waterfall, band detail, level meter and timeline; RTL-SDR or HackRF, or Wi-Fi/cellular quality estimates from the Network Information API. Values are dBFS unless a calibration offset is entered (then dBm). The screen is kept awake while measuring.
 
+The measurement follows the method of the MEng thesis *Cost-effective design for the measurement of man-made noise in the HF band receiver* (L. McQuire, 2021):
+
+- **Measurement bandwidth** (e.g. 150 kHz, Table 4.2): *peak* is the strongest bin inside it, *band mean* the mean power inside it, *spectrum mean* the mean over the whole span (as in the thesis MATLAB tool, Appendix A-2). Left empty, the band is the centre 50 % of the span.
+- **Pins by distance — spatial sampling (§3.5).** By default a pin is recorded each time you've travelled 5 m (5/25/100/250 m presets or any distance), not every second, so stops and slow traffic don't pile up samples. Everything measured between pins is averaged per frequency bin (linear power) into the next pin, which carries its own time. Distances use Haversine (Eq 3-2); the Euclidean form of Eq 3-6 can be chosen to reproduce the thesis figures (it reads east–west distances ~20 % long at 33° S). While parked, GPS drift smaller than the fix accuracy doesn't drop pins. Time-based logging is still available.
+- **Pre-drive calibration (§3.4, §4.3.1)** — *🎚 Calibrate*: (1) checks the receiver, settings, fixed gain and GPS; (2) receiver noise with the antenna replaced by a 50 Ω dummy load; (3) vehicle noise with the antenna fitted, engine running, air-con, lights and radio on; (4) threshold = vehicle noise floor + guard band (5 dB by default, as in the pilot test §4.3.4). Both spectra are plotted and can be saved as a calibration CSV (like Table 3.5). A calibration applies only to the receiver, frequency, bandwidth, sample rate, gain and offset it was made with; the monitor says when it doesn't match.
+- Each pin stores the noise floor, threshold and whether its band mean is above it (`noise_floor_db`, `threshold_db`, `above_threshold`), plus `pin_spacing_m`, `samples_averaged`, `measurement_bw_hz`, `gain_db`. Pins below the threshold are kept, flagged, and shown grey on the live map.
+
 **Recording.** Every record (with GPS position, compass, units and calibration) is saved on the device while you measure (IndexedDB, every few seconds, and straight away when you stop, switch apps or close the page). A reload, crash or a phone that put the page to sleep doesn't lose the recording: it continues where it left off. *＋ New recording* keeps the current one and starts another. *🗺 Open in Map* opens it in the MMN map (in a new tab while measuring, so recording carries on and the map follows it live), *⬇ CSV* saves it as `mmn_<device>_<freq>_<date>_<time>.csv`, and *↗ Share* (phones) sends the CSV to email, Drive, WhatsApp and so on. *Only log when GPS has a fix* skips records without a position.
 
 ### MMN map (`map.html`)
@@ -64,7 +71,11 @@ The MMN Map Visualizer, now part of the app and working on phones and desktops, 
 
 - **Opens** the Monitor's saved recordings (listed under *Saved on this device*), CSV files from the file picker or dropped on the map, files opened with the installed app on desktop (*Open with → webRx*), and CSV files shared to webRx from other Android apps.
 - **Reads** webRx CSVs and older/other recorders: comma, semicolon or tab separated, decimal commas, quoted fields, headers in any language or none at all. Latitude/longitude columns that were swapped, and southern-hemisphere latitudes saved without the minus sign, are detected and corrected (and the file is marked as corrected).
-- **Views:** *Heatmap*; *Route* coloured by level (gradient or the original red/orange/green/blue steps), not joined across gaps; *Coverage* — an inverse-distance estimate between measured points, only filled within a chosen distance of a measurement; *Source* — power-weighted centre of the strongest points, with an uncertainty circle and the strongest reading marked.
+- **Reads the thesis MATLAB tool's CSV** (no header: longitude, latitude, peak, band mean, spectrum mean, MATLAB datenum) — the hemisphere the tool dropped is restored and the levels line up with webRx recordings.
+- **Views:** *Heatmap*; *Pins* — one pin per recorded sample coloured on the jet scale with a dB colour bar, the scatter map of thesis Figs 4.6/4.8 (optionally joined by the route line, or the original red/orange/green/blue steps); *Coverage* — natural-neighbour interpolation as in Figs 4.7/4.9 (or inverse distance), only within a chosen distance of a pin and labelled as calculated, not measured; *Source* — power-weighted centre of the strongest points, with an uncertainty circle.
+- **Noise floor (§4.3.4):** shows *Above noise floor* (default), *All pins* or *Below only*, using each pin's calibrated threshold; for older files enter the noise floor and guard band. It reports how many pins fall below — the storage saving of keeping only those above.
+- **Timeline** of the level over the drive with the threshold line (as in the thesis Data Viewer); tap it to find the pin.
+- **Licensed vs measured coverage (§4.3.5):** enter the transmitter site (licence format such as `18E42 02 / 33S27 55`, or decimal) and the licensed coverage radius. The map draws both and reports the furthest pin above the noise floor, the pins beyond the licensed radius, and the measured coverage area against the licence over the directions actually driven.
 - Choose the measurement (peak, band mean, spectrum mean, Power1/Power2…), filter by frequency or device, set the level range, see min/mean/max, route length and time span, and export what's shown as one CSV. *📍 My location* shows where you are.
 - Map tiles you've viewed are kept for offline use in the field.
 
@@ -81,7 +92,9 @@ Install from the browser menu (or the Install button). All pages, the WASM core 
 ```shell
 npm run bench:dsp       # JS vs WASM speed and output equivalence
 npm run test:devices    # HackRF protocol (mock WebUSB), NMEA parsing, G-MOUSE (mock Web Serial)
-npm run test:map        # CSV importer: webRx, legacy, European, headerless and broken files; writer round trip
+npm run test:map        # CSV importer: webRx, legacy, thesis MATLAB, European, headerless and broken files; writer round trip
+npm run test:sampling   # spatial sampling (§3.5), per-bin averaging, measurement band, calibration
+npm run test:coverage   # natural-neighbour / IDW grids, licence site formats, licensed vs measured
 npm run typecheck
 cd dsp-rs && cargo test --release
 ```
