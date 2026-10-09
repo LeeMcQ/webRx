@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+def buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
+android {
+    namespace 'za.leemcq.webrx.bridge'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'za.leemcq.webrx.bridge'
+        minSdk 26
+        targetSdk 35
+        versionCode buildNumber
+        versionName "1.0.${buildNumber}"
+    }
+
+    signingConfigs {
+        // A fixed key so each new build installs as an update over the previous one.
+        // This app is sideloaded (not on Play), so the key lives in the repo.
+        bridge {
+            storeFile file('../bridge.keystore')
+            storePassword 'webrxbridge'
+            keyAlias 'bridge'
+            keyPassword 'webrxbridge'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.bridge
+        }
+        debug {
+            signingConfig signingConfigs.bridge
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
