@@ -76,7 +76,19 @@ export type SdrProviderOptions = {
 
 /** Provides an open RTL-SDR or HackRF, as an RtlDevice. */
 export class SdrProvider implements RtlDeviceProvider {
-  constructor(private options: SdrProviderOptions) {}
+  constructor(private options: SdrProviderOptions) {
+    // Let go of the SDR when this tab is closed or navigated away, so another
+    // webRx tab (or app) can claim it straight away.
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", () => this.release());
+    }
+  }
+
+  /** Closes the USB device if this page has it open. */
+  release() {
+    const d = this.device;
+    if (d && d.opened) d.close().catch(() => {});
+  }
 
   private device?: USBDevice;
   private current?: ConnectedSdr;
@@ -134,7 +146,10 @@ export class SdrProvider implements RtlDeviceProvider {
         device: hackrf,
       };
     } else {
-      if (!dev.opened) await dev.open();
+      // Start from a clean session: a claim left over from an earlier failed
+      // attempt in this page would otherwise make the new claim fail.
+      if (dev.opened) await dev.close().catch(() => {});
+      await dev.open();
       const rtl = await RTL2832U.open(dev);
       // Keep requests inside the RTL2832U's usable ranges (e.g. after using a HackRF at 10 Msps).
       const setRate = rtl.setSampleRate.bind(rtl);

@@ -47,6 +47,11 @@ Works in Chrome and Edge on Windows, macOS, Linux, ChromeOS and Android (USB-OTG
 - **Phone / device GPS** through the Geolocation API.
 - **G-MOUSE USB GPS** (or any NMEA 0183 serial GPS) through Web Serial on Chrome/Edge desktop, with baud-rate auto-detection (9600/4800/38400/115200), checksum validation and GGA/RMC/GSA/GSV/VTG parsing.
 
+### Compass and live map
+
+- **Compass:** on Android phones the monitor and receiver show which way the phone points (magnetic heading, tilt-compensated), next to the GPS course over ground. It's logged in the CSV as `compass_deg` and `course_deg`. iPhones need a tap on 🧭 Compass to allow motion access.
+- **Live map** (monitor): your position with its accuracy circle, a heading cone, the route you've travelled with its distance, and each logged measurement as a dot coloured from weak (blue) to strong (red). Street or satellite base map, follow mode, centre, fit route and clear route. The route is kept between visits.
+
 ### RF MMN Monitor (`thesis-view.html`)
 
 Live spectrum with peak hold, waterfall, band detail, level meter and timeline; RTL-SDR or HackRF, or Wi-Fi/cellular quality estimates from the Network Information API. Measurements are logged with GPS position and exported as CSV. The CSV column names (`latitude`, `longitude`, `peak_power_db`, `band_mean_level_db`, …) are picked up directly by `map.html`. Values are dBFS unless a calibration offset is entered (then dBm). The screen is kept awake while measuring.

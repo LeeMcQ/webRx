@@ -128,6 +128,50 @@ async function testHackRF() {
   await hackrf.close();
   check("RX mode off on close", dev.log.some((c) => c.request === 1 && c.value === 0));
 
+  // Claim recovery: interface held by a stale session in this page → close/reopen fixes it.
+  {
+    const stuck = new MockHackRF(5) as any;
+    let claims = 0;
+    let closes = 0;
+    stuck.claimInterface = async () => {
+      claims++;
+      if (closes === 0) throw new Error("NetworkError: Unable to claim interface.");
+    };
+    const origClose = stuck.close.bind(stuck);
+    stuck.close = async () => {
+      closes++;
+      return origClose();
+    };
+    stuck.opened = true;
+    const h = await HackRF.open(stuck as USBDevice);
+    check("stale claim recovered by close/reopen", h.info.boardName === "HackRF Pro" && closes === 1 && claims === 2, { claims, closes });
+  }
+  {
+    const busy = new MockHackRF(2) as any;
+    busy.claimInterface = async () => {
+      throw new Error("NetworkError: Unable to claim interface.");
+    };
+    busy.reset = async () => {};
+    let msg = "";
+    try {
+      await HackRF.open(busy as USBDevice);
+    } catch (e: any) {
+      msg = String(e.message);
+    }
+    check("device held elsewhere → clear guidance", msg.includes("in use by something else") && msg.includes("webRx tab"), msg);
+  }
+  {
+    const claimed = new MockHackRF(4) as any;
+    claimed.opened = true;
+    claimed.configuration = { configurationValue: 1, interfaces: [{ interfaceNumber: 0, claimed: true }] };
+    let claimCalls = 0;
+    claimed.claimInterface = async () => {
+      claimCalls++;
+    };
+    await HackRF.open(claimed as USBDevice);
+    check("already-claimed interface is reused", claimCalls === 0);
+  }
+
   // Provider: a single granted HackRF is reused without the picker.
   let pickerShown = false;
   const usb = {

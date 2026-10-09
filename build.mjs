@@ -25,7 +25,9 @@ function asArray(src) {
 
 async function compile(src) {
   console.log(`Build ${src}`);
-  let assetPrefix = src.substring(0, src.indexOf("/"));
+  // Keep assets (fonts, Leaflet's control icons) inside the app's own folder so
+  // the folder can be deployed on its own (docs/, gh-pages).
+  let assetPrefix = path.dirname(src).split(path.sep).join("/");
   return esbuild.build({
     entryPoints: [src],
     outdir: "dist",

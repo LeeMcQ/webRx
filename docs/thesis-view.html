@@ -9,6 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="monitor.css" />
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="apple-touch-icon" href="icon-192.png" />
     <title>MMN Monitor – Lee McQuire</title>
@@ -164,6 +165,36 @@
       .stat small { display: block; font-size: 10px; color: var(--muted); letter-spacing: .04em; }
       .stat b { font: 700 15px/1.3 var(--mono); }
 
+      /* ── map ── */
+      #liveMap { height: 380px; border-radius: 8px; background: #070d18; z-index: 0; }
+      @media (max-width: 600px) { #liveMap { height: 300px; } }
+      .maptools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+      .maptools .btn { min-height: 34px; padding: 4px 10px; font-size: 12.5px; flex: none; }
+      .maptools .lbl { margin-left: auto; font: 12px var(--mono); color: var(--muted); }
+      .legend { display: inline-block; width: 90px; height: 8px; border-radius: 4px; vertical-align: middle;
+        background: linear-gradient(90deg, hsl(240,85%,45%), hsl(120,85%,50%), hsl(60,85%,52%), hsl(0,85%,55%)); }
+      .leaflet-container { font: 12px system-ui, sans-serif; }
+      .leaflet-control-layers, .leaflet-bar a { background: #111a2b; color: #e2e8f0; border-color: #1e2c45; }
+      .leaflet-control-layers-expanded { color: #e2e8f0; }
+      .leaflet-control-attribution { background: rgba(11,18,32,.75) !important; color: #8a9bb5; }
+      .leaflet-control-attribution a { color: #93c5fd; }
+
+      /* ── compass ── */
+      .compassrow { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+      .rose { position: relative; width: 64px; height: 64px; flex: none; border-radius: 50%;
+        border: 2px solid var(--line); background: radial-gradient(circle, #0e1626 60%, #070d18); }
+      .rose::before { content: "N"; position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+        font: 700 10px var(--mono); color: #f87171; }
+      .rose .needle { position: absolute; inset: 0; transition: transform .15s linear; }
+      .rose .needle::before { content: ""; position: absolute; left: 50%; top: 10px; width: 0; height: 0;
+        transform: translateX(-50%); border-left: 6px solid transparent; border-right: 6px solid transparent;
+        border-bottom: 22px solid #475569; }
+      .rose.live .needle::before { border-bottom-color: #fbbf24; }
+      .rose .needle::after { content: ""; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
+        margin: -3px 0 0 -3px; border-radius: 50%; background: #e2e8f0; }
+      .compassrow .val { font: 700 18px var(--mono); }
+      .compassrow small { display: block; color: var(--muted); font-size: 11px; }
+
       /* ── tables ── */
       table { width: 100%; border-collapse: collapse; font-size: 13px; }
       td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -243,6 +274,17 @@
             </div>
           </section>
         </div>
+
+        <section class="card">
+          <h2>Map <span class="spacer"></span><span class="lbl">weak <span class="legend"></span> strong</span></h2>
+          <div id="liveMap" role="application" aria-label="Map of your position and route"></div>
+          <div class="maptools">
+            <button class="btn ghost" id="btnMapCentre">◎ Centre</button>
+            <button class="btn ghost" id="btnMapFit">⤢ Route</button>
+            <button class="btn ghost" id="btnMapClear">🗑 Clear route</button>
+            <span class="lbl">route <b id="mapDistance">0 m</b> · <span id="mapFollow">following</span></span>
+          </div>
+        </section>
 
         <section class="card">
           <h2>Timeline <span class="spacer"></span><span class="lbl"><span style="color:#60a5fa">━</span> peak <span style="color:#4ade80">━</span> band mean</span></h2>
@@ -342,12 +384,20 @@
             </select>
             <button class="btn primary" id="btnGPS" style="min-height:38px">📡 Connect</button>
           </div>
+          <div class="compassrow">
+            <div class="rose" id="compassRose" aria-hidden="true"><div class="needle" id="compassNeedle"></div></div>
+            <div style="flex:1; min-width:0">
+              <small>Compass (phone)</small>
+              <div class="val" id="gpsCompass">—</div>
+            </div>
+            <button class="btn ghost" id="btnCompass" style="min-height:38px; flex:none">🧭 Compass</button>
+          </div>
           <table>
             <tr><td>Latitude</td><td id="gpsLat">—</td></tr>
             <tr><td>Longitude</td><td id="gpsLon">—</td></tr>
             <tr><td>Altitude</td><td id="gpsAlt">—</td></tr>
             <tr><td>Speed</td><td id="gpsSpeed">—</td></tr>
-            <tr><td>Heading</td><td id="gpsHeading">—</td></tr>
+            <tr><td>Course (GPS)</td><td id="gpsHeading">—</td></tr>
             <tr><td>Satellites</td><td id="gpsSats">—</td></tr>
             <tr><td>Fix quality</td><td id="gpsFix">—</td></tr>
             <tr><td>Accuracy</td><td id="gpsAcc">—</td></tr>

@@ -7,7 +7,7 @@
 // • Other same-origin files are served from cache and refreshed in the background.
 // Bump VERSION when the list changes.
 
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE_NAME = `radioreceiver-${VERSION}`;
 const APP_STATIC_RESOURCES = [
   "./",
@@ -15,6 +15,7 @@ const APP_STATIC_RESOURCES = [
   "main.js",
   "thesis-view.html",
   "monitor.js",
+  "monitor.css",
   "webrx_dsp.wasm",
   "help.html",
   "help.js",
