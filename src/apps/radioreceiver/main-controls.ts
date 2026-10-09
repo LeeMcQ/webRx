@@ -160,6 +160,7 @@ export class RrMainControls extends WindowDelegate(LitElement) {
         <a class="chip" id="monitorLink" href="thesis-view.html" title="Open the MMN monitor"
           >📊 Monitor</a
         >
+        <a class="chip" id="mapLink" href="map.html" title="Open recordings on the MMN map">🗺 Map</a>
       </div>
       <div>
         <label for="centerFrequency">Center frequency: </label

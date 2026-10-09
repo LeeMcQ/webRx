@@ -3,7 +3,8 @@
 // Sources: RTL-SDR or HackRF One/Pro over WebUSB (spectrum computed by the
 // Rust/WASM DSP core), or the browser's Network Information API for Wi-Fi /
 // cellular quality estimates. Location from the phone's GPS or a G-MOUSE USB
-// receiver over Web Serial. Records export as CSV that map.html can plot.
+// receiver over Web Serial. Every recording is saved on the device as it runs
+// (IndexedDB) and opens in the MMN map (map.html) or exports/shares as CSV.
 
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
@@ -21,6 +22,20 @@ import {
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
+import {
+  RecordingRow,
+  RecordingSession,
+  canShareFiles,
+  csvFileName,
+  deliverCsv,
+  getSession,
+  listSessions,
+  newSessionId,
+  notifyRecordings,
+  onRecordingsChanged,
+  saveSession,
+  toCsv,
+} from "../../storage/recordings.js";
 
 type Mode = SdrKind | "wifi" | "cellular";
 type Settings = {
@@ -36,26 +51,7 @@ type Settings = {
   dcRemove: boolean;
   peakHold: boolean;
   biasTee: boolean;
-};
-
-type LogRow = {
-  ts: string;
-  device: string;
-  centerHz: number | "";
-  rateHz: number | "";
-  gpsSource: string;
-  lat: string;
-  lon: string;
-  alt: string;
-  acc: string;
-  sats: string;
-  compass: string;
-  course: string;
-  peak: string;
-  peakHz: number | "";
-  band: string;
-  spec: string;
-  netQuality: string;
+  needFix: boolean;
 };
 
 const STORE_KEY = "webrx.monitor";
@@ -72,6 +68,7 @@ const DEFAULTS: Settings = {
   dcRemove: true,
   peakHold: true,
   biasTee: false,
+  needFix: false,
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -101,7 +98,6 @@ let dspMs = 0;
 let dirty = false;
 let lastStats: { peak: number; peakHz: number; band: number; spec: number } | null = null;
 let netInfo: { quality: number; rssi: number; rtt: number | null; dl: number; type: string; eff: string } | null = null;
-const records: LogRow[] = [];
 const timeline: { peak: number; band: number }[] = [];
 let yLo = -100;
 let yHi = -20;
@@ -339,6 +335,7 @@ async function stop() {
   }
   await Promise.race([loopDone, new Promise((r) => setTimeout(r, 1500))]);
   releaseWakeLock();
+  saveNow();
   $("measState").textContent = "Stopped";
   if (device) setChip("dotSource", "txtSource", `${sdr?.name ?? "SDR"} ready`, "ok");
   updateButtons();
@@ -465,109 +462,301 @@ function computeStats() {
 //  Records / CSV
 // ═══════════════════════════════════════════════════════════════════
 
-function gpsColumns() {
+// Column names the MMN map understands (latitude/longitude + *_level_db etc.).
+const COLUMNS = [
+  "timestamp",
+  "device",
+  "center_freq_hz",
+  "sample_rate_hz",
+  "gps_source",
+  "latitude",
+  "longitude",
+  "altitude_m",
+  "gps_accuracy_m",
+  "gps_sats",
+  "compass_deg",
+  "course_deg",
+  "peak_power_db",
+  "peak_freq_hz",
+  "band_mean_level_db",
+  "spectrum_mean_level_db",
+  "units",
+  "calibration_db",
+  "net_quality_pct",
+];
+/** Unfinished recordings younger than this continue after a reload. */
+const RESUME_WITHIN_MS = 24 * 3600 * 1000;
+/** Rows not yet in IndexedDB, copied synchronously when the page is hidden or closed. */
+const TAIL_KEY = "webrx.monitor.unsaved";
+
+let rec: RecordingSession | null = null;
+let positioned = 0;
+let skippedNoFix = 0;
+let saveTimer: number | null = null;
+let saveChain: Promise<void> = Promise.resolve();
+let savedRows = 0;
+let saveError = "";
+
+function rows(): RecordingRow[] {
+  return rec ? rec.rows : [];
+}
+
+function gpsColumns(): RecordingRow {
   const f = gps.fix;
   return {
-    gpsSource: f ? f.source : gps.status.source,
-    lat: f ? f.lat.toFixed(6) : "",
-    lon: f ? f.lon.toFixed(6) : "",
-    alt: f?.altM !== undefined ? f.altM.toFixed(1) : "",
-    acc: f?.accuracyM !== undefined ? f.accuracyM.toFixed(1) : "",
-    sats: f?.satellites !== undefined ? String(f.satellites) : "",
-    compass: compass.status.state === "on" && compass.status.heading !== undefined ? compass.status.heading.toFixed(0) : "",
-    course: f?.headingDeg !== undefined ? f.headingDeg.toFixed(0) : "",
+    gps_source: f ? f.source : gps.status.source,
+    latitude: f ? f.lat.toFixed(6) : "",
+    longitude: f ? f.lon.toFixed(6) : "",
+    altitude_m: f?.altM !== undefined ? f.altM.toFixed(1) : "",
+    gps_accuracy_m: f?.accuracyM !== undefined ? f.accuracyM.toFixed(1) : "",
+    gps_sats: f?.satellites !== undefined ? String(f.satellites) : "",
+    compass_deg: compass.status.state === "on" && compass.status.heading !== undefined ? compass.status.heading.toFixed(0) : "",
+    course_deg: f?.headingDeg !== undefined ? f.headingDeg.toFixed(0) : "",
   };
+}
+
+function currentUnits() {
+  return isSdrMode() ? (cfg.cal !== 0 ? "dBm(cal)" : "dBFS") : "dBm(est)";
+}
+
+function describeSource(): string {
+  if (isSdrMode()) return `${sdr?.name ?? "SDR"} · ${String(+cfg.freqMHz.toFixed(3))} MHz`;
+  return cfg.mode === "wifi" ? "Wi-Fi" : "Cellular";
+}
+
+function ensureRecording(): RecordingSession {
+  if (rec) return rec;
+  const now = Date.now();
+  const summary = describeSource();
+  rec = {
+    id: newSessionId(),
+    name: `${summary} · ${new Date(now).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`,
+    startedAt: now,
+    updatedAt: now,
+    columns: COLUMNS,
+    rows: [],
+    summary,
+    finished: false,
+  };
+  positioned = 0;
+  savedRows = 0;
+  log(`Recording started: ${rec.name}`, "ok");
+  return rec;
 }
 
 function addRecord() {
   const g = gpsColumns();
-  if (isSdrMode() && lastStats) {
-    records.push({
-      ts: new Date().toISOString(),
-      device: sdr?.name ?? "SDR",
-      centerHz: Math.round(cfg.freqMHz * 1e6),
-      rateHz: cfg.sampleRate,
-      ...g,
-      peak: lastStats.peak.toFixed(2),
-      peakHz: Math.round(lastStats.peakHz),
-      band: lastStats.band.toFixed(2),
-      spec: lastStats.spec.toFixed(2),
-      netQuality: "",
-    });
-  } else if (netInfo) {
-    records.push({
-      ts: new Date().toISOString(),
-      device: cfg.mode === "wifi" ? "Wi-Fi (estimated)" : "Cellular (estimated)",
-      centerHz: "",
-      rateHz: "",
-      ...g,
-      peak: String(netInfo.rssi),
-      peakHz: "",
-      band: String(netInfo.rssi),
-      spec: netInfo.rtt !== null ? String(netInfo.rtt) : "",
-      netQuality: String(netInfo.quality),
-    });
+  if (cfg.needFix && g.latitude === "") {
+    skippedNoFix++;
+    renderRecording();
+    return;
   }
-  $("stRecords").textContent = String(records.length);
+  let row: RecordingRow | null = null;
+  const base = { timestamp: new Date().toISOString(), ...g, units: currentUnits(), calibration_db: cfg.cal };
+  if (isSdrMode() && lastStats) {
+    row = {
+      ...base,
+      device: sdr?.name ?? "SDR",
+      center_freq_hz: Math.round(cfg.freqMHz * 1e6),
+      sample_rate_hz: cfg.sampleRate,
+      peak_power_db: lastStats.peak.toFixed(2),
+      peak_freq_hz: Math.round(lastStats.peakHz),
+      band_mean_level_db: lastStats.band.toFixed(2),
+      spectrum_mean_level_db: lastStats.spec.toFixed(2),
+      net_quality_pct: "",
+    };
+  } else if (netInfo) {
+    row = {
+      ...base,
+      device: cfg.mode === "wifi" ? "Wi-Fi (estimated)" : "Cellular (estimated)",
+      center_freq_hz: "",
+      sample_rate_hz: "",
+      peak_power_db: String(netInfo.rssi),
+      peak_freq_hz: "",
+      band_mean_level_db: String(netInfo.rssi),
+      spectrum_mean_level_db: netInfo.rtt !== null ? String(netInfo.rtt) : "",
+      net_quality_pct: String(netInfo.quality),
+    };
+  }
+  if (!row) return;
+  const r = ensureRecording();
+  r.rows.push(row);
+  r.updatedAt = Date.now();
+  if (row.latitude !== "") positioned++;
+  scheduleSave();
+  renderRecording();
   refreshMapPoints();
 }
 
-function exportCsv() {
-  if (!records.length) {
+// ── saving (debounced while measuring; immediately on stop / leaving the page) ──
+
+function scheduleSave() {
+  if (saveTimer !== null) return;
+  const delay = rows().length > 3000 ? 8000 : 3000;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveNow();
+  }, delay) as unknown as number;
+}
+
+function saveNow(): Promise<void> {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const r = rec;
+  if (!r || !r.rows.length) return saveChain;
+  const count = r.rows.length;
+  r.active = running && rec === r;
+  saveChain = saveChain
+    .then(() => saveSession(r))
+    .then(() => {
+      if (saveError) log("Recording saved on this device again", "ok");
+      saveError = "";
+      if (rec === r) savedRows = count;
+      if (rec === r && savedRows >= r.rows.length) clearTail();
+      notifyRecordings({ type: "saved", id: r.id });
+    })
+    .catch((e: any) => {
+      if (!saveError) log(`Can't save the recording on this device (${e?.message ?? e}) — use ⬇ CSV to keep it`, "er");
+      saveError = String(e?.message ?? e);
+    })
+    .finally(renderRecording);
+  return saveChain;
+}
+
+/** Synchronous safety copy of the rows the last IndexedDB save hasn't covered yet. */
+function stashTail() {
+  try {
+    if (rec && savedRows < rec.rows.length) {
+      const { rows: all, ...meta } = rec;
+      localStorage.setItem(TAIL_KEY, JSON.stringify({ meta, from: savedRows, rows: all.slice(savedRows) }));
+    }
+  } catch (_) {}
+}
+
+function clearTail() {
+  try {
+    localStorage.removeItem(TAIL_KEY);
+  } catch (_) {}
+}
+
+function takeTail(): { meta: Omit<RecordingSession, "rows">; from: number; rows: RecordingRow[] } | null {
+  try {
+    const t = JSON.parse(localStorage.getItem(TAIL_KEY) || "null");
+    clearTail();
+    return t && t.meta && Array.isArray(t.rows) ? t : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function onPageHidden() {
+  stashTail();
+  saveNow();
+}
+
+/** Picks up the last unfinished recording after a reload, crash or a phone that slept. */
+async function restoreRecording() {
+  const tail = takeTail();
+  try {
+    let full: RecordingSession | undefined;
+    const last = (await listSessions()).find((x) => !x.finished && x.count > 0);
+    if (last && Date.now() - last.updatedAt < RESUME_WITHIN_MS) full = await getSession(last.id);
+    if (tail && (!full || full.id !== tail.meta.id) && tail.from === 0) {
+      // The page closed before the first save of a new recording.
+      full = { ...tail.meta, rows: [] };
+    }
+    if (full && !rec) {
+      let extra: RecordingRow[] = [];
+      if (tail && tail.meta.id === full.id) extra = tail.rows.slice(Math.max(0, full.rows.length - tail.from));
+      rec = full;
+      savedRows = full.rows.length;
+      full.rows.push(...extra);
+      if (extra.length) full.updatedAt = Date.now();
+      positioned = full.rows.filter((x) => x.latitude !== "" && x.latitude !== undefined).length;
+      log(`Continuing recording “${full.name}” — ${full.rows.length} records restored. Press ＋ New to start another.`, "ok");
+      if (extra.length) saveNow();
+    }
+  } catch (e: any) {
+    saveError = String(e?.message ?? e);
+    log("This browser can't keep recordings (private window?) — use ⬇ CSV before closing", "wn");
+  }
+  renderRecording();
+  refreshMapPoints();
+}
+
+async function newRecording() {
+  if (rec) {
+    rec.finished = true;
+    await saveNow();
+    log(`Saved “${rec.name}” (${rec.rows.length} records) — open it any time from 🗺 Map`, "ok");
+  }
+  rec = null;
+  positioned = 0;
+  skippedNoFix = 0;
+  savedRows = 0;
+  renderRecording();
+  refreshMapPoints();
+  log(running ? "New recording — logging continues" : "Ready for a new recording — press Start", "ok");
+}
+
+function renderRecording() {
+  const n = rows().length;
+  $("stRecords").textContent = String(n);
+  $("recName").textContent = rec ? rec.name : "No recording yet";
+  $("recDot").className = `recdot${running && rec ? " on" : ""}`;
+  const parts = rec ? [`${n} record${n === 1 ? "" : "s"}`, `${positioned} with GPS`] : [running ? "Waiting for the first record…" : "Press Start to record"];
+  if (skippedNoFix) parts.push(`${skippedNoFix} skipped (no GPS fix)`);
+  $("recMeta").textContent = parts.join(" · ");
+  const st = $("recSaved");
+  if (saveError) {
+    st.textContent = "⚠ not saved";
+    st.className = "lbl err";
+    st.title = saveError;
+  } else if (rec && savedRows < n) {
+    st.textContent = "saving…";
+    st.className = "lbl";
+    st.title = "";
+  } else {
+    st.textContent = rec ? "✓ saved on device" : "";
+    st.className = "lbl ok";
+    st.title = "";
+  }
+  for (const id of ["btnCSV", "btnShare", "btnClear"]) $<HTMLButtonElement>(id).disabled = !n;
+}
+
+async function exportCsv(mode: "download" | "share" = "download") {
+  if (!rec || !rec.rows.length) {
     log("No log records yet — press Start", "wn");
     return;
   }
-  // Column names: map.html finds latitude/longitude and any column containing "power"/"level".
-  const header = [
-    "timestamp",
-    "device",
-    "center_freq_hz",
-    "sample_rate_hz",
-    "gps_source",
-    "latitude",
-    "longitude",
-    "altitude_m",
-    "gps_accuracy_m",
-    "gps_sats",
-    "compass_deg",
-    "course_deg",
-    "peak_power_db",
-    "peak_freq_hz",
-    "band_mean_level_db",
-    "spectrum_mean_level_db",
-    "units",
-    "calibration_db",
-    "net_quality_pct",
-  ].join(",");
-  const units = isSdrMode() ? (cfg.cal !== 0 ? "dBm(cal)" : "dBFS") : "dBm(est)";
-  const rows = records.map((r) =>
-    [
-      r.ts,
-      `"${r.device.replace(/"/g, "'")}"`,
-      r.centerHz,
-      r.rateHz,
-      r.gpsSource,
-      r.lat,
-      r.lon,
-      r.alt,
-      r.acc,
-      r.sats,
-      r.compass,
-      r.course,
-      r.peak,
-      r.peakHz,
-      r.band,
-      r.spec,
-      units,
-      cfg.cal,
-      r.netQuality,
-    ].join(",")
-  );
-  download(
-    new Blob([header + "\n" + rows.join("\n") + "\n"], { type: "text/csv" }),
-    `mmn_log_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`
-  );
-  log(`CSV exported — ${records.length} records`, "ok");
+  saveNow();
+  const name = csvFileName(rec);
+  const res = await deliverCsv(toCsv(rec.columns, rec.rows), name, mode);
+  if (res !== "cancelled") log(`CSV ${res === "shared" ? "shared" : "saved"} — ${name} (${rec.rows.length} records)`, "ok");
+}
+
+async function openInMap() {
+  if (!rec || !rec.rows.length) {
+    location.href = "map.html";
+    return;
+  }
+  await saveNow();
+  if (saveError) {
+    log("The recording couldn't be saved on this device, so the map can't open it — use ⬇ CSV and open the file in the map", "er");
+    return;
+  }
+  const url = `map.html?session=${encodeURIComponent(rec.id)}`;
+  if (running) {
+    // Keep measuring here; the map follows the recording live from another tab.
+    const w = window.open(url, "_blank");
+    if (w) {
+      log("Map opened in a new tab — measuring continues here", "ok");
+      return;
+    }
+  }
+  location.href = url;
 }
 
 function download(blob: Blob, name: string) {
@@ -1077,13 +1266,13 @@ compass.addEventListener("change", renderCompass);
 
 function refreshMapPoints() {
   if (!liveMap) return;
-  const pts = records
-    .filter((r) => r.lat !== "" && r.lon !== "")
+  const pts = rows()
+    .filter((r) => r.latitude !== "" && r.longitude !== "")
     .map((r) => ({
-      lat: Number(r.lat),
-      lon: Number(r.lon),
-      level: Number(r.band),
-      label: `${new Date(r.ts).toLocaleTimeString()} · ${r.device} · band ${r.band} dB · peak ${r.peak} dB`,
+      lat: Number(r.latitude),
+      lon: Number(r.longitude),
+      level: Number(r.band_mean_level_db),
+      label: `${new Date(String(r.timestamp)).toLocaleTimeString()} · ${r.device} · band ${r.band_mean_level_db} · peak ${r.peak_power_db} ${r.units}`,
     }))
     .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && Number.isFinite(p.level));
   liveMap.setMeasurements(pts);
@@ -1171,6 +1360,7 @@ function updateButtons() {
     b.textContent = device ? "Disconnect" : "Connect";
     b.disabled = running && !device;
   }
+  renderRecording();
 }
 
 async function requestWakeLock() {
@@ -1327,12 +1517,29 @@ function bind() {
   $("btnStop").addEventListener("click", () => stop());
   $("mBtnStop").addEventListener("click", () => stop());
   $("btnSnap").addEventListener("click", snapshot);
-  $("btnCSV").addEventListener("click", exportCsv);
-  $("btnClear").addEventListener("click", () => {
-    records.length = 0;
-    $("stRecords").textContent = "0";
-    $("logBox").innerHTML = "";
-    log("Log cleared");
+  $("btnCSV").addEventListener("click", () => exportCsv("download"));
+  $("btnShare").hidden = !canShareFiles();
+  $("btnShare").addEventListener("click", () => exportCsv("share"));
+  $("btnOpenMap").addEventListener("click", openInMap);
+  $("btnClear").addEventListener("click", newRecording);
+  const needFix = $<HTMLInputElement>("needFix");
+  needFix.checked = cfg.needFix;
+  needFix.addEventListener("change", () => {
+    cfg.needFix = needFix.checked;
+    saveSettings();
+    skippedNoFix = 0;
+    renderRecording();
+  });
+  onRecordingsChanged((m) => {
+    // Deleted from the map page in another tab: stop writing to it.
+    if (m.type === "deleted" && rec && m.id === rec.id) {
+      rec = null;
+      positioned = 0;
+      savedRows = 0;
+      renderRecording();
+      refreshMapPoints();
+      log("This recording was deleted in the map — the next record starts a new one", "wn");
+    }
   });
 
   const gpsSel = $<HTMLSelectElement>("gpsSource");
@@ -1373,7 +1580,9 @@ function bind() {
   }
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && running && !wakeLock) requestWakeLock();
+    if (document.visibilityState === "hidden") onPageHidden();
   });
+  window.addEventListener("pagehide", onPageHidden);
   new ResizeObserver(() => (dirty = true)).observe(document.body);
 }
 
@@ -1429,6 +1638,7 @@ export function initMonitor() {
     log(hasWebSerial() ? "Desktop — press 📡 Connect to open the G-MOUSE USB port" : "Press 📡 Connect to use this device's location", "wn");
   }
 
+  restoreRecording();
   requestAnimationFrame(frame);
   dirty = true;
 }

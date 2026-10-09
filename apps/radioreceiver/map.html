@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1220" />
+    <meta name="description" content="MMN Map Visualizer: open signal-level recordings (CSV) as heatmaps, routes, coverage predictions and source estimates." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <link rel="stylesheet" href="map.css" />
+    <title>MMN Map Visualizer</title>
+    <style>
+      :root {
+        --bg: #0b1220; --panel: #111a2b; --panel-2: #0e1626; --line: #1e2c45;
+        --text: #e2e8f0; --muted: #8a9bb5; --accent: #3b82f6; --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        color-scheme: dark;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--text); }
+      body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; min-height: 100dvh; }
+      button, select, input { font: inherit; color: inherit; }
+
+      header {
+        position: sticky; top: 0; z-index: 1001; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+        padding: calc(10px + env(safe-area-inset-top)) 16px 10px; background: rgba(11,18,32,.94);
+        backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+      }
+      .brand { display: flex; flex-direction: column; margin-right: auto; min-width: 0; }
+      .brand b { font-size: 15px; letter-spacing: .04em; }
+      .brand small { color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+        background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; color: var(--text); text-decoration: none; white-space: nowrap; }
+      button.chip { cursor: pointer; }
+
+      main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; padding: 14px 16px; max-width: 1700px; margin: 0 auto; }
+      .mapwrap { position: relative; min-width: 0; }
+      #map { height: calc(100dvh - 110px); min-height: 420px; border-radius: 12px; border: 1px solid var(--line); background: #070d18; }
+      .side { display: flex; flex-direction: column; gap: 12px; min-width: 0; max-height: calc(100dvh - 110px); overflow: auto; padding-right: 2px; }
+      @media (max-width: 1000px) {
+        main { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 84px; }
+        #map { height: 58dvh; min-height: 320px; }
+        .side { max-height: none; overflow: visible; }
+        header { position: static; flex-wrap: nowrap; }
+        .brand small { display: none; }
+        .brand b { white-space: nowrap; }
+        .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+        .chips::-webkit-scrollbar { display: none; }
+      }
+
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+      .card h2 { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+      .card h2 .spacer { flex: 1; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; min-width: 0; }
+      .field label { font-size: 11px; color: var(--muted); }
+      select, input[type="number"] { width: 100%; min-height: 38px; padding: 6px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+      input[type="range"] { width: 100%; accent-color: var(--accent); }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .btn { min-height: 38px; padding: 6px 12px; border-radius: 10px; border: 1px solid transparent; font-weight: 600;
+        cursor: pointer; background: #1f2a3f; color: var(--text); }
+      .btn:hover { filter: brightness(1.12); }
+      .btn.primary { background: var(--accent); color: #fff; }
+      .btn.ghost { background: transparent; border-color: var(--line); }
+      .btn.small { min-height: 30px; padding: 3px 8px; font-size: 12px; font-weight: 500; }
+      .btn.danger { color: #fca5a5; }
+      .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+      .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+      .live { color: #f87171; font-weight: 600; }
+
+      .list { display: flex; flex-direction: column; gap: 6px; }
+      .item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+        background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+      .item input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+      .item .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .item .meta { font-size: 11px; color: var(--muted); }
+      .item .notes { font-size: 11px; color: #fbbf24; }
+      .item .acts { display: flex; gap: 4px; }
+
+      .seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; background: var(--panel-2);
+        border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+      .seg button { border: 0; border-radius: 7px; padding: 8px 4px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12.5px; font-weight: 600; }
+      .seg button.on { background: var(--accent); color: #fff; }
+      .opts { margin-top: 10px; }
+      .opts[hidden] { display: none; }
+
+      table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      td { padding: 5px 4px; border-bottom: 1px solid var(--line); }
+      td:first-child { color: var(--muted); }
+      td:last-child { font-family: var(--mono); text-align: right; }
+      tr:last-child td { border-bottom: 0; }
+
+      .legend { position: absolute; left: 12px; bottom: 26px; z-index: 900; background: rgba(11,18,32,.88); border: 1px solid var(--line);
+        border-radius: 10px; padding: 8px 10px; font: 11px var(--mono); min-width: 190px; pointer-events: none; }
+      .legend .bar { height: 10px; border-radius: 5px; margin: 4px 0;
+        background: linear-gradient(90deg, hsl(240,85%,45%), hsl(180,85%,48%), hsl(120,85%,50%), hsl(60,85%,52%), hsl(0,85%,55%)); }
+      .legend .ends { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+      .status { position: absolute; right: 12px; top: 12px; z-index: 900; background: rgba(11,18,32,.88); border: 1px solid var(--line);
+        border-radius: 10px; padding: 6px 10px; font: 12px var(--mono); max-width: 70%; }
+      .drop { position: absolute; inset: 0; z-index: 1000; display: none; align-items: center; justify-content: center;
+        background: rgba(59,130,246,.18); border: 3px dashed var(--accent); border-radius: 12px; font-size: 18px; font-weight: 700; }
+      .drop.on { display: flex; }
+
+      .viewbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1001; display: none; padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+        background: rgba(11,18,32,.96); border-top: 1px solid var(--line); }
+      @media (max-width: 1000px) { .viewbar { display: block; } .side .viewcard .seg { display: none; } }
+
+      .leaflet-container { font: 12px system-ui, sans-serif; background: #070d18; }
+      .leaflet-control-layers, .leaflet-bar a, .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #111a2b; color: #e2e8f0; border-color: #1e2c45; }
+      .leaflet-control-attribution { background: rgba(11,18,32,.75) !important; color: #8a9bb5; }
+      .leaflet-control-attribution a, .leaflet-popup-content a { color: #93c5fd; }
+      .leaflet-popup-content { font: 12px/1.45 system-ui, sans-serif; margin: 10px 12px; }
+      .pin { font-size: 30px; line-height: 30px; text-align: center; filter: drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <b>MMN Map Visualizer</b>
+        <small>Signal recordings on the map</small>
+      </div>
+      <div class="chips">
+        <span class="chip" id="chipPoints">0 points</span>
+        <button class="chip" id="btnInstall" hidden>⬇ Install app</button>
+        <a class="chip" href="thesis-view.html">📊 Monitor</a>
+        <a class="chip" href="index.html">📻 Receiver</a>
+      </div>
+    </header>
+
+    <main>
+      <div class="mapwrap">
+        <div id="map" role="application" aria-label="Measurement map"></div>
+        <div class="status" id="status">Open a recording to begin</div>
+        <div class="legend" id="legend" hidden>
+          <div id="legendTitle">Level</div>
+          <div class="bar"></div>
+          <div class="ends"><span id="legendLo">—</span><span id="legendHi">—</span></div>
+        </div>
+        <div class="drop" id="drop">Drop CSV files to open them</div>
+      </div>
+
+      <div class="side">
+        <section class="card">
+          <h2>Recordings <span class="spacer"></span><button class="btn small ghost" id="btnClear">Clear map</button></h2>
+          <div class="row">
+            <button class="btn primary" id="btnOpen">📂 Open CSV files</button>
+            <button class="btn ghost" id="btnFit">⤢ Fit</button>
+            <button class="btn ghost" id="btnLocate">📍 My location</button>
+          </div>
+          <input type="file" id="fileInput" accept=".csv,text/csv,text/comma-separated-values,text/plain" multiple hidden />
+          <p class="hint" id="openHint">Pick one or more CSV files, drop them on the map, or share them to webRx from another app.</p>
+          <h2 style="margin-top:14px">On the map</h2>
+          <div class="list" id="loadedList"><div class="empty">Nothing loaded yet.</div></div>
+          <h2 style="margin-top:14px">Saved on this device <span class="spacer"></span><button class="btn small ghost" id="btnRefresh">↻</button></h2>
+          <div class="list" id="sessionList"><div class="empty">No recordings saved yet — record in the Monitor.</div></div>
+        </section>
+
+        <section class="card">
+          <h2>Measurement</h2>
+          <div class="field">
+            <label for="measure">Show</label>
+            <select id="measure"></select>
+          </div>
+          <div class="row" style="gap:10px">
+            <div class="field" style="flex:1" id="freqField" hidden>
+              <label for="freqFilter">Frequency</label>
+              <select id="freqFilter"></select>
+            </div>
+            <div class="field" style="flex:1" id="deviceField" hidden>
+              <label for="deviceFilter">Device</label>
+              <select id="deviceFilter"></select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Level range <span id="rangeText"></span></label>
+            <input type="range" id="lo" step="0.5" />
+            <input type="range" id="hi" step="0.5" />
+            <div class="row"><button class="btn small ghost" id="btnAuto">Auto range</button><span class="hint" id="unitsText"></span></div>
+          </div>
+        </section>
+
+        <section class="card viewcard">
+          <h2>View</h2>
+          <div class="seg" id="viewSeg">
+            <button data-view="heat" class="on">Heatmap</button>
+            <button data-view="route">Route</button>
+            <button data-view="coverage">Coverage</button>
+            <button data-view="source">Source</button>
+          </div>
+          <div class="opts" id="opt-heat">
+            <div class="field"><label for="heatRadius">Heat radius <span id="heatRadiusVal"></span></label><input type="range" id="heatRadius" min="8" max="50" value="25" /></div>
+          </div>
+          <div class="opts" id="opt-route" hidden>
+            <div class="field">
+              <label for="colourMode">Colours</label>
+              <select id="colourMode">
+                <option value="gradient">Gradient across the level range</option>
+                <option value="classic">Classic steps (−35 / −40 / −45 dBm)</option>
+              </select>
+            </div>
+          </div>
+          <div class="opts" id="opt-coverage" hidden>
+            <div class="field"><label for="gridSize">Grid detail</label>
+              <select id="gridSize"><option value="40">Fast (40 × 40)</option><option value="60" selected>Normal (60 × 60)</option><option value="100">Fine (100 × 100)</option></select>
+            </div>
+            <div class="field"><label for="reach">Only fill within <span id="reachVal"></span> of a measurement</label><input type="range" id="reach" min="25" max="2000" step="25" value="200" /></div>
+            <p class="hint">Inverse-distance interpolation between measured points; blank where there's no nearby data.</p>
+          </div>
+          <div class="opts" id="opt-source" hidden>
+            <div class="field"><label for="topPct">Use the strongest <span id="topPctVal"></span> of points</label><input type="range" id="topPct" min="5" max="100" step="5" value="25" /></div>
+            <div id="sourceResult" class="hint"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Summary <span class="spacer"></span><button class="btn small ghost" id="btnExport">⬇ Export CSV</button></h2>
+          <table id="summary"><tr><td>Points</td><td>0</td></tr></table>
+        </section>
+      </div>
+    </main>
+
+    <div class="viewbar"><div class="seg" id="viewSegMobile">
+      <button data-view="heat" class="on">Heatmap</button>
+      <button data-view="route">Route</button>
+      <button data-view="coverage">Coverage</button>
+      <button data-view="source">Source</button>
+    </div></div>
+
+    <script src="map.js"></script>
+  </body>
+</html>
