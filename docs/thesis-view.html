@@ -463,7 +463,13 @@
       .bandrow b { font-size: var(--t13); } .bandrow span { font: var(--t12) var(--mono); color: var(--muted); grid-column: 1; }
       .bandrow small { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #93c5fd; font-size: var(--t12); }
       .bandrow:hover { border-color: var(--accent); }
-      .bandrow[aria-disabled="true"] { opacity: .55; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
+      .bandrow[aria-disabled="true"] { opacity: .5; cursor: not-allowed; border-style: dashed; filter: grayscale(1); }
+      .bandrow[aria-disabled="true"]:hover { border-color: var(--line, rgba(255,255,255,.12)); }
+      .bandrow i { grid-column: 1; font-style: normal; font-size: var(--t12); color: var(--muted); }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .nettable th { text-align: left; font-weight: 500; color: var(--muted); }
+      #pane-rf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
+      #btnRfWifi[aria-disabled="true"], #btnRfCell[aria-disabled="true"] { opacity: .5; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
       @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) { .tab b.gear { display: none; } }
       .slot { min-width: 0; }
       .slot-mini #spectrum { height: 170px; } .slot-mini #waterfall { height: 90px; }
@@ -522,6 +528,101 @@
       [data-theme="night"] .tab[aria-selected="true"], [data-theme="night"] .tab[aria-selected="true"] .i { color: #fecaca; }
       [data-theme="night"] canvas, [data-theme="night"] #liveMap { filter: sepia(1) saturate(4) hue-rotate(-50deg) brightness(.75); }
       [data-motion="reduce"] *, [data-motion="reduce"] *::before, [data-motion="reduce"] *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+
+      /* ═══ v4: analyser folds, sessions, player, status panel ═══ */
+      .fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; min-height: var(--tap); margin: calc(-1 * var(--s2)) 0; }
+      .fold > summary::-webkit-details-marker { display: none; }
+      .fold > summary h2 { margin: 0; flex: 1; }
+      .fold > summary::after { content: ""; width: 10px; height: 10px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .2s var(--ease); margin-right: 4px; }
+      .fold[open] > summary::after { transform: rotate(-135deg); }
+      .fold[open] > summary { margin-bottom: var(--s3); }
+      .ro { display: flex; align-items: center; min-height: var(--tap); font: 600 var(--t15) var(--mono); }
+      .legendbar { display: block; height: 8px; border-radius: 4px; margin-top: 6px; }
+      .btns.markers { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); margin-bottom: var(--s3); }
+      .ro-table td:first-child { width: 50%; }
+      .btn.rec { background: transparent; border: 1px solid #7f1d1d; color: #fecaca; padding: 0 var(--s3); min-height: 40px; font: 600 var(--t13) var(--mono); }
+      .btn.rec .recdot2 { width: 12px; height: 12px; border-radius: 50%; background: #ef4444; flex: none; }
+      .btn.rec.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+      .btn.rec.on .recdot2 { background: #fff; animation: pulse 1.2s infinite; }
+      .sesslist { display: grid; gap: var(--s2); }
+      .sesslist:empty::before { content: "No sessions yet — press Rec in the top bar while measuring."; color: var(--muted); font-size: var(--t13); }
+      .sessrow { border: 1px solid var(--line); border-radius: 12px; padding: var(--s3); display: grid; gap: var(--s2); background: var(--panel-2); }
+      .sessname { width: 100%; font-weight: 600; }
+      .sessinfo small { display: block; color: var(--muted); font-size: var(--t12); margin-top: 4px; }
+      .sessbtns { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
+      .sessbtns .btn.small { min-height: var(--tap); padding: 0 var(--s2); }
+      .player { position: fixed; z-index: 44; left: calc(var(--s3) + var(--sal)); right: calc(var(--s3) + var(--sar)); bottom: calc(var(--nav-h) + var(--sab) + var(--s3));
+        background: rgba(17,26,43,.97); border: 1px solid #4c3a8a; border-radius: 16px; padding: var(--s2) var(--s3); box-shadow: 0 10px 30px rgba(0,0,0,.45); backdrop-filter: blur(10px); }
+      .pbname { display: block; font-size: var(--t13); color: #c4b5fd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pbrow { display: flex; align-items: center; gap: var(--s2); }
+      .pbrow input[type=range] { flex: 1; min-width: 60px; accent-color: #a78bfa; }
+      .pbtime { font: var(--t12) var(--mono); color: var(--muted); white-space: nowrap; }
+      .pbrow select { width: auto; min-width: 64px; }
+      body.playing .bubble { bottom: calc(var(--nav-h) + var(--sab) + 120px); }
+      body.playing main { padding-bottom: calc(var(--nav-h) + var(--sab) + 200px); }
+      @media (max-width: 520px) { #pbTime { display: none; } #pbPrev, #pbNext { display: none; } }
+      /* status panel: slide-out on mobile, docked on desktop */
+      .statuspanel { position: fixed; z-index: 42; right: 0; top: calc(56px + var(--sat) + 72px); transform: translateX(calc(100% - 0px)); transition: transform .25s var(--ease); }
+      .statuspanel .sp-toggle { position: absolute; left: -44px; top: 0; width: 44px; min-height: 88px; border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px;
+        background: rgba(17,26,43,.95); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; font-size: 11px; font-weight: 600; }
+      .statuspanel.open { transform: none; }
+      .sp-body { width: min(300px, 82vw); max-height: calc(100dvh - 56px - var(--sat) - var(--nav-h) - var(--sab) - 100px); overflow: auto; padding: var(--s3) var(--s4) var(--s4);
+        background: rgba(17,26,43,.97); border: 1px solid var(--line); border-right: 0; border-radius: 0 0 0 14px; box-shadow: -10px 10px 30px rgba(0,0,0,.35); backdrop-filter: blur(10px); }
+      .sp-body h2 { margin: 0 0 var(--s2); font-size: var(--t12); letter-spacing: .1em; text-transform: uppercase; color: #a9b8d0; }
+      .sp-body dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px var(--s3); margin: 0; font-size: var(--t13); }
+      .sp-body dt { color: var(--muted); }
+      .sp-body dd { margin: 0; font-family: var(--mono); font-size: var(--t12); text-align: right; overflow-wrap: anywhere; }
+      .sp-chips { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
+      @media (min-width: 1280px) {
+        .statuspanel { top: calc(56px + var(--sat)); bottom: 0; transform: none; }
+        .statuspanel .sp-toggle { display: none; }
+        .sp-body { width: 280px; height: 100%; max-height: none; border-radius: 0; border-top: 0; box-shadow: none; background: rgba(10,16,28,.7); }
+        main { margin-right: 280px; }
+        .player { left: calc(var(--rail-w) + var(--s4)); right: calc(280px + var(--s4)); bottom: var(--s4); }
+      }
+      @media (min-width: 1000px) and (max-width: 1279px) { .player { left: calc(var(--rail-w) + var(--s4)); bottom: var(--s4); } }
+      [data-theme="light"] .sp-body, [data-theme="light"] .statuspanel .sp-toggle, [data-theme="light"] .player { background: rgba(255,255,255,.97); color: #0f172a; }
+      [data-theme="light"] .sp-body h2, [data-theme="light"] .sp-body dt { color: #475569; }
+      [data-theme="light"] .pbname { color: #5b21b6; }
+      [data-theme="light"] .btn.rec { color: #991b1b; border-color: #fca5a5; } [data-theme="light"] .btn.rec.on { color: #fff; }
+
+      /* RM: OpenWebRX */
+      .chiprow { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s2) 0; }
+      .chipbtn { min-height: 36px; padding: 0 var(--s3); font-size: var(--t12); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .rxhead { margin: var(--s3) 0; } .rxhead b { display: block; font-size: var(--t17); } .rxhead small { color: var(--muted); font-size: var(--t12); }
+      .hint.bad { color: #fca5a5; } .hint a { color: #93c5fd; }
+      .dirlist { display: grid; gap: var(--s2); max-height: 560px; overflow: auto; }
+      .dirrow { display: flex; gap: var(--s3); align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: var(--s2) var(--s3); background: var(--panel-2); }
+      .dirinfo { flex: 1; min-width: 0; } .dirinfo b { display: block; font-size: var(--t13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dirinfo small { display: block; color: var(--muted); font-size: var(--t12); }
+      .dirbtns { display: flex; gap: var(--s2); flex: none; } .dirbtns .btn.small { min-height: var(--tap); padding: 0 var(--s3); }
+      .tag { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+      .tag.ok { color: #86efac; border-color: #166534; } .tag.uber { color: #67e8f9; border-color: #155e75; } .tag.kiwi { color: #fdba74; border-color: #9a3412; } .tag.feat { color: #fde68a; border-color: #a16207; } .star { min-width: var(--tap); font-size: 18px; color: #fbbf24; }
+      [data-theme="light"] .tag.uber { color: #155e75; } [data-theme="light"] .tag.kiwi { color: #9a3412; } [data-theme="light"] .tag.owrx { color: #5b21b6; } [data-theme="light"] .tag.feat { color: #854d0e; } [data-theme="light"] .star { color: #a16207; } .tag.owrx { color: #c4b5fd; border-color: #5b21b6; } .tag.warn { color: #fcd34d; border-color: #854d0e; }
+      [data-theme="light"] .tag.ok { color: #166534; } [data-theme="light"] .tag.warn { color: #854d0e; } [data-theme="light"] .hint a { color: #1d4ed8; } [data-theme="light"] .hint.bad { color: #b91c1c; }
+
+      /* SA: VFO bar + scope tools (after UberSDR) */
+      .vfo { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+      .vfofreq { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+      .vfodigits { display: inline-flex; font: 600 24px/1 var(--mono); letter-spacing: .02em; cursor: ns-resize; padding: 6px 4px; border-radius: 8px; color: #e2e8f0; user-select: none; touch-action: none; }
+      .vfodigits:focus-visible { outline: 2px solid #60a5fa; }
+      .vfodigits .vd { padding: 0 1px; border-radius: 3px; }
+      .vfodigits .vd:hover { background: rgba(96,165,250,.25); color: #fff; }
+      .vfodigits .vd.gap { margin-left: 6px; }
+      .vfodigits .vd.lead { color: #334155; }
+      .vfofreq small { color: var(--muted); font-size: var(--t12); }
+      #vfoInput { width: 9.5em; font: 600 20px var(--mono); }
+      #vfoStep { width: auto; min-width: 84px; }
+      .vfotag { font: var(--t12) var(--mono); color: #f9a8d4; white-space: nowrap; }
+      .vfometer { position: relative; flex: 1 1 120px; min-width: 110px; height: 22px; border-radius: 6px; background: linear-gradient(90deg, #14532d 0 60%, #713f12 60% 80%, #7f1d1d 80%); overflow: hidden; }
+      .vfometerbar { position: absolute; inset: 0; background: linear-gradient(90deg, #22c55e, #facc15 70%, #ef4444); transform-origin: left; transform: scaleX(0); transition: transform .15s linear; }
+      .vfometer small { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 600 11px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+      .scopetools { display: flex; gap: 4px; margin-left: auto; }
+      .scopetools .btn[aria-pressed="true"] { color: #93c5fd; border-color: #1d4ed8; }
+      .scope { position: relative; }
+      .wfline { position: absolute; width: 0; border-left: 1px dashed rgba(244,114,182,.9); pointer-events: none; z-index: 2; }
+      @media (max-width: 520px) { .vfodigits { font-size: 20px; } .vfometer { order: 9; flex-basis: 100%; } .scopetools { margin-left: 0; } }
+      [data-theme="light"] .vfodigits { color: #0f172a; } [data-theme="light"] .vfodigits .vd.lead { color: #cbd5e1; } [data-theme="light"] .vfotag { color: #be185d; }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -551,6 +652,13 @@
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
     <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3z"/></symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M11 8v6M8 11h6"/></symbol>
+    <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+    <symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M19 20 9 12l10-8zM5 19V5"/></symbol>
+    <symbol id="i-skip-fwd" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8zM19 5v14"/></symbol>
     <symbol id="i-gps" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></symbol>
   </defs>
 </svg>
@@ -563,11 +671,10 @@
       <div class="chips status-chips">
         <button class="chip connchip" id="connChip" type="button" aria-haspopup="dialog" aria-controls="connSheet" title="Signal source and connection"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="dot" id="dotSource"></span><span id="txtSource">No source</span></button>
         <button class="chip" id="chipGps" type="button" title="GPS"><span class="dot" id="dotGps"></span><span id="txtGps">GPS: detecting…</span></button>
-        <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
-        <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
       </div>
       <div class="transport">
-        <span class="recpill" id="recPill" hidden><span class="dot live"></span>REC</span>
+        <span class="recpill" id="recPill" hidden><span class="dot live"></span>LIVE</span>
+        <button class="btn rec" id="btnRec" type="button" aria-pressed="false" aria-label="Record session" title="Record session (spectrum, GPS, heading, levels)"><span class="recdot2" aria-hidden="true"></span><span id="recTimer">Rec</span></button>
         <button class="btn go" id="btnStart" type="button" aria-label="Start measuring" title="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start</span></button>
         <button class="btn stop" id="btnStop" type="button" aria-label="Stop measuring" title="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop</span></button>
       </div>
@@ -592,9 +699,28 @@
             <div class="slot" data-slot="scope">
         <section class="card" id="scopeCard" data-move="scope">
           <h2>Spectrum <span class="spacer"></span><span id="specUnits">dBFS</span></h2>
+          <div class="vfo" role="group" aria-label="Tuning">
+            <button class="btn ghost icon" id="btnVfoDown" type="button" aria-label="Tune down one step"><svg class="i" aria-hidden="true"><use href="#i-minus"/></svg></button>
+            <div class="vfofreq">
+              <div class="vfodigits" id="vfoDigits" tabindex="0" role="button" title="Scroll (or swipe) over a digit to tune it · click to type MHz · ↑/↓ steps"></div>
+              <input id="vfoInput" type="text" inputmode="decimal" aria-label="Frequency in MHz" hidden />
+              <small>Hz</small>
+            </div>
+            <button class="btn ghost icon" id="btnVfoUp" type="button" aria-label="Tune up one step"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
+            <select id="vfoStep" aria-label="Tuning step"><option value="10">10 Hz</option><option value="100">100 Hz</option><option value="500">500 Hz</option><option value="1000">1 kHz</option><option value="5000">5 kHz</option><option value="9000">9 kHz</option><option value="10000">10 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="100000">100 kHz</option><option value="1000000">1 MHz</option></select>
+            <span class="vfotag"><b id="vfoMode">—</b> <span id="vfoBw">—</span></span>
+            <div class="vfometer" title="Signal level in the passband"><span class="vfometerbar" id="vfoMeterBar"></span><small id="vfoMeterTxt">—</small></div>
+            <div class="scopetools">
+              <button class="btn ghost icon" id="btnScopeZoomOut" type="button" aria-label="Zoom out" title="Zoom out (wheel / pinch on the spectrum)"><svg class="i" aria-hidden="true"><use href="#i-zoom-out"/></svg></button>
+              <button class="btn ghost icon" id="btnScopeZoomIn" type="button" aria-label="Zoom in" title="Zoom in (wheel / pinch on the spectrum)"><svg class="i" aria-hidden="true"><use href="#i-zoom-in"/></svg></button>
+              <button class="btn ghost icon" id="btnScopeCentre" type="button" aria-label="Centre on tuned frequency" title="Centre on tuned frequency (Home)"><svg class="i" aria-hidden="true"><use href="#i-target"/></svg></button>
+              <button class="btn ghost icon" id="btnScopeLabels" type="button" aria-pressed="true" aria-label="Show bookmarks and band plan" title="Bookmarks and band plan"><svg class="i" aria-hidden="true"><use href="#i-tag"/></svg></button>
+            </div>
+          </div>
           <div class="scope">
             <canvas id="spectrum"></canvas>
             <canvas id="waterfall"></canvas>
+            <div class="wfline" id="wfTune" aria-hidden="true" style="display:none"></div>
             <div class="idle" id="specIdle">Choose a source, press Connect, then Start</div>
           </div>
           <div class="readout">
@@ -628,6 +754,86 @@
         </div>
           </div>
           <div class="col">
+        <details class="card fold" open>
+          <summary><h2>Frequency &amp; span</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="saCentre">Centre (MHz)</label><input id="saCentre" type="number" step="0.001" inputmode="decimal" /></div>
+              <div class="field"><label>Span shown</label><output id="saSpanRo" class="ro">—</output></div>
+              <div class="field"><label for="saStart">Start (MHz)</label><input id="saStart" type="number" step="0.001" inputmode="decimal" /></div>
+              <div class="field"><label for="saStop">Stop (MHz)</label><input id="saStop" type="number" step="0.001" inputmode="decimal" /></div>
+              <div class="field full"><label for="saZoom">Zoom</label>
+                <div class="inline"><button class="btn ghost icon" id="btnSaZoomOut" type="button" aria-label="Zoom out"><svg class="i" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                <select id="saZoom" style="flex:1"><option value="1">1× (full span)</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option><option value="32">32×</option><option value="64">64×</option></select>
+                <button class="btn ghost icon" id="btnSaZoomIn" type="button" aria-label="Zoom in"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                <button class="btn ghost" id="btnSaZoomM1" type="button">On M1</button></div></div>
+              <div class="field full"><label for="saPan">Pan</label><input id="saPan" type="range" min="0" max="1000" step="1" /></div>
+            </div>
+            <p class="hint">The widest span is the sample rate (Settings). Start/stop zooms the view; outside the span it re-centres the SDR. Wheel or pinch on the spectrum zooms at the pointer; drag pans. On UberSDR and KiwiSDR the server zooms its own FFT for full resolution.</p>
+          </div>
+        </details>
+        <details class="card fold">
+          <summary><h2>Resolution &amp; amplitude</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="saFft">FFT size</label><select id="saFft"><option>256</option><option>512</option><option>1024</option><option>2048</option><option>4096</option><option>8192</option><option>16384</option></select></div>
+              <div class="field"><label>RBW</label><output id="saRbw" class="ro">—</output></div>
+              <div class="field full"><label for="saAvg">Averaging</label><input id="saAvg" type="range" min="0" max="0.95" step="0.05" /></div>
+              <label class="check"><input id="saAuto" type="checkbox" /> Auto range</label>
+              <div class="field"><label for="saRef">Ref level (dB, top)</label><input id="saRef" type="number" step="1" inputmode="decimal" /></div>
+              <div class="field"><label for="saRange">Range (dB)</label><select id="saRange"><option>20</option><option>40</option><option>60</option><option>80</option><option>100</option><option>120</option></select></div>
+            </div>
+          </div>
+        </details>
+        <details class="card fold">
+          <summary><h2>Display &amp; traces</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="saTrace">Main trace</label><select id="saTrace"><option value="avg">Average</option><option value="live">Live (no averaging)</option></select></div>
+              <div class="field"><label for="saCmap">Colour map</label><select id="saCmap"></select><span class="legendbar" id="saLegend" aria-hidden="true"></span></div>
+              <label class="check"><input id="saMax" type="checkbox" /> Max hold</label>
+              <label class="check"><input id="saMin" type="checkbox" /> Min hold</label>
+              <label class="check"><input id="saPeak" type="checkbox" /> Peak hold (decaying)</label>
+              <div class="field"><label for="saFill">Spectrum fill</label><select id="saFill"><option value="cmap">Colour by level (like the waterfall)</option><option value="grad">Cyan wash</option></select></div>
+              <div class="field"><label for="saSmooth">Smoothing (display)</label><select id="saSmooth"><option value="0">Off</option><option value="1">Light (±1 bin)</option><option value="2">Medium (±2)</option><option value="4">Strong (±4)</option></select></div>
+              <div class="field"><label for="saWfFloor">Waterfall floor <output id="saWfFloorVal"></output></label><input id="saWfFloor" type="range" min="-30" max="30" step="1" /></div>
+              <div class="field"><label for="saWfContrast">Waterfall contrast <output id="saWfContrastVal"></output></label><input id="saWfContrast" type="range" min="0.5" max="3" step="0.05" /></div>
+              <label class="check"><input id="saLabels" type="checkbox" /> Bookmarks &amp; band plan</label>
+              <label class="check"><input id="saSnap" type="checkbox" /> Snap taps to the step</label>
+              <label class="check"><input id="saStats" type="checkbox" /> Stats overlay</label>
+              <div class="field"><label for="saWf">Waterfall speed</label><select id="saWf"><option value="1">Fast (every frame)</option><option value="2">½</option><option value="4">¼</option><option value="8">⅛</option><option value="16">1/16</option></select></div>
+            </div>
+            <div class="btns" style="margin-top:8px">
+              <button class="btn ghost" id="btnSaClear" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear holds</button>
+              <button class="btn ghost" id="btnSaFreeze" type="button" aria-pressed="false">Freeze display</button>
+              <button class="btn ghost" id="btnSaSnap" type="button"><svg class="i" aria-hidden="true"><use href="#i-camera"/></svg>Screenshot</button>
+            </div>
+            <p class="hint">Freeze only stops the display; measuring, the thesis recorder and sessions keep running.</p>
+          </div>
+        </details>
+        <details class="card fold">
+          <summary><h2>Markers &amp; measurements</h2></summary>
+          <div class="foldbody">
+            <div class="field" style="margin-bottom:8px"><label for="saTap">Tap on spectrum</label><select id="saTap"><option value="tune">Tunes the receiver (drag pans, wheel zooms)</option><option value="m1">Places marker 1</option><option value="m2">Places marker 2</option></select></div>
+            <div class="btns markers">
+              <button class="btn ghost" id="btnM1Peak" type="button">M1 → peak</button>
+              <button class="btn ghost" id="btnM1Next" type="button">Next peak</button>
+              <button class="btn ghost" id="btnM2Delta" type="button">Δ marker</button>
+              <button class="btn ghost" id="btnMTune" type="button">Tune to M1</button>
+              <button class="btn ghost" id="btnMClear" type="button">Clear</button>
+            </div>
+            <table class="ro-table">
+              <tr><td>M1</td><td id="saM1">—</td></tr>
+              <tr><td>M2</td><td id="saM2">—</td></tr>
+              <tr><td>Delta</td><td id="saDelta">—</td></tr>
+              <tr><td>Noise floor (median in view)</td><td id="saFloor">—</td></tr>
+              <tr><td>Channel power</td><td id="saChPow">—</td></tr>
+              <tr><td>Occupied BW (99 %, view)</td><td id="saObw">—</td></tr>
+            </table>
+            <div class="field" style="margin-top:8px"><label for="saChBw">Channel width (kHz, around M1 or tuned)</label><input id="saChBw" type="number" min="1" step="1" inputmode="decimal" /></div>
+            <p class="hint">Levels are relative (dBFS) unless a calibration offset is set (dBm). Channel power sums the bins in the channel.</p>
+          </div>
+        </details>
         <section class="card sdr" id="listenCard">
           <h2>Listen <span class="spacer"></span><span class="lbl" id="stereoInd"></span></h2>
           <div class="listen-top">
@@ -656,6 +862,17 @@
           </div>
           <p class="hint">Tap the spectrum to tune. Audio rides on the same SDR stream as the measurements, so listening never changes what is logged. Tuned <b id="tunedRo">—</b>.</p>
         </section>
+        <details class="card fold">
+          <summary><h2>RF front-end</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="feUpconv">Upconverter LO (MHz)</label><input id="feUpconv" type="number" step="0.001" inputmode="decimal" placeholder="0 = off" /></div>
+              <div class="field"><label for="fePpm">Clock correction (PPM)</label><input id="fePpm" type="number" step="1" inputmode="numeric" /></div>
+              <div class="field"><label for="feDeemph">WBFM de-emphasis</label><select id="feDeemph"><option value="50">50 µs (Europe, Africa)</option><option value="75">75 µs (Americas, Korea)</option></select></div>
+            </div>
+            <p class="hint">Gain, amp, bias-T, sample rate and DC removal are in Settings. With an upconverter the tuner sits at RF + LO; all readouts and recordings show the RF frequency.</p>
+          </div>
+        </details>
           <section class="card sdr" id="tunerCard">
             <h2>Centre frequency <span class="spacer"></span><span class="lbl">steps · presets</span></h2>
             <div class="tuner-steps">
@@ -704,10 +921,17 @@
         </section>
           </div>
           <div class="col">
+            <section class="card" id="sessCard">
+              <h2>Sessions <span class="spacer"></span><span class="lbl" id="sessUsage"></span></h2>
+              <p class="hint" style="margin:0 0 8px">Press <b>Rec</b> (top bar, any tab) to record spectrum frames, GPS, heading and levels together. Play them back here; SA, MT and DT replay as if live.</p>
+              <div class="sesslist" id="sessList"></div>
+              <div class="btns" style="margin-top:8px">
+                <button class="btn ghost" id="btnSessImport" type="button"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Import JSON</button>
+              </div>
+              <input id="sessFile" type="file" accept=".json,application/json" multiple hidden />
+            </section>
             <section class="card">
-              <h2>Recorder</h2>
-            <section class="card">
-              <h2>Recording</h2>
+              <h2>Thesis recorder (CSV pins)</h2>
           <div class="recbox" aria-live="polite">
             <div class="rechead">
               <span class="recdot" id="recDot" aria-hidden="true"></span>
@@ -732,7 +956,6 @@
             </div>
             <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
           </div>
-            </section>
             </section>
         <section class="card">
           <h2>GPS location <span class="spacer"></span><span id="gpsBadge" class="lbl">—</span></h2>
@@ -836,19 +1059,20 @@
         <div class="grid g-split">
           <div class="col">
         <section class="card">
-          <h2>Network signal detail <span class="spacer"></span><span class="lbl">estimated</span></h2>
-          <table>
-            <tr><td>Connection type</td><td id="nType">—</td></tr>
-            <tr><td>Effective type</td><td id="nEffType">—</td></tr>
-            <tr><td>Downlink</td><td id="nDownlink">—</td></tr>
-            <tr><td>Max downlink</td><td id="nDownMax">—</td></tr>
-            <tr><td>RTT</td><td id="nRTT">—</td></tr>
-            <tr><td>Est. quality</td><td id="nQuality">—</td></tr>
-            <tr><td>Signal est. (not measured)</td><td id="nRSSI">—</td></tr>
-            <tr><td>Data saver</td><td id="nSave">—</td></tr>
+          <h2>Network link detail <span class="spacer"></span><span class="lbl">link quality, not RF</span></h2>
+          <table class="nettable">
+            <caption class="sr-only">Network link information from the browser's Network Information API</caption>
+            <tr><th scope="row">Connection type</th><td id="nType">—</td></tr>
+            <tr><th scope="row">Effective type</th><td id="nEffType">—</td></tr>
+            <tr><th scope="row">Downlink</th><td id="nDownlink">—</td></tr>
+            <tr><th scope="row">Max downlink</th><td id="nDownMax">—</td></tr>
+            <tr><th scope="row">Round-trip time</th><td id="nRTT">—</td></tr>
+            <tr><th scope="row">Link quality</th><td id="nQuality">—</td></tr>
+            <tr><th scope="row">Signal (Radio Bridge)</th><td id="nRSSI">—</td></tr>
+            <tr><th scope="row">Data saver</th><td id="nSave">—</td></tr>
           </table>
           <div class="bar"><div id="signalBar"></div></div>
-          <p class="hint">Browsers can't read raw Wi-Fi/cellular RSSI; these values are estimated from the Network Information API (Chrome/Edge).</p>
+          <p class="hint">Browsers can't read Wi-Fi RSSI or cellular RSRP, so no dBm is shown unless the Radio Bridge app supplies one. Link quality is scored mainly from round-trip time. Chrome caps downlink at 10 Mbps (rounded to 25 kbps), rounds RTT to 25 ms, and often omits connection type on desktop.</p>
         </section>
             <section class="card">
               <h2>What a browser can and can't see</h2>
@@ -858,6 +1082,7 @@
                 <li><b>For real RF:</b> use an SDR in SA — tap a band below to tune it. For phone radio readings, the <b>Radio Bridge</b> Android app (branch <code>radio-bridge</code>, in progress) is planned to feed Wi-Fi, cellular, BLE and GNSS data into RM.</li>
               </ul>
               <div class="btns" style="margin-top:12px"><button class="btn ghost" type="button" id="btnRfWifi">Monitor Wi-Fi quality</button><button class="btn ghost" type="button" id="btnRfCell">Monitor cellular quality</button></div>
+              <p class="hint" id="rfMonHint" hidden></p>
             </section>
           </div>
           <div class="col">
@@ -866,14 +1091,16 @@
               <div class="field" style="margin-bottom:12px">
                 <label for="bandSet">Table</label>
                 <select id="bandSet">
-                  <option value="cell">South Africa — cellular downlink</option>
+                  <option value="cell">South Africa — cellular bands</option>
                   <option value="wifi24">Wi-Fi 2.4 GHz channels</option>
                   <option value="wifi5">Wi-Fi 5 GHz channels</option>
+                  <option value="wifi6">Wi-Fi 6 GHz channels (6E)</option>
                   <option value="misc">Other useful bands</option>
                 </select>
               </div>
               <div class="bandtable" id="bandTable"></div>
-              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.7 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.766 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+              <p class="hint" id="bandNote" hidden></p>
             </section>
           </div>
         </div>
@@ -882,14 +1109,54 @@
       <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden>
         <h2 class="pane-title">RM · Remote Monitoring</h2>
         <div class="grid g-split">
+          <div class="col">
+          <section class="card" id="rxCard">
+            <h2>Remote receiver <span class="spacer"></span><span class="lbl">OpenWebRX · UberSDR · KiwiSDR</span></h2>
+            <div class="grid2">
+            <div class="field full">
+              <label for="rxUrl">Server address</label>
+              <input id="rxUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://sdr.example.org/ or https://call.tunnel.ubersdr.org/" spellcheck="false" />
+            </div>
+            <div class="field"><label for="rxUrlKind">Server type</label><select id="rxUrlKind"><option value="auto">Detect</option><option value="openwebrx">OpenWebRX</option><option value="ubersdr">UberSDR</option><option value="kiwisdr">KiwiSDR</option></select></div>
+            </div>
+            <div class="btns" style="margin-top:8px">
+              <button class="btn primary" id="btnRxConnect" type="button">Connect</button>
+              <button class="btn ghost" id="btnRxOpen" type="button"><svg class="i" aria-hidden="true"><use href="#i-external"/></svg>Open in new tab</button>
+            </div>
+            <p class="hint" id="rxMsg" aria-live="polite"></p>
+            <div class="chiprow" id="rxSaved" aria-label="Recent servers"></div>
+            <div id="rxLive" hidden>
+              <div class="rxhead"><b id="rxName"></b><small id="rxMeta"></small></div>
+              <div class="grid2">
+                <div class="field full"><label for="rxProfile">Profile (band)</label><select id="rxProfile"></select></div>
+                <div class="field"><label for="rxFreq">Tuned (MHz)</label><input id="rxFreq" type="number" step="0.0001" inputmode="decimal" /></div>
+                <div class="field"><label for="rxMode">Modulation</label><select id="rxMode"></select></div>
+                <div class="field"><label for="rxSquelch">Squelch <span id="rxSqVal"></span></label><input id="rxSquelch" type="range" min="-150" max="0" step="1" /></div>
+                <div class="field"><label for="rxVol">Volume</label><input id="rxVol" type="range" min="0" max="1.5" step="0.05" value="0.8" /></div>
+              </div>
+              <div class="btns" style="margin-top:8px">
+                <button class="btn ghost" id="btnRxAudio" type="button" aria-pressed="false">Audio off</button>
+                <button class="btn ghost" id="btnRxDisconnect" type="button">Disconnect</button>
+                <a class="btn ghost" id="rxOpenLink" href="#" target="_blank" rel="noopener"><svg class="i" aria-hidden="true"><use href="#i-external"/></svg>Server page</a>
+              </div>
+              <table class="ro-table"><tr><td>S-meter (server)</td><td id="rxSmeter">—</td></tr><tr><td>Data</td><td id="rxRate">—</td></tr></table>
+              <p class="hint">Tap the spectrum to tune. Centre and span are set by the server's profile. Levels are the server's dB scale, not calibrated; GPS and heading in a recording are this device's.</p>
+            </div>
+          </section>
+            <div class="slot slot-mini" data-slot="scope"></div>
+          </div>
+          <div class="col">
           <section class="card">
-            <h2>Remote Monitoring <span class="spacer"></span><span class="lbl">coming next</span></h2>
-            <p>Connect remote webRx nodes and see their measurements here, next to your own. Planned building blocks:</p>
-            <ul class="plain">
-              <li><b>Same record format</b> as the recorder and DT fixes, so a remote node's data lands on the MT map and DT plot unchanged.</li>
-              <li><b>Radio Bridge</b> (branch <code>radio-bridge</code>, Android, work in progress): a phone app that serves Wi-Fi, cellular, BLE and GNSS readings over local HTTP.</li>
-              <li>A relay (WebSocket/WebRTC) for nodes outside your network — needs a hosting decision first.</li>
-            </ul>
+            <h2>Directory</h2>
+            <div class="grid2">
+              <div class="field full"><label for="rxSearch">Search name, place or address</label><input id="rxSearch" type="search" placeholder="e.g. airband, 2m, Cape Town" /></div>
+              <div class="field"><label for="rxKind">Type</label><select id="rxKind"><option value="all">All</option><option value="fav">★ Favourites</option><option value="ubersdr">UberSDR</option><option value="kiwisdr">KiwiSDR</option><option value="openwebrx">OpenWebRX</option></select></div>
+              <div class="field"><label for="rxSort">Sort</label><select id="rxSort"><option value="dist">Nearest</option><option value="works">Works here first</option></select></div>
+              <label class="check"><input id="rxOnlyOk" type="checkbox" checked /> https only (can connect here)</label>
+            </div>
+            <p class="hint" id="rxDirInfo">Loading directory…</p>
+            <div class="dirlist" id="rxDir"></div>
+            <p class="hint">Sources: OpenWebRX from <a href="https://www.receiverbook.de/" target="_blank" rel="noopener">receiverbook.de</a> (snapshot shipped with the app; refresh with <code>node scripts/owrx-directory.mjs --probe</code>); UberSDR live from <a href="https://instances.ubersdr.org/" target="_blank" rel="noopener">instances.ubersdr.org</a>; KiwiSDR from receiverbook.de's mirror of <a href="http://kiwisdr.com/public/" target="_blank" rel="noopener">kiwisdr.com/public</a> (http-only, so not readable from this https page). http-only servers open in a new tab: browsers block insecure connections from this https page.</p>
           </section>
           <section class="card">
             <h2>Other pages</h2>
@@ -900,6 +1167,7 @@
             </div>
             <p class="hint">The MMN map doesn't use the SDR, so it opens alongside a running measurement. The classic receiver is a separate page with its own connection: disconnect here first.</p>
           </section>
+          </div>
         </div>
       </section>
 
@@ -907,9 +1175,6 @@
         <h2 class="pane-title">Settings</h2>
         <div class="grid g-split">
           <div class="col">
-          <section class="card">
-            <h2>Receiver &amp; logging</h2>
-            <div class="grid2">
           <section class="card">
             <h2>Receiver &amp; logging</h2>
             <div class="grid2">
@@ -984,10 +1249,17 @@
             <label class="check sdr"><input id="biasTee" type="checkbox" /> Antenna power / bias-T</label>
             </div>
           </section>
-            </div>
-          </section>
           </div>
           <div class="col">
+          <section class="card">
+            <h2>Session recording</h2>
+            <div class="grid2">
+              <div class="field"><label for="limMB">Size limit (MB)</label><input id="limMB" type="number" min="5" step="5" inputmode="numeric" /></div>
+              <div class="field"><label for="limMin">Time limit (minutes)</label><input id="limMin" type="number" min="1" step="1" inputmode="numeric" /></div>
+              <div class="field"><label for="limFps">Frames per second</label><select id="limFps"><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8">8</option></select></div>
+            </div>
+            <p class="hint">About 1.2 kB per frame (spectrum down-sampled to ≤1024 points at 0.5 dB steps): 4 frames/s ≈ 17 MB per hour.</p>
+          </section>
           <section class="card">
             <h2>Look &amp; feel</h2>
             <div class="grid2">
@@ -1022,6 +1294,46 @@
         </div>
       </section>
     </main>
+
+    <aside class="statuspanel" id="statusPanel" aria-label="Live status">
+      <button class="sp-toggle" id="spToggle" type="button" aria-controls="spBody" aria-expanded="false" aria-label="Show live status"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><span>Live</span></button>
+      <div class="sp-body" id="spBody" tabindex="0">
+        <h2>Live status</h2>
+        <dl>
+          <dt>Centre</dt><dd id="spCentre">—</dd>
+          <dt>Tuned</dt><dd id="spTuned">—</dd>
+          <dt>Span (BW)</dt><dd id="spSpan">—</dd>
+          <dt>RBW / FFT</dt><dd id="spRbw">—</dd>
+          <dt>Sample rate</dt><dd id="spRate">—</dd>
+          <dt>Gain / amp</dt><dd id="spGain">—</dd>
+          <dt>Modulation</dt><dd id="spMode">—</dd>
+          <dt>Level</dt><dd id="spLevel">—</dd>
+          <dt>Peak</dt><dd id="spPeak">—</dd>
+          <dt>Noise floor</dt><dd id="spFloor">—</dd>
+          <dt>GPS</dt><dd id="spGps">—</dd>
+          <dt>Heading</dt><dd id="spHeading">—</dd>
+          <dt>Recording</dt><dd id="spRec">—</dd>
+          <dt>Device</dt><dd id="spDevice">—</dd>
+        </dl>
+        <div class="sp-chips">
+          <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
+          <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="player" id="player" hidden role="region" aria-label="Session playback">
+      <b class="pbname" id="pbName"></b>
+      <div class="pbrow">
+        <button class="btn ghost icon" id="pbPrev" type="button" aria-label="Previous frame"><svg class="i" aria-hidden="true"><use href="#i-skip-back"/></svg></button>
+        <button class="btn primary icon" id="pbPlay" type="button" aria-label="Play"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg></button>
+        <button class="btn ghost icon" id="pbNext" type="button" aria-label="Next frame"><svg class="i" aria-hidden="true"><use href="#i-skip-fwd"/></svg></button>
+        <input id="pbSeek" type="range" min="0" max="1000" step="1" value="0" aria-label="Seek" />
+        <span class="pbtime" id="pbTime">0:00 / 0:00</span>
+        <select id="pbSpeed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select>
+        <button class="btn ghost icon" id="pbClose" type="button" aria-label="Close playback"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+    </div>
 
 
     <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source">
@@ -1188,22 +1500,57 @@
     });
   });
   // ── RF Tech: band tables ──
-  const BANDS = {
-    cell: [["B28 · LTE 700", 758, 803], ["B20 · LTE 800", 791, 821], ["B8 · GSM/LTE 900", 925, 960], ["B3 · GSM/LTE 1800", 1805, 1880], ["B1 · UMTS/LTE 2100", 2110, 2170], ["B40 · LTE TDD 2300", 2300, 2400], ["B38 · LTE TDD 2600", 2570, 2620], ["B7 · LTE 2600", 2620, 2690], ["n78 · 5G 3500", 3300, 3800]],
-    wifi24: Array.from({ length: 14 }, (_, i) => { const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c; return [`Channel ${c}`, f - 11, f + 11, f]; }),
-    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165].map((c) => { const f = 5000 + 5 * c; return [`Channel ${c}${c >= 52 && c <= 140 ? " · DFS" : ""}`, f - 10, f + 10, f]; }),
-    misc: [["FM broadcast", 87.5, 108], ["Airband (AM)", 118, 137], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05], ["ISM 433", 433.05, 434.79], ["ISM 868", 868, 868.6], ["ADS-B", 1089, 1091, 1090], ["GPS L1", 1574.4, 1576.4, 1575.42]],
+  // Rows: [name, lo MHz, hi MHz, tune centre?, note?]. Cellular rows are downlink; note gives uplink/duplex.
+  const W6 = Array.from({ length: 24 }, (_, i) => 1 + 4 * i); // U-NII-5 ch 1..93 (SA: 5925–6425 MHz)
+  const BANDS = window.webrxBands = {
+    cell: [
+      ["B28 · LTE 700", 758, 803, undefined, "FDD · UL 703–748 MHz"], ["B20 · LTE 800", 791, 821, undefined, "FDD · UL 832–862 MHz"],
+      ["B8 · GSM/LTE 900", 925, 960, undefined, "FDD · UL 880–915 MHz"], ["B3 · GSM/LTE 1800", 1805, 1880, undefined, "FDD · UL 1710–1785 MHz"],
+      ["B1 · UMTS/LTE 2100", 2110, 2170, undefined, "FDD · UL 1920–1980 MHz"], ["B40 · LTE TDD 2300", 2300, 2400, undefined, "TDD · same band UL/DL"],
+      ["B38 · LTE TDD 2600", 2570, 2620, undefined, "TDD · same band UL/DL"], ["B7 · LTE 2600", 2620, 2690, undefined, "FDD · UL 2500–2570 MHz"],
+      ["n78 · 5G 3500", 3300, 3800, undefined, "TDD · same band UL/DL"],
+    ],
+    wifi24: Array.from({ length: 14 }, (_, i) => {
+      const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c;
+      const note = c === 14 ? "Japan only (802.11b) — not permitted in SA" : c >= 12 ? "permitted in SA (not US)" : c === 1 || c === 6 || c === 11 ? "non-overlapping 1/6/11" : undefined;
+      return [`Channel ${c}`, f - 10, f + 10, f, note];
+    }),
+    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165].map((c) => {
+      const f = 5000 + 5 * c;
+      return [`Channel ${c}${c >= 52 && c <= 144 ? " · DFS" : ""}`, f - 10, f + 10, f, c >= 149 ? "5725–5850 MHz: SA low-power SRD only" : undefined];
+    }),
+    wifi6: W6.map((c) => { const f = 5950 + 5 * c; return [`Channel ${c}`, f - 10, f + 10, f, "U-NII-5 · LPI/VLP"]; }),
+    misc: [
+      ["FM broadcast", 87.5, 108], ["VOR / ILS localiser", 108, 118, 113, "aviation navigation"], ["Airband (AM)", 118, 136.975],
+      ["NOAA APT weather sats", 137, 138, 137.5, "NOAA 15/18/19 at 137.62 / 137.9125 / 137.1"], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05],
+      ["DAB+ (Band III)", 174, 240, 207, "SA DAB+ trial blocks"], ["ISM / LoRa 433", 433.05, 434.79, 433.92], ["SRD 863–870 (LoRa EU868)", 863, 870, 868.1],
+      ["ADS-B", 1089, 1091, 1090], ["GNSS L5 / E5a", 1164.45, 1188.45, 1176.45], ["GPS L1", 1574.4, 1576.4, 1575.42],
+    ],
   };
-  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(3).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
+  const RTL_MAX = 1766;
+  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(4).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
   const renderBands = () => {
-    const max = parseFloat($("freq").max) || 1766;
+    // Receiver range comes from the connected SDR (monitor sets data-rx-max-mhz); the #freq max is only an input limit.
+    const rxMax = parseFloat(document.body.dataset.rxMaxMhz || "");
+    const known = Number.isFinite(rxMax), max = known ? rxMax : RTL_MAX, who = document.body.dataset.rxName || "receiver";
     const rows = BANDS[$("bandSet").value];
-    $("bandTable").innerHTML = rows.map(([n, lo, hi, c]) => {
-      const ctr = c ?? (lo + hi) / 2, out = ctr > max;
-      return `<button type="button" class="bandrow" data-tune="${ctr}" ${out ? 'aria-disabled="true"' : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span><small>${out ? "out of range" : "tune " + fmt(ctr)}</small></button>`;
+    $("bandTable").innerHTML = rows.map(([n, lo, hi, c, note]) => {
+      const ctr = c ?? (lo + hi) / 2, out = hi > max;
+      const why = out ? (known ? `Above ${who} range (max ${fmt(max)})` : `Needs HackRF — above RTL-SDR range (~${fmt(RTL_MAX)})`) : "";
+      const tag = out ? (known ? "out of range" : "needs HackRF") : "tune " + fmt(ctr);
+      return `<button type="button" class="bandrow" data-tune="${ctr}"${out ? ` aria-disabled="true" tabindex="-1" title="${why}"` : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span>${note ? `<i>${note}</i>` : ""}<small>${tag}</small></button>`;
     }).join("");
+    const bn = $("bandNote"), set = $("bandSet").value;
+    const notes = {
+      cell: "Rows show downlink (tower → phone); uplink range and duplex mode are listed under each band.",
+      wifi24: "20 MHz OFDM channels (±10 MHz). In South Africa channels 1–13 are permitted; channel 14 is Japan-only.",
+      wifi5: "Channels 52–144 require DFS. 5725–5850 MHz (ch 149–165) is a low-power SRD allocation in South Africa.",
+      wifi6: "ICASA opened 5925–6425 MHz (U-NII-5) for Wi-Fi 6E: 20 MHz channels 1–93, centre 5950 + 5·n MHz.",
+    };
+    bn.hidden = !notes[set]; bn.textContent = notes[set] || "";
   };
   $("bandSet").addEventListener("change", renderBands);
+  window.addEventListener("webrx:rxrange", renderBands);
   $("bandTable").addEventListener("click", (e) => {
     const b = e.target.closest(".bandrow");
     if (!b || b.getAttribute("aria-disabled") === "true") return;
@@ -1214,9 +1561,18 @@
   });
   setTimeout(renderBands, 0);
   window.addEventListener("webrx:tab", (e) => { if (e.detail === "rf") renderBands(); });
-  const pickSource = (v) => { const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change")); };
-  $("btnRfWifi").addEventListener("click", () => pickSource("wifi"));
-  $("btnRfCell").addEventListener("click", () => pickSource("cellular"));
+  const hasSource = (v) => !!$("sourceSelect").querySelector(`option[value="${v}"]:not([disabled])`);
+  const pickSource = (v, label) => {
+    const hint = $("rfMonHint");
+    if (!hasSource(v)) { hint.hidden = false; hint.textContent = `${label} monitoring isn't available in this build/browser.`; return; }
+    hint.hidden = true;
+    const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change"));
+  };
+  for (const [id, v, label] of [["btnRfWifi", "wifi", "Wi-Fi"], ["btnRfCell", "cellular", "Cellular"]]) {
+    const btn = $(id);
+    if (!hasSource(v)) { btn.setAttribute("aria-disabled", "true"); btn.title = `${label} monitor source not available`; }
+    btn.addEventListener("click", () => pickSource(v, label));
+  }
 
   // ── look & feel settings ──
   const UI_KEY = "webrx.ui.v1";

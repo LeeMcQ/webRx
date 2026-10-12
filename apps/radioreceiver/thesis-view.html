@@ -463,7 +463,13 @@
       .bandrow b { font-size: var(--t13); } .bandrow span { font: var(--t12) var(--mono); color: var(--muted); grid-column: 1; }
       .bandrow small { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #93c5fd; font-size: var(--t12); }
       .bandrow:hover { border-color: var(--accent); }
-      .bandrow[aria-disabled="true"] { opacity: .55; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
+      .bandrow[aria-disabled="true"] { opacity: .5; cursor: not-allowed; border-style: dashed; filter: grayscale(1); }
+      .bandrow[aria-disabled="true"]:hover { border-color: var(--line, rgba(255,255,255,.12)); }
+      .bandrow i { grid-column: 1; font-style: normal; font-size: var(--t12); color: var(--muted); }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .nettable th { text-align: left; font-weight: 500; color: var(--muted); }
+      #pane-rf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
+      #btnRfWifi[aria-disabled="true"], #btnRfCell[aria-disabled="true"] { opacity: .5; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
       @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) { .tab b.gear { display: none; } }
       .slot { min-width: 0; }
       .slot-mini #spectrum { height: 170px; } .slot-mini #waterfall { height: 90px; }
@@ -1053,19 +1059,20 @@
         <div class="grid g-split">
           <div class="col">
         <section class="card">
-          <h2>Network signal detail <span class="spacer"></span><span class="lbl">estimated</span></h2>
-          <table>
-            <tr><td>Connection type</td><td id="nType">—</td></tr>
-            <tr><td>Effective type</td><td id="nEffType">—</td></tr>
-            <tr><td>Downlink</td><td id="nDownlink">—</td></tr>
-            <tr><td>Max downlink</td><td id="nDownMax">—</td></tr>
-            <tr><td>RTT</td><td id="nRTT">—</td></tr>
-            <tr><td>Est. quality</td><td id="nQuality">—</td></tr>
-            <tr><td>Signal est. (not measured)</td><td id="nRSSI">—</td></tr>
-            <tr><td>Data saver</td><td id="nSave">—</td></tr>
+          <h2>Network link detail <span class="spacer"></span><span class="lbl">link quality, not RF</span></h2>
+          <table class="nettable">
+            <caption class="sr-only">Network link information from the browser's Network Information API</caption>
+            <tr><th scope="row">Connection type</th><td id="nType">—</td></tr>
+            <tr><th scope="row">Effective type</th><td id="nEffType">—</td></tr>
+            <tr><th scope="row">Downlink</th><td id="nDownlink">—</td></tr>
+            <tr><th scope="row">Max downlink</th><td id="nDownMax">—</td></tr>
+            <tr><th scope="row">Round-trip time</th><td id="nRTT">—</td></tr>
+            <tr><th scope="row">Link quality</th><td id="nQuality">—</td></tr>
+            <tr><th scope="row">Signal (Radio Bridge)</th><td id="nRSSI">—</td></tr>
+            <tr><th scope="row">Data saver</th><td id="nSave">—</td></tr>
           </table>
           <div class="bar"><div id="signalBar"></div></div>
-          <p class="hint">Browsers can't read raw Wi-Fi/cellular RSSI; these values are estimated from the Network Information API (Chrome/Edge).</p>
+          <p class="hint">Browsers can't read Wi-Fi RSSI or cellular RSRP, so no dBm is shown unless the Radio Bridge app supplies one. Link quality is scored mainly from round-trip time. Chrome caps downlink at 10 Mbps (rounded to 25 kbps), rounds RTT to 25 ms, and often omits connection type on desktop.</p>
         </section>
             <section class="card">
               <h2>What a browser can and can't see</h2>
@@ -1075,6 +1082,7 @@
                 <li><b>For real RF:</b> use an SDR in SA — tap a band below to tune it. For phone radio readings, the <b>Radio Bridge</b> Android app (branch <code>radio-bridge</code>, in progress) is planned to feed Wi-Fi, cellular, BLE and GNSS data into RM.</li>
               </ul>
               <div class="btns" style="margin-top:12px"><button class="btn ghost" type="button" id="btnRfWifi">Monitor Wi-Fi quality</button><button class="btn ghost" type="button" id="btnRfCell">Monitor cellular quality</button></div>
+              <p class="hint" id="rfMonHint" hidden></p>
             </section>
           </div>
           <div class="col">
@@ -1083,14 +1091,16 @@
               <div class="field" style="margin-bottom:12px">
                 <label for="bandSet">Table</label>
                 <select id="bandSet">
-                  <option value="cell">South Africa — cellular downlink</option>
+                  <option value="cell">South Africa — cellular bands</option>
                   <option value="wifi24">Wi-Fi 2.4 GHz channels</option>
                   <option value="wifi5">Wi-Fi 5 GHz channels</option>
+                  <option value="wifi6">Wi-Fi 6 GHz channels (6E)</option>
                   <option value="misc">Other useful bands</option>
                 </select>
               </div>
               <div class="bandtable" id="bandTable"></div>
-              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.7 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.766 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+              <p class="hint" id="bandNote" hidden></p>
             </section>
           </div>
         </div>
@@ -1490,22 +1500,57 @@
     });
   });
   // ── RF Tech: band tables ──
+  // Rows: [name, lo MHz, hi MHz, tune centre?, note?]. Cellular rows are downlink; note gives uplink/duplex.
+  const W6 = Array.from({ length: 24 }, (_, i) => 1 + 4 * i); // U-NII-5 ch 1..93 (SA: 5925–6425 MHz)
   const BANDS = window.webrxBands = {
-    cell: [["B28 · LTE 700", 758, 803], ["B20 · LTE 800", 791, 821], ["B8 · GSM/LTE 900", 925, 960], ["B3 · GSM/LTE 1800", 1805, 1880], ["B1 · UMTS/LTE 2100", 2110, 2170], ["B40 · LTE TDD 2300", 2300, 2400], ["B38 · LTE TDD 2600", 2570, 2620], ["B7 · LTE 2600", 2620, 2690], ["n78 · 5G 3500", 3300, 3800]],
-    wifi24: Array.from({ length: 14 }, (_, i) => { const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c; return [`Channel ${c}`, f - 11, f + 11, f]; }),
-    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165].map((c) => { const f = 5000 + 5 * c; return [`Channel ${c}${c >= 52 && c <= 140 ? " · DFS" : ""}`, f - 10, f + 10, f]; }),
-    misc: [["FM broadcast", 87.5, 108], ["Airband (AM)", 118, 137], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05], ["ISM 433", 433.05, 434.79], ["ISM 868", 868, 868.6], ["ADS-B", 1089, 1091, 1090], ["GPS L1", 1574.4, 1576.4, 1575.42]],
+    cell: [
+      ["B28 · LTE 700", 758, 803, undefined, "FDD · UL 703–748 MHz"], ["B20 · LTE 800", 791, 821, undefined, "FDD · UL 832–862 MHz"],
+      ["B8 · GSM/LTE 900", 925, 960, undefined, "FDD · UL 880–915 MHz"], ["B3 · GSM/LTE 1800", 1805, 1880, undefined, "FDD · UL 1710–1785 MHz"],
+      ["B1 · UMTS/LTE 2100", 2110, 2170, undefined, "FDD · UL 1920–1980 MHz"], ["B40 · LTE TDD 2300", 2300, 2400, undefined, "TDD · same band UL/DL"],
+      ["B38 · LTE TDD 2600", 2570, 2620, undefined, "TDD · same band UL/DL"], ["B7 · LTE 2600", 2620, 2690, undefined, "FDD · UL 2500–2570 MHz"],
+      ["n78 · 5G 3500", 3300, 3800, undefined, "TDD · same band UL/DL"],
+    ],
+    wifi24: Array.from({ length: 14 }, (_, i) => {
+      const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c;
+      const note = c === 14 ? "Japan only (802.11b) — not permitted in SA" : c >= 12 ? "permitted in SA (not US)" : c === 1 || c === 6 || c === 11 ? "non-overlapping 1/6/11" : undefined;
+      return [`Channel ${c}`, f - 10, f + 10, f, note];
+    }),
+    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165].map((c) => {
+      const f = 5000 + 5 * c;
+      return [`Channel ${c}${c >= 52 && c <= 144 ? " · DFS" : ""}`, f - 10, f + 10, f, c >= 149 ? "5725–5850 MHz: SA low-power SRD only" : undefined];
+    }),
+    wifi6: W6.map((c) => { const f = 5950 + 5 * c; return [`Channel ${c}`, f - 10, f + 10, f, "U-NII-5 · LPI/VLP"]; }),
+    misc: [
+      ["FM broadcast", 87.5, 108], ["VOR / ILS localiser", 108, 118, 113, "aviation navigation"], ["Airband (AM)", 118, 136.975],
+      ["NOAA APT weather sats", 137, 138, 137.5, "NOAA 15/18/19 at 137.62 / 137.9125 / 137.1"], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05],
+      ["DAB+ (Band III)", 174, 240, 207, "SA DAB+ trial blocks"], ["ISM / LoRa 433", 433.05, 434.79, 433.92], ["SRD 863–870 (LoRa EU868)", 863, 870, 868.1],
+      ["ADS-B", 1089, 1091, 1090], ["GNSS L5 / E5a", 1164.45, 1188.45, 1176.45], ["GPS L1", 1574.4, 1576.4, 1575.42],
+    ],
   };
-  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(3).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
+  const RTL_MAX = 1766;
+  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(4).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
   const renderBands = () => {
-    const max = parseFloat($("freq").max) || 1766;
+    // Receiver range comes from the connected SDR (monitor sets data-rx-max-mhz); the #freq max is only an input limit.
+    const rxMax = parseFloat(document.body.dataset.rxMaxMhz || "");
+    const known = Number.isFinite(rxMax), max = known ? rxMax : RTL_MAX, who = document.body.dataset.rxName || "receiver";
     const rows = BANDS[$("bandSet").value];
-    $("bandTable").innerHTML = rows.map(([n, lo, hi, c]) => {
-      const ctr = c ?? (lo + hi) / 2, out = ctr > max;
-      return `<button type="button" class="bandrow" data-tune="${ctr}" ${out ? 'aria-disabled="true"' : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span><small>${out ? "out of range" : "tune " + fmt(ctr)}</small></button>`;
+    $("bandTable").innerHTML = rows.map(([n, lo, hi, c, note]) => {
+      const ctr = c ?? (lo + hi) / 2, out = hi > max;
+      const why = out ? (known ? `Above ${who} range (max ${fmt(max)})` : `Needs HackRF — above RTL-SDR range (~${fmt(RTL_MAX)})`) : "";
+      const tag = out ? (known ? "out of range" : "needs HackRF") : "tune " + fmt(ctr);
+      return `<button type="button" class="bandrow" data-tune="${ctr}"${out ? ` aria-disabled="true" tabindex="-1" title="${why}"` : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span>${note ? `<i>${note}</i>` : ""}<small>${tag}</small></button>`;
     }).join("");
+    const bn = $("bandNote"), set = $("bandSet").value;
+    const notes = {
+      cell: "Rows show downlink (tower → phone); uplink range and duplex mode are listed under each band.",
+      wifi24: "20 MHz OFDM channels (±10 MHz). In South Africa channels 1–13 are permitted; channel 14 is Japan-only.",
+      wifi5: "Channels 52–144 require DFS. 5725–5850 MHz (ch 149–165) is a low-power SRD allocation in South Africa.",
+      wifi6: "ICASA opened 5925–6425 MHz (U-NII-5) for Wi-Fi 6E: 20 MHz channels 1–93, centre 5950 + 5·n MHz.",
+    };
+    bn.hidden = !notes[set]; bn.textContent = notes[set] || "";
   };
   $("bandSet").addEventListener("change", renderBands);
+  window.addEventListener("webrx:rxrange", renderBands);
   $("bandTable").addEventListener("click", (e) => {
     const b = e.target.closest(".bandrow");
     if (!b || b.getAttribute("aria-disabled") === "true") return;
@@ -1516,9 +1561,18 @@
   });
   setTimeout(renderBands, 0);
   window.addEventListener("webrx:tab", (e) => { if (e.detail === "rf") renderBands(); });
-  const pickSource = (v) => { const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change")); };
-  $("btnRfWifi").addEventListener("click", () => pickSource("wifi"));
-  $("btnRfCell").addEventListener("click", () => pickSource("cellular"));
+  const hasSource = (v) => !!$("sourceSelect").querySelector(`option[value="${v}"]:not([disabled])`);
+  const pickSource = (v, label) => {
+    const hint = $("rfMonHint");
+    if (!hasSource(v)) { hint.hidden = false; hint.textContent = `${label} monitoring isn't available in this build/browser.`; return; }
+    hint.hidden = true;
+    const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change"));
+  };
+  for (const [id, v, label] of [["btnRfWifi", "wifi", "Wi-Fi"], ["btnRfCell", "cellular", "Cellular"]]) {
+    const btn = $(id);
+    if (!hasSource(v)) { btn.setAttribute("aria-disabled", "true"); btn.title = `${label} monitor source not available`; }
+    btn.addEventListener("click", () => pickSource(v, label));
+  }
 
   // ── look & feel settings ──
   const UI_KEY = "webrx.ui.v1";
