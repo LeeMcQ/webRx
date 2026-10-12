@@ -456,7 +456,7 @@
         .tab::before { top: 8px; height: 26px; }
       }
       .slot:empty { display: none; }
-      .tabbar { grid-template-columns: repeat(6, 1fr); }
+      .tabbar { grid-template-columns: repeat(7, 1fr); }
       .bandtable { display: grid; gap: var(--s2); max-height: 60vh; overflow: auto; }
       .bandrow { display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s3); text-align: left; min-height: var(--tap); padding: var(--s2) var(--s3);
         border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--text); cursor: pointer; font: inherit; }
@@ -471,7 +471,11 @@
       .wfempty { padding: 12px; border: 1px dashed rgba(148,163,184,.35); border-radius: 8px; font-size: var(--t13); }
       #wfViews h3 { font-size: var(--t13); margin: 14px 0 6px; }
       #wfBand { display: flex; gap: 6px; margin-top: 12px; } #wfBand [aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-      .wfgraph { height: 200px; }
+      .wfgraph { height: 240px; }
+      .wfconnbox summary { cursor: pointer; font-weight: 600; font-size: var(--t13); margin-bottom: 6px; }
+      .wfsub { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: 12px 0 10px; border-bottom: 1px solid rgba(148,163,184,.25); }
+      .wfsub button { min-width: 0; min-height: var(--tap); padding: 4px 2px; line-height: 1.2; background: none; border: 0; border-bottom: 3px solid transparent; color: var(--muted); font: 600 var(--t12) inherit; cursor: pointer; }
+      .wfsub button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
       .wfratewrap { max-height: 220px; overflow: auto; } .wfrate tr.best th, .wfrate tr.best td { color: var(--ok); font-weight: 600; } .stars { letter-spacing: 1px; }
       .wfaps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
       .wfap { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 8px 10px; border-left: 4px solid var(--c); border-radius: 6px; background: rgba(148,163,184,.06); min-width: 0; }
@@ -480,7 +484,7 @@
       .wfrssi { font: 600 var(--t13) var(--mono); color: var(--c); } .wfmeta { grid-column: 1 / -1; font: var(--t12) var(--mono); color: var(--muted); overflow-wrap: anywhere; }
       .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       .nettable th { text-align: left; font-weight: 500; color: var(--muted); }
-      #pane-rf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
+      #pane-rf, #pane-wf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
       #btnRfWifi[aria-disabled="true"], #btnRfCell[aria-disabled="true"] { opacity: .5; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
       @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) { .tab b.gear { display: none; } }
       .slot { min-width: 0; }
@@ -646,6 +650,7 @@
   <defs>
     <symbol id="i-radio" viewBox="0 0 24 24"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></symbol>
     <symbol id="i-map" viewBox="0 0 24 24"><path d="M14.1 5.9 9.9 3.8a2 2 0 0 0-1.8 0L3.6 6A1 1 0 0 0 3 7v12.4a1 1 0 0 0 1.4.9l3.7-1.9a2 2 0 0 1 1.8 0l4.2 2.1a2 2 0 0 0 1.8 0l4.5-2.3a1 1 0 0 0 .6-.9V4.9a1 1 0 0 0-1.4-.9l-3.7 1.9a2 2 0 0 1-1.8 0z"/><path d="M15 5.8v15M9 3.2v15"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.6a10 10 0 0 1 14 0M8.5 16.1a5 5 0 0 1 7 0M2 8.8a15 15 0 0 1 20 0"/><circle cx="12" cy="20" r="1"/></symbol>
     <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
     <symbol id="i-remote" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h.01M14 14h.01M10 17.5h.01M14 17.5h.01"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
@@ -698,6 +703,7 @@
       <button class="tab" role="tab" type="button" id="tab-mt" data-tab="mt" aria-controls="pane-mt" aria-selected="false" tabindex="-1" title="MT · Mobile Tracking" aria-label="MT · Mobile Tracking"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg><b>MT</b><span>Tracking</span></button>
       <button class="tab" role="tab" type="button" id="tab-dt" data-tab="dt" aria-controls="pane-dt" aria-selected="false" tabindex="-1" title="DT · Directional Tracking" aria-label="DT · Directional Tracking"><svg class="i" aria-hidden="true"><use href="#i-compass"/></svg><b>DT</b><span>Direction</span></button>
       <button class="tab" role="tab" type="button" id="tab-rf" data-tab="rf" aria-controls="pane-rf" aria-selected="false" tabindex="-1" title="RF Tech · Wi-Fi, cellular &amp; band tables" aria-label="RF Tech · Wi-Fi, cellular and band tables"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><b>RF</b><span>RF Tech</span></button>
+      <button class="tab" role="tab" type="button" id="tab-wf" data-tab="wf" aria-controls="pane-wf" aria-selected="false" tabindex="-1" title="Wi-Fi Analyser" aria-label="Wi-Fi Analyser"><svg class="i" aria-hidden="true"><use href="#i-wifi"/></svg><b>WF</b><span>Wi-Fi</span></button>
       <button class="tab" role="tab" type="button" id="tab-rm" data-tab="rm" aria-controls="pane-rm" aria-selected="false" tabindex="-1" title="RM · Remote Monitoring" aria-label="RM · Remote Monitoring"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><b>RM</b><span>Remote</span></button>
       <button class="tab" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><b class="gear" aria-hidden="true">⚙</b><span>Settings</span></button>
       </div>
@@ -1098,28 +1104,10 @@
             </section>
           </div>
           <div class="col">
-        <section class="card" id="wfCard">
-          <h2>Wi-Fi analyser <span class="spacer"></span><span class="lbl" id="wfSource">no data</span></h2>
-          <label class="wfdemo"><input type="checkbox" id="wfDemo" /> Show demo data (made-up access points, not a scan)</label>
-          <div id="wfEmpty" class="wfempty">
-            <p><b>No Wi-Fi scan data.</b> Browsers can't scan Wi-Fi networks. Connect the <b>Radio Bridge</b> Android app: it sends <code>WifiManager.getScanResults()</code> and the current connection here (<code>window.webrxWifi.push({aps, connection})</code>).</p>
-          </div>
-          <div id="wfViews" hidden>
-            <h3>Current connection</h3><div id="wfConn"></div>
-            <div class="seg" id="wfBand" role="group" aria-label="Wi-Fi band">
-              <button type="button" class="btn ghost small" data-band="2.4" aria-pressed="true">2.4 GHz</button><button type="button" class="btn ghost small" data-band="5" aria-pressed="false">5 GHz</button><button type="button" class="btn ghost small" data-band="6" aria-pressed="false">6 GHz</button>
-            </div>
-            <h3>Channel graph</h3>
-            <canvas id="wfChanGraph" class="wfgraph" role="img" aria-label="Access points by channel and signal strength"></canvas>
-            <h3>Channel rating</h3>
-            <p class="hint" id="wfBest"></p>
-            <div class="wfratewrap"><table class="nettable wfrate"><caption class="sr-only">Overlapping access points and rating per channel</caption><thead><tr><th scope="col">Ch</th><th scope="col">APs</th><th scope="col">Rating</th></tr></thead><tbody id="wfRating"></tbody></table></div>
-            <h3>Time graph <small>(RSSI, last 5 min)</small></h3>
-            <canvas id="wfTimeGraph" class="wfgraph" role="img" aria-label="Signal strength of each access point over the last five minutes"></canvas>
-            <h3>Access points (<span id="wfApCount">0</span>)</h3>
-            <ul class="wfaps" id="wfAps"></ul>
-          </div>
-          <p class="hint">Distance is a rough free-space estimate, d = 10^((27.55 − 20·log10 f + |RSSI|)/20). Walls, antennas and transmit power can make it wrong by a factor of 2–10. Wi-Fi scan throttling: Android 9+ allows each app 4 scans per 2 minutes in the foreground, so updates can be slow. You can turn throttling off in Developer options → "Wi-Fi scan throttling".</p>
+        <section class="card">
+          <h2>Wi-Fi analyser</h2>
+          <p class="hint">Access points, channel rating, channel graph and time graph (Radio Bridge scan data) are in the <b>Wi-Fi</b> tab.</p>
+          <div class="btns"><a class="btn ghost" href="#wf" id="btnOpenWifi">Open Wi-Fi analyser</a></div>
         </section>
             <section class="card">
               <h2>Band tables <span class="spacer"></span><span class="lbl">tap to tune in SA</span></h2>
@@ -1139,6 +1127,37 @@
             </section>
           </div>
         </div>
+      </section>
+
+      <section class="pane" id="pane-wf" role="tabpanel" aria-labelledby="tab-wf" hidden>
+        <h2 class="pane-title">Wi-Fi Analyser</h2>
+        <section class="card" id="wfCard">
+          <h2>Access points &amp; channels <span class="spacer"></span><span class="lbl" id="wfSource">no data</span></h2>
+          <label class="wfdemo"><input type="checkbox" id="wfDemo" /> Show demo data (made-up access points, not a scan)</label>
+          <div id="wfEmpty" class="wfempty">
+            <p><b>No Wi-Fi scan data.</b> Browsers can't scan Wi-Fi networks. Connect the <b>Radio Bridge</b> Android app: it sends <code>WifiManager.getScanResults()</code> and the current connection here (<code>window.webrxWifi.push({aps, connection})</code>).</p>
+          </div>
+          <div id="wfViews" hidden>
+            <details class="wfconnbox" open><summary>Current connection</summary><div id="wfConn"></div></details>
+            <div class="seg" id="wfBand" role="group" aria-label="Wi-Fi band">
+              <button type="button" class="btn ghost small" data-band="2.4" aria-pressed="true">2.4 GHz</button><button type="button" class="btn ghost small" data-band="5" aria-pressed="false">5 GHz</button><button type="button" class="btn ghost small" data-band="6" aria-pressed="false">6 GHz</button>
+            </div>
+            <div class="wfsub" role="tablist" aria-label="Wi-Fi analyser views">
+              <button type="button" role="tab" id="wfs-aps" aria-controls="wfp-aps" aria-selected="true">Access Points <span id="wfApCount">0</span></button>
+              <button type="button" role="tab" id="wfs-rate" aria-controls="wfp-rate" aria-selected="false" tabindex="-1">Channel Rating</button>
+              <button type="button" role="tab" id="wfs-graph" aria-controls="wfp-graph" aria-selected="false" tabindex="-1">Channel Graph</button>
+              <button type="button" role="tab" id="wfs-time" aria-controls="wfp-time" aria-selected="false" tabindex="-1">Time Graph</button>
+            </div>
+            <div role="tabpanel" id="wfp-aps" aria-labelledby="wfs-aps"><ul class="wfaps" id="wfAps"></ul></div>
+            <div role="tabpanel" id="wfp-rate" aria-labelledby="wfs-rate" hidden>
+              <p class="hint" id="wfBest"></p>
+              <div class="wfratewrap"><table class="nettable wfrate"><caption class="sr-only">Overlapping access points and rating per channel</caption><thead><tr><th scope="col">Ch</th><th scope="col">APs</th><th scope="col">Rating</th></tr></thead><tbody id="wfRating"></tbody></table></div>
+            </div>
+            <div role="tabpanel" id="wfp-graph" aria-labelledby="wfs-graph" hidden><canvas id="wfChanGraph" class="wfgraph" role="img" aria-label="Access points by channel and signal strength"></canvas></div>
+            <div role="tabpanel" id="wfp-time" aria-labelledby="wfs-time" hidden><p class="hint">RSSI per access point, last 5 minutes.</p><canvas id="wfTimeGraph" class="wfgraph" role="img" aria-label="Signal strength of each access point over the last five minutes"></canvas></div>
+          </div>
+          <p class="hint">Distance is a rough free-space estimate, d = 10^((27.55 − 20·log10 f + |RSSI|)/20). Walls, antennas and transmit power can make it wrong by a factor of 2–10. Wi-Fi scan throttling: Android 9+ allows each app 4 scans per 2 minutes in the foreground, so updates can be slow. You can turn throttling off in Developer options → "Wi-Fi scan throttling".</p>
+        </section>
       </section>
 
       <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden>
@@ -1484,9 +1503,10 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const TABS = ["sa", "mt", "dt", "rf", "rm", "settings"];
+  const TABS = ["sa", "mt", "dt", "rf", "wf", "rm", "settings"];
+  const LEGACY_WIFI = { wifi: "wf" };
   const LEGACY = { receiver: "sa", map: "mt", monitor: "mt", remote: "rm" };
-  const fix = (n) => LEGACY[n] || n;
+  const fix = (n) => LEGACY[n] || LEGACY_WIFI[n] || n;
   const sysReduce = matchMedia("(prefers-reduced-motion: reduce)");
   const reduce = { get matches() { return sysReduce.matches || document.documentElement.dataset.motion === "reduce"; } };
   let current = null;

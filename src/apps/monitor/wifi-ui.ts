@@ -127,7 +127,17 @@ export function initWifiAnalyser() {
     document.querySelectorAll("#wfBand button").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
     if (last) render();
   }));
+  const subs = Array.from(document.querySelectorAll<HTMLButtonElement>(".wfsub [role=tab]"));
+  const pick = (b: HTMLButtonElement, focus = false) => {
+    for (const o of subs) { const on = o === b; o.setAttribute("aria-selected", String(on)); o.tabIndex = on ? 0 : -1; $(o.getAttribute("aria-controls")!).hidden = !on; }
+    if (focus) b.focus();
+    if (last) render();
+  };
+  subs.forEach((b, i) => {
+    b.addEventListener("click", () => pick(b));
+    b.addEventListener("keydown", (e: KeyboardEvent) => { const k = ({ ArrowRight: 1, ArrowLeft: -1 } as any)[e.key]; if (k) { e.preventDefault(); pick(subs[(i + k + subs.length) % subs.length], true); } });
+  });
   window.addEventListener("resize", () => last && render());
-  window.addEventListener("webrx:tab", (e: any) => { if (e.detail === "rf" && last) requestAnimationFrame(render); });
+  window.addEventListener("webrx:tab", (e: any) => { if (e.detail === "wf" && last) requestAnimationFrame(render); });
   render();
 }
