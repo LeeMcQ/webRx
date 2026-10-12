@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-e40gxmpUxOObNDRc0SCKLFaRDZjqN8lVD8XTxnIpdnU='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
@@ -95,6 +96,7 @@
 
       /* ── spectrum ── */
       .scope { position: relative; }
+      .slot-mini .vfo { display: none; }
       canvas { display: block; width: 100%; border-radius: 8px; background: #070d18; touch-action: none; }
       #spectrum { height: 260px; }
       #waterfall { height: 200px; margin-top: 6px; image-rendering: pixelated; }
@@ -579,6 +581,58 @@
       [data-theme="light"] .sp-body h2, [data-theme="light"] .sp-body dt { color: #475569; }
       [data-theme="light"] .pbname { color: #5b21b6; }
       [data-theme="light"] .btn.rec { color: #991b1b; border-color: #fca5a5; } [data-theme="light"] .btn.rec.on { color: #fff; }
+
+      /* RM: OpenWebRX */
+      .chiprow { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s2) 0; }
+      .chipbtn { min-height: 36px; padding: 0 var(--s3); font-size: var(--t12); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .rxhead { margin: var(--s3) 0; } .rxhead b { display: block; font-size: var(--t17); } .rxhead small { color: var(--muted); font-size: var(--t12); }
+      .hint.bad { color: #fca5a5; } .hint a { color: #93c5fd; }
+      .dirlist { display: grid; gap: var(--s2); max-height: 560px; overflow: auto; }
+      .dirrow { display: flex; gap: var(--s3); align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: var(--s2) var(--s3); background: var(--panel-2); }
+      .dirinfo { flex: 1; min-width: 0; } .dirinfo b { display: block; font-size: var(--t13); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dirinfo small { display: block; color: var(--muted); font-size: var(--t12); }
+      .dirbtns { display: flex; gap: var(--s2); flex: none; } .dirbtns .btn.small { min-height: var(--tap); padding: 0 var(--s3); }
+      .tag { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+      .tag.ok { color: #86efac; border-color: #166534; } .tag.uber { color: #67e8f9; border-color: #155e75; } .tag.kiwi { color: #fdba74; border-color: #9a3412; } .tag.feat { color: #fde68a; border-color: #a16207; } .star { min-width: var(--tap); font-size: 18px; color: #fbbf24; }
+      [data-theme="light"] .tag.uber { color: #155e75; } [data-theme="light"] .tag.kiwi { color: #9a3412; } [data-theme="light"] .tag.owrx { color: #5b21b6; } [data-theme="light"] .tag.feat { color: #854d0e; } [data-theme="light"] .star { color: #a16207; } .tag.owrx { color: #c4b5fd; border-color: #5b21b6; } .tag.warn { color: #fcd34d; border-color: #854d0e; }
+      [data-theme="light"] .tag.ok { color: #166534; } [data-theme="light"] .tag.warn { color: #854d0e; } [data-theme="light"] .hint a { color: #1d4ed8; } [data-theme="light"] .hint.bad { color: #b91c1c; }
+
+      /* SA: VFO bar + scope tools (after UberSDR) */
+      .vfo { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+      .vfofreq { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+      .vfodigits { display: inline-flex; font: 600 24px/1 var(--mono); letter-spacing: .02em; cursor: ns-resize; padding: 6px 4px; border-radius: 8px; color: #e2e8f0; user-select: none; touch-action: none; }
+      .vfodigits:focus-visible { outline: 2px solid #60a5fa; }
+      .vfodigits .vd { padding: 0 1px; border-radius: 3px; }
+      .vfodigits .vd:hover { background: rgba(96,165,250,.25); color: #fff; }
+      .vfodigits .vd.gap { margin-left: 6px; }
+      .vfodigits .vd.lead { color: #334155; }
+      .vfofreq small { color: var(--muted); font-size: var(--t12); }
+      #vfoInput { width: 9.5em; font: 600 20px var(--mono); }
+      #vfoStep { width: auto; min-width: 84px; }
+      .vfotag { font: var(--t12) var(--mono); color: #f9a8d4; white-space: nowrap; }
+      .vfometer { position: relative; flex: 1 1 120px; min-width: 110px; height: 22px; border-radius: 6px; background: linear-gradient(90deg, #14532d 0 60%, #713f12 60% 80%, #7f1d1d 80%); overflow: hidden; }
+      .vfometerbar { position: absolute; inset: 0; background: linear-gradient(90deg, #22c55e, #facc15 70%, #ef4444); transform-origin: left; transform: scaleX(0); transition: transform .15s linear; }
+      .vfometer small { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 600 11px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+      .scopetools { display: flex; gap: 4px; margin-left: auto; }
+      .scopetools .btn[aria-pressed="true"] { color: #93c5fd; border-color: #1d4ed8; }
+      .scope { position: relative; }
+      .wfline { position: absolute; width: 0; border-left: 1px dashed rgba(244,114,182,.9); pointer-events: none; z-index: 2; }
+      @media (max-width: 520px) { .vfodigits { font-size: 20px; } .vfometer { order: 9; flex-basis: 100%; } .scopetools { margin-left: 0; } }
+      [data-theme="light"] .vfodigits { color: #0f172a; } [data-theme="light"] .vfodigits .vd.lead { color: #cbd5e1; } [data-theme="light"] .vfotag { color: #be185d; }
+
+      /* PR #9 UI review */
+      .dirlist { display: grid; grid-template-columns: minmax(0, 1fr); }
+      .dirrow, .dirinfo { min-width: 0; }
+      .dirinfo b, .dirinfo small { overflow-wrap: anywhere; }
+      @media (max-width: 520px) { .dirrow { flex-wrap: wrap; } .dirbtns { width: 100%; justify-content: flex-end; } }
+      .dirlist .empty { padding: var(--s3); color: var(--muted); }
+      .vfodigits .vd { display: inline-block; min-width: 24px; min-height: 32px; line-height: 32px; text-align: center; }
+      .vfodigits .vd.held { background: rgba(244,114,182,.3); color: #fff; }
+      .pbctl { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin-bottom: var(--s2); }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      /* slim edge handle so the peek tab never covers content (24 px wide, 88 px tall) */
+      @media (max-width: 899px) { main { padding-right: 28px; } .statuspanel .sp-toggle { left: -24px; width: 24px; padding: 0; } .statuspanel .sp-toggle span { display: none; } }
+      .hint a { line-height: 1.8; }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -608,6 +662,10 @@
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
     <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3z"/></symbol>
+    <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M11 8v6M8 11h6"/></symbol>
+    <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
     <symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M19 20 9 12l10-8zM5 19V5"/></symbol>
     <symbol id="i-skip-fwd" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8zM19 5v14"/></symbol>
@@ -651,9 +709,33 @@
             <div class="slot" data-slot="scope">
         <section class="card" id="scopeCard" data-move="scope">
           <h2>Spectrum <span class="spacer"></span><span id="specUnits">dBFS</span></h2>
+          <div class="vfo" role="group" aria-label="Tuning">
+            <button class="btn ghost icon" id="btnVfoDown" type="button" aria-label="Tune down one step"><svg class="i" aria-hidden="true"><use href="#i-minus"/></svg></button>
+            <div class="vfofreq">
+              <div class="vfodigits" id="vfoDigits" tabindex="0" role="button" aria-describedby="vfoHint" title="Focus, then scroll over a digit to tune it · touch: hold a digit and swipe · click to type MHz · ↑/↓ steps"></div>
+              <span class="sr-only" id="vfoHint">Press Enter to type a frequency in MHz. Up and down arrows tune by the selected step. With the readout focused, the mouse wheel over a digit tunes that digit; on touch, hold a digit and swipe.</span>
+              <input id="vfoInput" type="text" inputmode="decimal" aria-label="Frequency in MHz" hidden />
+              <small>Hz</small>
+            </div>
+            <button class="btn ghost icon" id="btnVfoUp" type="button" aria-label="Tune up one step"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
+            <select id="vfoStep" aria-label="Tuning step"><option value="10">10 Hz</option><option value="100">100 Hz</option><option value="500">500 Hz</option><option value="1000">1 kHz</option><option value="5000">5 kHz</option><option value="9000">9 kHz</option><option value="10000">10 kHz</option><option value="12500">12.5 kHz</option><option value="25000">25 kHz</option><option value="100000">100 kHz</option><option value="1000000">1 MHz</option></select>
+            <span class="vfotag"><b id="vfoMode">—</b> <span id="vfoBw">—</span></span>
+            <div class="vfometer" title="Signal level in the passband"><span class="vfometerbar" id="vfoMeterBar"></span><small id="vfoMeterTxt">—</small></div>
+            <div class="scopetools">
+              <button class="btn ghost icon" id="btnScopeZoomOut" type="button" aria-label="Zoom out" title="Zoom out (wheel / pinch on the spectrum)"><svg class="i" aria-hidden="true"><use href="#i-zoom-out"/></svg></button>
+              <button class="btn ghost icon" id="btnScopeZoomIn" type="button" aria-label="Zoom in" title="Zoom in (wheel / pinch on the spectrum)"><svg class="i" aria-hidden="true"><use href="#i-zoom-in"/></svg></button>
+              <button class="btn ghost icon" id="btnScopeCentre" type="button" aria-label="Centre on tuned frequency" title="Centre on tuned frequency (Home)"><svg class="i" aria-hidden="true"><use href="#i-target"/></svg></button>
+              <button class="btn ghost icon" id="btnScopeLabels" type="button" aria-pressed="true" aria-label="Show bookmarks and band plan" title="Bookmarks and band plan"><svg class="i" aria-hidden="true"><use href="#i-tag"/></svg></button>
+            </div>
+          </div>
+          <div class="pbctl" id="pbCtl" role="group" aria-label="Passband" hidden>
+            <div class="field"><label for="pbLoIn">Passband low edge <output id="pbLoVal"></output></label><input id="pbLoIn" type="range" min="-15000" max="15000" step="50" /></div>
+            <div class="field"><label for="pbHiIn">Passband high edge <output id="pbHiVal"></output></label><input id="pbHiIn" type="range" min="-15000" max="15000" step="50" /></div>
+          </div>
           <div class="scope">
             <canvas id="spectrum"></canvas>
             <canvas id="waterfall"></canvas>
+            <div class="wfline" id="wfTune" aria-hidden="true" style="display:none"></div>
             <div class="idle" id="specIdle">Choose a source, press Connect, then Start</div>
           </div>
           <div class="readout">
@@ -702,7 +784,7 @@
                 <button class="btn ghost" id="btnSaZoomM1" type="button">On M1</button></div></div>
               <div class="field full"><label for="saPan">Pan</label><input id="saPan" type="range" min="0" max="1000" step="1" /></div>
             </div>
-            <p class="hint">The widest span is the sample rate (Settings). Start/stop zooms the view; outside the span it re-centres the SDR. Ctrl + wheel zooms on desktop.</p>
+            <p class="hint">The widest span is the sample rate (Settings). Start/stop zooms the view; outside the span it re-centres the SDR. Wheel or pinch on the spectrum zooms at the pointer; drag pans. On UberSDR and KiwiSDR the server zooms its own FFT for full resolution.</p>
           </div>
         </details>
         <details class="card fold">
@@ -712,6 +794,7 @@
               <div class="field"><label for="saFft">FFT size</label><select id="saFft"><option>256</option><option>512</option><option>1024</option><option>2048</option><option>4096</option><option>8192</option><option>16384</option></select></div>
               <div class="field"><label>RBW</label><output id="saRbw" class="ro">—</output></div>
               <div class="field full"><label for="saAvg">Averaging</label><input id="saAvg" type="range" min="0" max="0.95" step="0.05" /></div>
+              <div class="field full"><label for="saAvgMode">Averaging domain</label><select id="saAvgMode"><option value="lin">Power (linear) — correct for noise &amp; channel power</option><option value="log">Log (dB, video) — reads ≈2.5 dB low on noise</option></select></div>
               <label class="check"><input id="saAuto" type="checkbox" /> Auto range</label>
               <div class="field"><label for="saRef">Ref level (dB, top)</label><input id="saRef" type="number" step="1" inputmode="decimal" /></div>
               <div class="field"><label for="saRange">Range (dB)</label><select id="saRange"><option>20</option><option>40</option><option>60</option><option>80</option><option>100</option><option>120</option></select></div>
@@ -727,6 +810,13 @@
               <label class="check"><input id="saMax" type="checkbox" /> Max hold</label>
               <label class="check"><input id="saMin" type="checkbox" /> Min hold</label>
               <label class="check"><input id="saPeak" type="checkbox" /> Peak hold (decaying)</label>
+              <div class="field"><label for="saFill">Spectrum fill</label><select id="saFill"><option value="cmap">Colour by level (like the waterfall)</option><option value="grad">Cyan wash</option></select></div>
+              <div class="field"><label for="saSmooth">Smoothing (display)</label><select id="saSmooth"><option value="0">Off</option><option value="1">Light (±1 bin)</option><option value="2">Medium (±2)</option><option value="4">Strong (±4)</option></select></div>
+              <div class="field"><label for="saWfFloor">Waterfall floor <output id="saWfFloorVal"></output></label><input id="saWfFloor" type="range" min="-30" max="30" step="1" /></div>
+              <div class="field"><label for="saWfContrast">Waterfall contrast <output id="saWfContrastVal"></output></label><input id="saWfContrast" type="range" min="0.5" max="3" step="0.05" /></div>
+              <label class="check"><input id="saLabels" type="checkbox" /> Bookmarks &amp; band plan</label>
+              <label class="check"><input id="saSnap" type="checkbox" /> Snap taps to the step</label>
+              <label class="check"><input id="saStats" type="checkbox" /> Stats overlay</label>
               <div class="field"><label for="saWf">Waterfall speed</label><select id="saWf"><option value="1">Fast (every frame)</option><option value="2">½</option><option value="4">¼</option><option value="8">⅛</option><option value="16">1/16</option></select></div>
             </div>
             <div class="btns" style="margin-top:8px">
@@ -740,7 +830,7 @@
         <details class="card fold">
           <summary><h2>Markers &amp; measurements</h2></summary>
           <div class="foldbody">
-            <div class="field" style="margin-bottom:8px"><label for="saTap">Tap on spectrum</label><select id="saTap"><option value="tune">Tunes the receiver</option><option value="m1">Places marker 1</option><option value="m2">Places marker 2</option></select></div>
+            <div class="field" style="margin-bottom:8px"><label for="saTap">Tap on spectrum</label><select id="saTap"><option value="tune">Tunes the receiver (drag pans, wheel zooms)</option><option value="m1">Places marker 1</option><option value="m2">Places marker 2</option></select></div>
             <div class="btns markers">
               <button class="btn ghost" id="btnM1Peak" type="button">M1 → peak</button>
               <button class="btn ghost" id="btnM1Next" type="button">Next peak</button>
@@ -1031,14 +1121,54 @@
       <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden>
         <h2 class="pane-title">RM · Remote Monitoring</h2>
         <div class="grid g-split">
+          <div class="col">
+          <section class="card" id="rxCard">
+            <h2>Remote receiver <span class="spacer"></span><span class="lbl">OpenWebRX · UberSDR · KiwiSDR</span></h2>
+            <div class="grid2">
+            <div class="field full">
+              <label for="rxUrl">Server address</label>
+              <input id="rxUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://sdr.example.org/ or https://call.tunnel.ubersdr.org/" spellcheck="false" />
+            </div>
+            <div class="field"><label for="rxUrlKind">Server type</label><select id="rxUrlKind"><option value="auto">Detect</option><option value="openwebrx">OpenWebRX</option><option value="ubersdr">UberSDR</option><option value="kiwisdr">KiwiSDR</option></select></div>
+            </div>
+            <div class="btns" style="margin-top:8px">
+              <button class="btn primary" id="btnRxConnect" type="button">Connect</button>
+              <button class="btn ghost" id="btnRxOpen" type="button"><svg class="i" aria-hidden="true"><use href="#i-external"/></svg>Open in new tab</button>
+            </div>
+            <p class="hint" id="rxMsg" aria-live="polite"></p>
+            <div class="chiprow" id="rxSaved" role="group" aria-label="Recent servers"></div>
+            <div id="rxLive" hidden>
+              <div class="rxhead"><b id="rxName"></b><small id="rxMeta"></small></div>
+              <div class="grid2">
+                <div class="field full"><label for="rxProfile">Profile (band)</label><select id="rxProfile"></select></div>
+                <div class="field"><label for="rxFreq">Tuned (MHz)</label><input id="rxFreq" type="number" step="0.0001" inputmode="decimal" /></div>
+                <div class="field"><label for="rxMode">Modulation</label><select id="rxMode"></select></div>
+                <div class="field"><label for="rxSquelch">Squelch <span id="rxSqVal"></span></label><input id="rxSquelch" type="range" min="-150" max="0" step="1" /></div>
+                <div class="field"><label for="rxVol">Volume</label><input id="rxVol" type="range" min="0" max="1.5" step="0.05" value="0.8" /></div>
+              </div>
+              <div class="btns" style="margin-top:8px">
+                <button class="btn ghost" id="btnRxAudio" type="button" aria-pressed="false">Audio off</button>
+                <button class="btn ghost" id="btnRxDisconnect" type="button">Disconnect</button>
+                <a class="btn ghost" id="rxOpenLink" href="#" target="_blank" rel="noopener noreferrer"><svg class="i" aria-hidden="true"><use href="#i-external"/></svg>Server page</a>
+              </div>
+              <table class="ro-table"><tr><td>S-meter (server)</td><td id="rxSmeter">—</td></tr><tr><td>Data</td><td id="rxRate">—</td></tr></table>
+              <p class="hint">Tap the spectrum to tune. Centre and span are set by the server's profile. Levels are the server's dB scale, not calibrated; GPS and heading in a recording are this device's.</p>
+            </div>
+          </section>
+            <div class="slot slot-mini" data-slot="scope"></div>
+          </div>
+          <div class="col">
           <section class="card">
-            <h2>Remote Monitoring <span class="spacer"></span><span class="lbl">coming next</span></h2>
-            <p>Connect remote webRx nodes and see their measurements here, next to your own. Planned building blocks:</p>
-            <ul class="plain">
-              <li><b>Same record format</b> as the recorder and DT fixes, so a remote node's data lands on the MT map and DT plot unchanged.</li>
-              <li><b>Radio Bridge</b> (branch <code>radio-bridge</code>, Android, work in progress): a phone app that serves Wi-Fi, cellular, BLE and GNSS readings over local HTTP.</li>
-              <li>A relay (WebSocket/WebRTC) for nodes outside your network — needs a hosting decision first.</li>
-            </ul>
+            <h2>Directory</h2>
+            <div class="grid2">
+              <div class="field full"><label for="rxSearch">Search name, place or address</label><input id="rxSearch" type="search" placeholder="e.g. airband, 2m, Cape Town" /></div>
+              <div class="field"><label for="rxKind">Type</label><select id="rxKind"><option value="all">All</option><option value="fav">★ Favourites</option><option value="ubersdr">UberSDR</option><option value="kiwisdr">KiwiSDR</option><option value="openwebrx">OpenWebRX</option></select></div>
+              <div class="field"><label for="rxSort">Sort</label><select id="rxSort"><option value="dist">Nearest</option><option value="works">Works here first</option></select></div>
+              <label class="check"><input id="rxOnlyOk" type="checkbox" checked /> https only (can connect here)</label>
+            </div>
+            <p class="hint" id="rxDirInfo" aria-live="polite">Loading directory…</p>
+            <div class="dirlist" id="rxDir" aria-busy="true"></div>
+            <p class="hint">Sources: OpenWebRX from <a href="https://www.receiverbook.de/" target="_blank" rel="noopener noreferrer">receiverbook.de</a> (snapshot shipped with the app; refresh with <code>node scripts/owrx-directory.mjs --probe</code>); UberSDR live from <a href="https://instances.ubersdr.org/" target="_blank" rel="noopener noreferrer">instances.ubersdr.org</a>; KiwiSDR from receiverbook.de's mirror of <a href="http://kiwisdr.com/public/" target="_blank" rel="noopener noreferrer">kiwisdr.com/public</a> (http-only, so not readable from this https page). http-only servers open in a new tab: browsers block insecure connections from this https page.</p>
           </section>
           <section class="card">
             <h2>Other pages</h2>
@@ -1049,6 +1179,7 @@
             </div>
             <p class="hint">The MMN map doesn't use the SDR, so it opens alongside a running measurement. The classic receiver is a separate page with its own connection: disconnect here first.</p>
           </section>
+          </div>
         </div>
       </section>
 
@@ -1381,7 +1512,7 @@
     });
   });
   // ── RF Tech: band tables ──
-  const BANDS = {
+  const BANDS = window.webrxBands = {
     cell: [["B28 · LTE 700", 758, 803], ["B20 · LTE 800", 791, 821], ["B8 · GSM/LTE 900", 925, 960], ["B3 · GSM/LTE 1800", 1805, 1880], ["B1 · UMTS/LTE 2100", 2110, 2170], ["B40 · LTE TDD 2300", 2300, 2400], ["B38 · LTE TDD 2600", 2570, 2620], ["B7 · LTE 2600", 2620, 2690], ["n78 · 5G 3500", 3300, 3800]],
     wifi24: Array.from({ length: 14 }, (_, i) => { const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c; return [`Channel ${c}`, f - 11, f + 11, f]; }),
     wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165].map((c) => { const f = 5000 + 5 * c; return [`Channel ${c}${c >= 52 && c <= 140 ? " · DFS" : ""}`, f - 10, f + 10, f]; }),

@@ -25,6 +25,13 @@ import { LiveMap } from "../../ui/livemap.js";
 import { shared } from "./listen.js";
 import { analyser, CMAP_NAMES, type Src } from "./analyser.js";
 import * as sess from "./sessions.js";
+import { owrx, normaliseUrl, safeHttp, safeKind, type Label } from "./owrx.js";
+import { uber, looksLikeUber } from "./ubersdr.js";
+import { kiwi } from "./kiwi.js";
+import { avgStep, enbwBins, sUnits, cleanDirEntry, NO_RETRY, backoffMs, type DirEntry } from "./util.js";
+type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
+type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
+let remote: RemoteClient = owrx;
 import { dt, formatBearing, norm } from "./dt.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
@@ -118,7 +125,12 @@ let wakeLock: any = null;
 
 let psd: PsdEngine | null = null;
 let raw = new Float32Array(0); // latest PSD (dB)
-let spec = new Float32Array(0); // smoothed (dB)
+let spec = new Float32Array(0); // smoothed for display / SA / DT (dB; averaged in linear power by default)
+/** Legacy dB-domain EMA, kept bit-for-bit for the thesis log (CSV rows, pins, timeline). */
+let specDb = new Float32Array(0);
+/** Averaging domain for the displayed spectrum. "lin" = power average (correct for noise and
+ *  channel power); "log" = dB average (video averaging, reads ~2.5 dB low on noise). */
+let avgMode: "lin" | "log" = localStorage.getItem("webrx.avgMode") === "log" ? "log" : "lin";
 let peak = new Float32Array(0); // peak hold (dB)
 let frames = 0;
 let lastLogAt = 0;
@@ -177,8 +189,15 @@ function ctl<T>(fn: () => Promise<T>): Promise<T> {
 //  Spectrum estimation (Rust/WASM, JS fallback)
 // ═══════════════════════════════════════════════════════════════════
 
+/** Remote servers don't say which window they use; Hann (1.5 bins) is the common default. */
+const REMOTE_ENBW = 1.5;
+function srcEnbw() {
+  return remote.connected && !pb ? REMOTE_ENBW : psd?.enbw ?? 1.5;
+}
+
 class PsdEngine {
   readonly n: number;
+  enbw = 1.5;
   private window: Float32Array;
   private wsum: number;
   private ex: DspExports | null;
@@ -194,6 +213,7 @@ class PsdEngine {
     this.window = new Float32Array(n);
     for (let i = 0; i < n; ++i) this.window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / n);
     this.wsum = this.window.reduce((a, b) => a + b, 0);
+    this.enbw = enbwBins(this.window);
     this.acc = new Float64Array(n);
     this.I = new Float32Array(n);
     this.Q = new Float32Array(n);
@@ -256,6 +276,7 @@ function resetSpectrum() {
   psd = new PsdEngine(cfg.fftSize);
   raw = new Float32Array(cfg.fftSize);
   spec = new Float32Array(cfg.fftSize).fill(NaN);
+  specDb = new Float32Array(cfg.fftSize).fill(NaN);
   peak = new Float32Array(cfg.fftSize).fill(-200);
   analyser.clearHolds();
 }
@@ -478,11 +499,9 @@ function processBlock(bytes: Uint8Array) {
     for (let k = c - 1; k <= c + 1; ++k) raw[k] = fill;
   }
   const a = Math.min(0.95, Math.max(0, cfg.avg));
-  for (let k = 0; k < n; ++k) {
-    const v = raw[k] + cfg.cal;
-    spec[k] = Number.isNaN(spec[k]) ? v : a * spec[k] + (1 - a) * v;
-    peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
-  }
+  if (specDb.length !== n) specDb = new Float32Array(n).fill(NaN);
+  avgStep(spec, specDb, raw, a, avgMode, cfg.cal);
+  for (let k = 0; k < n; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   lastStats = computeStats();
   if (isSdrMode()) dt.push(levelAt(dtFreqHz(), dt.st.bwHz), gps.fix?.headingDeg);
@@ -510,7 +529,8 @@ function processBlock(bytes: Uint8Array) {
 
 /** Live levels from the smoothed trace: peak and mean inside the measurement bandwidth, mean over the span. */
 function computeStats() {
-  const l = spectrumLevels(spec, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
+  // thesis log path: unchanged dB-domain average
+  const l = spectrumLevels(specDb.length === spec.length ? specDb : spec, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
   return { peak: l.peak, peakHz: l.peakHz, band: l.band, spec: l.spec };
 }
 
@@ -530,6 +550,7 @@ function levelAt(freqHz: number, bw: number): number {
 }
 
 function tunedHz(): number {
+  if (remote.connected && !pb) return remote.tunedHz;
   return cfg.freqMHz * 1e6 + shared.cfg.offsetHz;
 }
 
@@ -1528,13 +1549,22 @@ function updateStatsUi() {
 }
 
 function updateReadout() {
+  if (remote.connected && !pb) {
+    $("specUnits").textContent = "dB (server)";
+    $("levelUnits").textContent = "dB (server)";
+    $("roCenter").textContent = freqLabel(remote.centreHz);
+    $("roSpan").textContent = hzShort(remote.rateHz);
+    $("roRbw").textContent = hzShort((remote.rateHz / Math.max(1, remote.fftSize || spec.length)) * REMOTE_ENBW);
+    $("stRate").textContent = formatRate(remote.rateHz);
+    return;
+  }
   const units = isSdrMode() ? (cfg.cal !== 0 ? "dBm (cal)" : "dBFS") : "dBm (est.)";
   $("specUnits").textContent = units;
   $("levelUnits").textContent = units;
   if (isSdrMode()) {
     $("roCenter").textContent = freqLabel(cfg.freqMHz * 1e6);
     $("roSpan").textContent = formatRate(cfg.sampleRate).replace("sps", "Hz");
-    $("roRbw").textContent = `${((cfg.sampleRate / cfg.fftSize) * 1.5 / 1000).toFixed(2)} kHz`;
+    $("roRbw").textContent = `${((cfg.sampleRate / cfg.fftSize) * srcEnbw() / 1000).toFixed(2)} kHz`;
     $("stRate").textContent = formatRate(cfg.sampleRate);
   } else {
     for (const id of ["roCenter", "roSpan", "roRbw", "stRate"]) $(id).textContent = "—";
@@ -1954,6 +1984,9 @@ function bind() {
   bindSa();
   bindSessions();
   bindStatus();
+  bindRemote();
+  bindScopeInteractions();
+  bindVfo();
   $("mBtnStop")?.addEventListener("click", () => stop());
   bindListen();
   bindDt();
@@ -2108,23 +2141,6 @@ function bindListen() {
   document.querySelectorAll<HTMLButtonElement>("[data-tune-step]").forEach((b) =>
     b.addEventListener("click", () => tuneTo(tunedHz() + Number(b.dataset.tuneStep) * 1000))
   );
-  // Tap the spectrum: tune there, or place marker 1 / marker 2 (SA tap mode).
-  const sp = $<HTMLCanvasElement>("spectrum");
-  sp.addEventListener("click", (e) => {
-    if (!isSdrMode() && !pb) return;
-    const r = sp.getBoundingClientRect();
-    const hz = analyser.xToHz(src(), e.clientX - r.left, r.width);
-    if (hz === null) return;
-    const mode = analyser.cfg.tap;
-    if (mode === "m1") analyser.set({ m1Hz: hz });
-    else if (mode === "m2") analyser.set({ m2Hz: hz });
-    else if (!pb) {
-      const step = Math.max(1000, cfg.sampleRate / 2048);
-      tuneTo(Math.round(hz / step) * step);
-    }
-    renderSa();
-    dirty = true;
-  });
   $("freq").addEventListener("change", () => setTimeout(renderListen, 0));
   shared.onChange = renderListen;
   renderListen();
@@ -2237,33 +2253,55 @@ function bindDt() {
 /** Playback state: when set, displays show the recorded frame instead of the live stream. */
 let pb: { centreHz: number; rateHz: number; stash: (number | null)[]; hdg?: number; cur?: [number, number]; route?: () => void } | null = null;
 
+let fpsCount = 0, fpsAt = performance.now(), fps = 0;
+function srcStats(): string[] {
+  if (!analyser.cfg.stats) return [];
+  const now = performance.now();
+  if (now - fpsAt > 1000) {
+    fps = (frames - fpsCount) / ((now - fpsAt) / 1000);
+    fpsCount = frames;
+    fpsAt = now;
+  }
+  const n = spec.length || cfg.fftSize;
+  const out = [`FEED ${fps.toFixed(1)}/s`, `FFT  ${n} bins · ${hzShort(srcRate() / n)}`, `VIEW ${hzShort(srcRate() / analyser.cfg.zoom)} (×${+analyser.cfg.zoom.toFixed(2)})`];
+  if (remote.connected && !pb) out.push(`NET  ${(remote.bytes / 1e6).toFixed(1)} MB · ${remote.label}`);
+  else if (dspMs) out.push(`DSP  ${dspMs.toFixed(2)} ms/frame`);
+  return out;
+}
+
 function srcCentre() {
-  return pb ? pb.centreHz : cfg.freqMHz * 1e6;
+  return pb ? pb.centreHz : remote.connected ? remote.centreHz : cfg.freqMHz * 1e6;
 }
 function srcRate() {
-  return pb ? pb.rateHz : cfg.sampleRate;
+  return pb ? pb.rateHz : remote.connected ? remote.rateHz : cfg.sampleRate;
 }
 
 function src(): Src {
   const n = spec.length || cfg.fftSize;
-  const sdrish = isSdrMode() || !!pb;
+  const sdrish = isSdrMode() || !!pb || remote.connected;
   return {
     sdr: sdrish,
     centreHz: srcCentre(),
     rateHz: srcRate(),
     spec,
     raw,
-    cal: pb ? 0 : cfg.cal,
+    cal: pb || remote.connected ? 0 : cfg.cal,
     peak,
     peakHold: cfg.peakHold,
     frames,
     band: bandBins(n, srcRate(), bwHz()),
     tunedHz: tunedHz(),
-    audioOn: shared.audioOn,
+    audioOn: remote.connected ? remote.audioOn : shared.audioOn,
     dtLo: dtFreqHz() - dt.st.bwHz / 2,
     dtHi: dtFreqHz() + dt.st.bwHz / 2,
     thresholdDb: activeCalibration()?.thresholdDb ?? null,
     peakStat: lastStats && Number.isFinite(lastStats.peak) ? { peak: lastStats.peak, peakHz: lastStats.peakHz } : null,
+    enbw: srcEnbw(),
+    pbLo: passband()?.[0] ?? null,
+    pbHi: passband()?.[1] ?? null,
+    labels: labelsNow(),
+    stats: srcStats(),
+    units: remote.connected && !pb ? (remote.kind === "kiwisdr" ? "dB" : "dB") : cfg.cal ? "dBm" : "dBFS",
   };
 }
 
@@ -2287,9 +2325,20 @@ function renderSa() {
   setVal("saStart", String(+(f0 / 1e6).toFixed(6)));
   setVal("saStop", String(+(f1 / 1e6).toFixed(6)));
   setText("saSpanRo", hzShort(f1 - f0));
-  setVal("saZoom", String(c.zoom));
+  {
+    const z = $<HTMLSelectElement>("saZoom");
+    const v = String(+c.zoom.toFixed(2));
+    let o = Array.from(z.options).find((x) => x.value === v);
+    z.querySelectorAll("option[data-dyn]").forEach((x) => x !== o && x.remove());
+    if (!o) {
+      o = new Option(`${v}×`, v);
+      o.dataset.dyn = "1";
+      z.add(o);
+    }
+    z.value = v;
+  }
   setVal("saPan", String(Math.round(c.pan * 1000)));
-  setText("saRbw", hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * 1.5));
+  setText("saRbw", hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * srcEnbw()));
   ($("saAuto") as HTMLInputElement).checked = c.autoRange;
   ($("saRef") as HTMLInputElement).disabled = c.autoRange;
   ($("saRange") as HTMLSelectElement).disabled = c.autoRange;
@@ -2315,7 +2364,7 @@ function renderSa() {
   } else setText("saDelta", "—");
   const m = analyser.metrics(s);
   setText("saFloor", m ? `${fmtDb(m.floor)} dB` : "—");
-  setText("saChPow", m ? `${fmtDb(m.chPower)} dB @ ${freqLabel(m.chCentre)}` : "—");
+  setText("saChPow", m ? `${fmtDb(m.chPower)} dB in ${hzShort(analyser.cfg.chBwHz)} @ ${freqLabel(m.chCentre)} · RBW ${hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * srcEnbw())} (ENBW-corrected)` : "—");
   setText("saObw", m ? hzShort(m.obw) : "—");
   setVal("feUpconv", String(fe.upconvHz / 1e6));
   setVal("fePpm", String(fe.ppm));
@@ -2392,6 +2441,15 @@ function bindSa() {
   };
   mirror("saFft", "fftSize");
   mirror("saAvg", "avg", "input");
+  const am = $<HTMLSelectElement>("saAvgMode");
+  am.value = avgMode;
+  am.addEventListener("change", () => {
+    avgMode = am.value === "log" ? "log" : "lin";
+    try {
+      localStorage.setItem("webrx.avgMode", avgMode);
+    } catch (_) {}
+    spec.fill(NaN);
+  });
   mirror("saPeak", "peakHold");
   // display
   cm.addEventListener("change", () => apply({ cmap: cm.value }));
@@ -2410,6 +2468,33 @@ function bindSa() {
     dirty = true;
   });
   $("btnSaSnap").addEventListener("click", snapshot);
+  // UberSDR-style display options
+  const chk = (id: string, key: "labels" | "stats" | "snap") => {
+    const el = $<HTMLInputElement>(id);
+    el.checked = analyser.cfg[key];
+    el.addEventListener("change", () => apply({ [key]: el.checked } as any));
+  };
+  chk("saLabels", "labels");
+  chk("saStats", "stats");
+  chk("saSnap", "snap");
+  const sel = (id: string, key: "fill" | "smooth") => {
+    const el = $<HTMLSelectElement>(id);
+    el.value = String(analyser.cfg[key]);
+    el.addEventListener("change", () => apply({ [key]: key === "smooth" ? Number(el.value) : el.value } as any));
+  };
+  sel("saFill", "fill");
+  sel("saSmooth", "smooth");
+  const rng = (id: string, key: "wfFloor" | "wfContrast", out: string, fmt: (v: number) => string) => {
+    const el = $<HTMLInputElement>(id);
+    el.value = String(analyser.cfg[key]);
+    setText(out, fmt(analyser.cfg[key]));
+    el.addEventListener("input", () => {
+      apply({ [key]: Number(el.value) } as any);
+      setText(out, fmt(Number(el.value)));
+    });
+  };
+  rng("saWfFloor", "wfFloor", "saWfFloorVal", (v) => `${v > 0 ? "+" : ""}${v} dB`);
+  rng("saWfContrast", "wfContrast", "saWfContrastVal", (v) => `×${v.toFixed(2)}`);
   // markers
   $("saTap").addEventListener("change", () => apply({ tap: ($("saTap") as HTMLSelectElement).value as any }));
   $("btnM1Peak").addEventListener("click", () => apply({ m1Hz: analyser.findPeak(src()) }));
@@ -2446,15 +2531,6 @@ function bindSa() {
   });
   $("feDeemph").addEventListener("change", () => shared.set({ deemph: num("feDeemph") }));
   // wheel zoom on desktop
-  $("spectrum").addEventListener(
-    "wheel",
-    (e) => {
-      if (!e.ctrlKey && !e.altKey) return;
-      e.preventDefault();
-      apply({ zoom: analyser.cfg.zoom * (e.deltaY < 0 ? 1.25 : 0.8) });
-    },
-    { passive: false }
-  );
   setInterval(() => document.getElementById("pane-sa")?.hidden === false && renderSa(), 500);
   renderSa();
 }
@@ -2475,8 +2551,8 @@ function captureFrame(): sess.Frame {
   const f = gps.fix;
   return {
     t: Date.now(),
-    c: cfg.freqMHz * 1e6,
-    r: cfg.sampleRate,
+    c: srcCentre(),
+    r: srcRate(),
     b: q.b,
     s: q.s,
     lat: f?.lat,
@@ -2508,10 +2584,15 @@ async function toggleRecord() {
     return;
   }
   if (pb) stopPlayback();
+  const d = new Date();
+  if (remote.connected) {
+    recorder.start(`${remote.name || "OpenWebRX"} · ${freqLabel(remote.centreHz)} · ${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0, 5)}`, `OpenWebRX ${remote.url.page}`, "dB (server)", remote.centreHz, remote.rateHz);
+    log("Recording the remote OpenWebRX stream (spectrum + levels; GPS/heading are this device's)", "ok");
+    return;
+  }
   if (!isSdrMode()) return log("Session recording needs an SDR source (spectrum frames)", "wn");
   if (!running) await start();
   if (!running) return;
-  const d = new Date();
   recorder.start(`${freqLabel(cfg.freqMHz * 1e6)} · ${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0, 5)}`, sdr?.name ?? cfg.mode, cfg.cal ? "dBm" : "dBFS", cfg.freqMHz * 1e6, cfg.sampleRate);
   log(`Recording session (spectrum ${recorder.limits.fps}/s, GPS, heading, levels) — limit ${recorder.limits.maxMB} MB / ${recorder.limits.maxMinutes} min`, "ok");
 }
@@ -2546,7 +2627,7 @@ async function renderSessions() {
     row.className = "sessrow";
     row.dataset.id = m.id;
     const live = recorder.meta?.id === m.id;
-    row.innerHTML = `<div class="sessinfo"><input class="sessname" aria-label="Session name" value="${m.name.replace(/"/g, "&quot;")}" ${live ? "disabled" : ""}/>
+    row.innerHTML = `<div class="sessinfo"><input class="sessname" aria-label="Session name" value="${esc(m.name)}" ${live ? "disabled" : ""}/>
       <small>${new Date(m.startedAt).toLocaleString()} · ${fmtDur(m.endedAt - m.startedAt)} · ${m.frames} frames · ${fmtMB(m.bytes)}${live ? " · recording" : ""}</small></div>
       <div class="sessbtns">
         <button class="btn primary small" data-act="play" type="button" ${live ? "disabled" : ""}>Play</button>
@@ -2577,6 +2658,7 @@ async function onSessionAction(act: string, id: string) {
 
 async function startPlayback(m: sess.SessionMeta) {
   if (recorder.active) await toggleRecord();
+  if (remote.connected) userDisconnectRemote();
   if (running) await stop();
   const frames = await sess.loadFrames(m.id);
   if (!frames.length) return log("This session has no frames", "wn");
@@ -2626,6 +2708,7 @@ function showFrame(f: sess.Frame) {
   pb.centreHz = f.c;
   pb.rateHz = f.r;
   const d = sess.dequantise(f);
+  specDb = new Float32Array(0);
   if (spec.length !== d.length) {
     spec = new Float32Array(d.length);
     raw = new Float32Array(d.length);
@@ -2736,7 +2819,14 @@ function bindSessions() {
     });
   }
   // Starting live measuring closes playback; stopping it finishes a session.
-  $("btnStart").addEventListener("click", () => pb && stopPlayback(), { capture: true });
+  $("btnStart").addEventListener(
+    "click",
+    () => {
+      if (pb) stopPlayback();
+      if (remote.connected) userDisconnectRemote();
+    },
+    { capture: true }
+  );
   const stopBtn = $("btnStop");
   new MutationObserver(() => {
     if (stopBtn.hasAttribute("disabled") && recorder.active) toggleRecord();
@@ -2767,7 +2857,8 @@ function renderStatusSoon() {
 
 function renderStatus() {
   if (!document.getElementById("statusPanel")) return;
-  const sdrMode = isSdrMode() || !!pb;
+  const sdrMode = isSdrMode() || !!pb || remote.connected;
+  const rem = remote.connected && !pb;
   const s = src();
   const [f0, f1] = analyser.viewHz(s);
   setText("spCentre", sdrMode ? freqLabel(srcCentre()) : "—");
@@ -2775,9 +2866,9 @@ function renderStatus() {
   setText("spSpan", sdrMode ? `${hzShort(f1 - f0)}${analyser.cfg.zoom > 1 ? ` (×${+analyser.cfg.zoom.toFixed(2)})` : ""}` : "—");
   setText("spRbw", sdrMode ? `${hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * 1.5)} · FFT ${spec.length || cfg.fftSize}` : "—");
   setText("spRate", sdrMode ? formatRate(srcRate()) : "—");
-  setText("spGain", isSdrMode() ? `${cfg.gain === null ? "auto" : `${cfg.gain} dB`}${effectiveKind() === "hackrf" ? ` · amp ${cfg.amp ? "on" : "off"}` : ""}` : "—");
-  setText("spMode", shared.audioOn ? `${shared.cfg.scheme} · audio on` : `${shared.cfg.scheme} · audio off`);
-  const u = cfg.cal ? "dBm" : "dBFS";
+  setText("spGain", rem ? "set by server" : isSdrMode() ? `${cfg.gain === null ? "auto" : `${cfg.gain} dB`}${effectiveKind() === "hackrf" ? ` · amp ${cfg.amp ? "on" : "off"}` : ""}` : "—");
+  setText("spMode", rem ? `${remote.mod.toUpperCase()} · audio ${remote.audioOn ? "on" : "off"} (remote)` : shared.audioOn ? `${shared.cfg.scheme} · audio on` : `${shared.cfg.scheme} · audio off`);
+  const u = rem ? "dB" : cfg.cal ? "dBm" : "dBFS";
   setText("spLevel", lastStats ? `${fmtDb(lastStats.band)} ${u}` : "—");
   setText("spPeak", lastStats && Number.isFinite(lastStats.peak) ? `${fmtDb(lastStats.peak)} @ ${sdrMode ? freqLabel(lastStats.peakHz) : "—"}` : "—");
   const m = sdrMode ? analyser.metrics(s) : null;
@@ -2786,8 +2877,8 @@ function renderStatus() {
   setText("spGps", f ? `${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}${f.accuracyM ? ` ±${Math.round(f.accuracyM)} m` : ""}` : gps.status.state);
   const h = pb ? pb.hdg : dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined);
   setText("spHeading", h !== undefined ? formatBearing(h) : "—");
-  setText("spRec", pb ? `playback ${fmtDur(player.position)}` : recorder.active && recorder.meta ? `● session ${fmtDur(recorder.meta.endedAt - recorder.meta.startedAt)}` : running ? "measuring" : "idle");
-  setText("spDevice", pb ? `${player.meta?.device ?? "recording"} (recorded)` : sdr ? `${sdr.name}${fe.upconvHz ? ` · LO ${hzShort(fe.upconvHz)}` : ""}${fe.ppm ? ` · ${fe.ppm} ppm` : ""}` : isSdrMode() ? "not connected" : cfg.mode);
+  setText("spRec", rem && !recorder.active ? "remote stream" : pb ? `playback ${fmtDur(player.position)}` : recorder.active && recorder.meta ? `● session ${fmtDur(recorder.meta.endedAt - recorder.meta.startedAt)}` : running ? "measuring" : "idle");
+  setText("spDevice", rem ? `${remote.label} · ${remote.name || remote.url.page}` : pb ? `${player.meta?.device ?? "recording"} (recorded)` : sdr ? `${sdr.name}${fe.upconvHz ? ` · LO ${hzShort(fe.upconvHz)}` : ""}${fe.ppm ? ` · ${fe.ppm} ppm` : ""}` : isSdrMode() ? "not connected" : cfg.mode);
 }
 
 function bindStatus() {
@@ -2811,6 +2902,973 @@ function bindStatus() {
   btn.addEventListener("click", () => set(!panel.classList.contains("open")));
   setInterval(renderStatus, 1000);
   renderStatus();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  RM: OpenWebRX remote receivers
+// ═══════════════════════════════════════════════════════════════════
+
+const FEATURED: DirEntry[] = [
+  { n: "TWR | Johannesburg", s: "Johannesburg, South Africa", u: "http://jnb.twrmon.net:8073/", v: "", lat: -26.2, lon: 28.05, k: "kiwisdr", feat: "Featured" },
+];
+const FAV_KEY = "webrx.remote.favs";
+const favs = (): string[] => {
+  try {
+    const j = JSON.parse(localStorage.getItem(FAV_KEY) || "[]");
+    return Array.isArray(j) ? j.map(safeHttp).filter((x): x is string => !!x) : [];
+  } catch (_) {
+    return [];
+  }
+};
+function toggleFav(raw: string) {
+  const u = safeHttp(raw);
+  if (!u) return;
+  const f = favs();
+  const i = f.indexOf(u);
+  if (i >= 0) f.splice(i, 1);
+  else f.unshift(u);
+  try {
+    localStorage.setItem(FAV_KEY, JSON.stringify(f.slice(0, 50)));
+  } catch (_) {}
+}
+const JNB = { lat: -26.2, lon: 28.05 };
+let uberDir: DirEntry[] | null = null;
+let uberDirErr = "";
+let dir: { fetched: string; source: string; probed: boolean; servers: DirEntry[]; kiwi?: DirEntry[] } | null = null;
+const SAVED_KEY = "webrx.remote.saved";
+const savedServers = (): { u: string; n: string; k?: string }[] => {
+  try {
+    const j = JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
+    return (Array.isArray(j) ? j : []).flatMap((x: any) => {
+      const u = safeHttp(x?.u);
+      return u ? [{ u, n: String(x.n ?? "").slice(0, 120), k: safeKind(x.k) }] : [];
+    });
+  } catch (_) {
+    return [];
+  }
+};
+function rememberServer(u: string, n: string, k?: string) {
+  const list = savedServers().filter((x) => x.u !== u);
+  list.unshift({ u, n, k });
+  try {
+    localStorage.setItem(SAVED_KEY, JSON.stringify(list.slice(0, 20)));
+  } catch (_) {}
+}
+const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+let lastRemoteView = "";
+function feedRemote(f: Float32Array) {
+  if (pb || !remote.connected || !f.length) return;
+  const view = `${remote.centreHz}/${remote.rateHz}`;
+  if (view !== lastRemoteView) {
+    if (lastRemoteView) {
+      serverZoomed();
+      spec = new Float32Array(0);
+    }
+    lastRemoteView = view;
+    updateReadout();
+  }
+  if (spec.length !== f.length) {
+    spec = new Float32Array(f.length).fill(NaN);
+    raw = new Float32Array(f.length);
+    peak = new Float32Array(f.length).fill(-200);
+    analyser.clearHolds();
+  }
+  raw.set(f);
+  const a = Math.min(0.95, Math.max(0, cfg.avg));
+  specDb = new Float32Array(0);
+  avgStep(spec, null, f, a, avgMode);
+  for (let k = 0; k < f.length; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
+  ++frames;
+  const l = spectrumLevels(spec, remote.centreHz, remote.rateHz, bwHz());
+  lastStats = { peak: l.peak, peakHz: l.peakHz, band: Number.isFinite(remote.smeterDb) ? remote.smeterDb : l.band, spec: l.spec };
+  const now = performance.now();
+  if (now - lastTimelineAt > 500) {
+    lastTimelineAt = now;
+    timeline.push({ peak: lastStats.peak, band: lastStats.band });
+    if (timeline.length > 240) timeline.shift();
+  }
+  analyser.ingest(spec);
+  if (recorder.active) recorder.offer(captureFrame);
+  dirty = true;
+}
+
+function renderRemote() {
+  if (!document.getElementById("rxLive")) return;
+  const on = remote.connected;
+  $("rxLive").hidden = !on;
+  $("btnRxConnect").textContent = remote.state === "connecting" ? "Connecting…" : "Connect";
+  ($("btnRxConnect") as HTMLButtonElement).disabled = remote.state === "connecting";
+  const msg = $("rxMsg");
+  msg.className = "hint" + (remote.state === "error" ? " bad" : "");
+  if (remote.state === "error" && remote.error === "mixed")
+    msg.innerHTML = `This server only offers <b>http://</b>. Browsers block insecure WebSockets from an https page (mixed content), so it can't feed SA here. <a href="${esc(remote.url.page)}" target="_blank" rel="noopener noreferrer">Open it in a new tab ↗</a>`;
+  else if (remote.state === "error") msg.textContent = remote.error;
+  else if (remote.state === "connecting") msg.textContent = `Connecting to ${remote.url.ws} …`;
+  else if (on) msg.textContent = `Connected. Spectrum and waterfall on SA (and here), levels in the status panel, Rec records this stream.`;
+  else msg.textContent = "Paste an OpenWebRX, UberSDR or KiwiSDR address (https), or pick one from the directory below.";
+  if (!on) return;
+  setText("rxName", remote.name || remote.url.page);
+  setText("rxMeta", `${remote.label} ${remote.version || "?"} · ${freqLabel(remote.centreHz)} · span ${hzShort(remote.rateHz)} · FFT ${remote.fftSize || "?"} · ${remote.clients}${remote.maxClients ? "/" + remote.maxClients : ""} listeners`);
+  const ps = $<HTMLSelectElement>("rxProfile");
+  const key = remote.profiles.map((p) => p.id).join(",");
+  if (ps.dataset.key !== key) {
+    ps.innerHTML = "";
+    for (const p of remote.profiles) ps.add(new Option(p.name, p.id));
+    ps.dataset.key = key;
+  }
+  if (document.activeElement !== ps) ps.value = remote.profileId;
+  ps.disabled = remote.profiles.length < 2;
+  (ps.closest(".field") as HTMLElement).hidden = !remote.profiles.length;
+  ($("rxSquelch").closest(".field") as HTMLElement).hidden = remote.kind === "ubersdr";
+  const ms = $<HTMLSelectElement>("rxMode");
+  const mk = remote.modes.map((m) => m.modulation).join(",") || "default";
+  if (ms.dataset.key !== mk) {
+    ms.innerHTML = "";
+    const list = remote.modes.length ? remote.modes : ["nfm", "wfm", "am", "usb", "lsb", "cw"].map((m) => ({ modulation: m, name: m.toUpperCase() }));
+    for (const m of list) ms.add(new Option(m.name, m.modulation));
+    ms.dataset.key = mk;
+  }
+  if (document.activeElement !== ms) ms.value = remote.mod;
+  setVal("rxFreq", String(+(remote.tunedHz / 1e6).toFixed(6)));
+  setVal("rxSquelch", String(remote.squelch));
+  setText("rxSqVal", remote.squelch <= -150 ? "off" : `${remote.squelch} dB`);
+  const ab = $("btnRxAudio");
+  ab.textContent = remote.audioOn ? "Audio on" : "Audio off";
+  ab.setAttribute("aria-pressed", String(remote.audioOn));
+  ab.classList.toggle("primary", remote.audioOn);
+  setText("rxSmeter", Number.isFinite(remote.smeterDb) ? `${remote.smeterDb.toFixed(1)} dB` : "—");
+  setText("rxRate", `${(remote.bytes / 1e6).toFixed(1)} MB received · ${remote.fftFrames} FFT rows`);
+  ($("rxOpenLink") as HTMLAnchorElement).href = safeHttp(remote.url.page) ?? "#";
+}
+
+
+/** Which client a URL needs: user pick, then the directories, then a probe (only for unknown hosts). */
+async function detectKind(page: string): Promise<RemoteKind> {
+  const pickKind = safeKind((document.getElementById("rxUrlKind") as HTMLSelectElement | null)?.value);
+  if (pickKind) return pickKind;
+  const host = new URL(page).host;
+  const has = (l?: DirEntry[] | null) => !!l?.some((e) => {
+    try {
+      return new URL(e.u).host === host;
+    } catch (_) {
+      return false;
+    }
+  });
+  if (has(uberDir)) return "ubersdr";
+  if (has(dir?.kiwi) || has(FEATURED) || /:8073\/|kiwi/i.test(page)) return "kiwisdr";
+  if (has(dir?.servers)) return "openwebrx";
+  return (await looksLikeUber(page)) ? "ubersdr" : "openwebrx";
+}
+
+// ── reconnect with backoff ──
+const RC_MAX = 8;
+const rc = { wasFocused: false, deliberate: true, tries: 0, timer: 0, wasOpen: false, restoring: false, want: null as null | { u: string; kind: RemoteKind; freq: number; mode: string; lo: number | null; hi: number | null; centre: number; span: number; zoomed: boolean; audio: boolean } };
+function rememberWant() {
+  if (!remote.connected) return;
+  rc.want = { u: remote.url.page, kind: remote.kind as RemoteKind, freq: remote.tunedHz, mode: remote.mod, lo: remote.lowCut, hi: remote.highCut, centre: remote.centreHz, span: remote.rateHz, zoomed: remote.kind !== "openwebrx" && remote.rateHz < (remote as any).fullHz * 0.99, audio: remote.audioOn };
+}
+function userDisconnectRemote() {
+  rc.deliberate = true;
+  clearTimeout(rc.timer);
+  rc.want = null;
+  remote.disconnect();
+}
+function remoteStateChanged() {
+  if (remote.connected) {
+    rc.wasOpen = true;
+    if (rc.restoring && rc.want) {
+      const w = rc.want;
+      rc.restoring = false;
+      remote.setMode(w.mode);
+      if (w.lo != null && w.hi != null) remote.setPassband(w.lo, w.hi);
+      remote.tune(w.freq);
+      if (w.zoomed) remote.zoom(w.centre, w.span);
+      if (w.audio && !remote.audioOn) remote.setAudio(true);
+      log(`Reconnected to ${remote.name || w.u}; frequency, mode and zoom restored`, "ok");
+    }
+    rc.tries = 0;
+    rememberWant();
+    return;
+  }
+  if (remote.state === "connecting" || rc.deliberate || !rc.wasOpen || !rc.want) return;
+  if (remote.state !== "closed" && remote.state !== "error") return;
+  if (NO_RETRY.test(remote.error || "")) {
+    log(`Not reconnecting: ${remote.error}`, "wn");
+    rc.want = null;
+    return;
+  }
+  if (rc.tries >= RC_MAX) {
+    log("Gave up reconnecting — press Connect to try again", "er");
+    rc.want = null;
+    return;
+  }
+  clearTimeout(rc.timer);
+  const ms = backoffMs(rc.tries++);
+  log(`Connection lost — reconnecting in ${Math.round(ms / 1000)} s (try ${rc.tries}/${RC_MAX})`, "wn");
+  const w = rc.want;
+  rc.timer = window.setTimeout(() => {
+    if (rc.deliberate || rc.want !== w) return;
+    rc.restoring = true;
+    connectRemote(w.u, w.kind, true);
+  }, ms);
+}
+
+async function connectRemote(u: string, kind?: RemoteKind, retry = false) {
+  if (pb) stopPlayback();
+  clearTimeout(rc.timer);
+  rc.deliberate = false;
+  rc.wasFocused = retry;
+  if (!retry) {
+    rc.tries = 0;
+    rc.restoring = false;
+    rc.wasOpen = false;
+  }
+  let page = "";
+  try {
+    page = normaliseUrl(u).page;
+  } catch (e: any) {
+    log(e?.message ?? String(e), "wn");
+    return;
+  }
+  // only ever hand an http(s) URL to a client (the normalised one, not the raw input)
+  const safe = safeHttp(page);
+  if (!safe) {
+    log("Only http:// and https:// server addresses are supported", "wn");
+    return;
+  }
+  page = u = safe;
+  owrx.disconnect(true);
+  uber.disconnect(true);
+  kiwi.disconnect(true);
+  const k: RemoteKind = safeKind(kind) ?? (await detectKind(page));
+  remote = k === "ubersdr" ? uber : k === "kiwisdr" ? kiwi : owrx;
+  wireRemote();
+  try {
+    await remote.connect(u);
+  } catch (e: any) {
+    log(e?.message ?? String(e), "wn");
+    renderRemote();
+    return;
+  }
+  if (running) {
+    log(`Local measuring stopped: the ${remote.label} server is now the source`, "wn");
+    stop();
+  }
+  resetSpectrum();
+  frames = 0;
+  lastStats = null;
+  timeline.length = 0;
+  analyser.set({ zoom: 1, pan: 0.5 });
+}
+setInterval(rememberWant, 2000);
+
+function renderSaved() {
+  const box = document.getElementById("rxSaved");
+  if (!box) return;
+  const list = savedServers();
+  box.innerHTML = list.length
+    ? list.map((x) => `<button class="btn ghost chipbtn" type="button" data-u="${esc(x.u)}" data-k="${esc(x.k || "")}" title="${esc(x.u)}">${esc(x.n || x.u)}</button>`).join("")
+    : "";
+}
+
+function renderDir() {
+  const box = document.getElementById("rxDir");
+  if (!box || !dir) return;
+  const q = ($("rxSearch") as HTMLInputElement).value.trim().toLowerCase();
+  const onlyOk = ($("rxOnlyOk") as HTMLInputElement).checked;
+  const kind = ($("rxKind") as HTMLSelectElement).value;
+  const here = gps.fix;
+  const ref = here ?? JNB;
+  const dist = (e: DirEntry) => haversineKm(ref.lat, ref.lon, e.lat, e.lon);
+  const fv = favs();
+  const pool = [
+    ...(kind === "all" || kind === "kiwisdr" ? FEATURED : []),
+    ...(kind === "all" || kind === "ubersdr" ? uberDir ?? [] : []),
+    ...(kind === "all" || kind === "kiwisdr" ? (dir.kiwi ?? []).filter((e) => !FEATURED.some((f) => f.u === e.u)) : []),
+    ...(kind === "all" || kind === "openwebrx" ? dir.servers : []),
+  ];
+  const all = kind === "fav" ? [...FEATURED, ...(uberDir ?? []), ...(dir.kiwi ?? []), ...dir.servers].filter((e, i, a) => fv.includes(e.u) && a.findIndex((x) => x.u === e.u) === i) : pool;
+  let list = all.filter((e) => (!onlyOk || e.u.startsWith("https:") || e.feat) && (!q || `${e.n} ${e.s} ${e.u}`.toLowerCase().includes(q)));
+  const sortBy = ($("rxSort") as HTMLSelectElement).value;
+  list = list.slice().sort((a, b) => +!!b.feat - +!!a.feat || +fv.includes(b.u) - +fv.includes(a.u) || (sortBy === "works" ? (b.ok || 0) - (a.ok || 0) || dist(a) - dist(b) : dist(a) - dist(b)));
+  const total = all.length;
+  list = list.slice(0, 60);
+  const https = dir.servers.filter((e) => e.u.startsWith("https:")).length;
+  const ub = uberDir ?? [];
+  const ubHttps = ub.filter((e) => e.u.startsWith("https:")).length;
+  setText(
+    "rxDirInfo",
+    `OpenWebRX: ${dir.servers.length} on receiverbook.de (snapshot ${dir.fetched.slice(0, 10)}), ${https} https (${Math.round((https / dir.servers.length) * 100)} %). ` +
+      (uberDir ? `UberSDR: ${ub.length} online now (instances.ubersdr.org), ${ubHttps} https. ` : uberDirErr ? `UberSDR list unavailable${/fetch|network/i.test(uberDirErr) ? " (offline or blocked)" : ` (${uberDirErr})`}. ` : "UberSDR: loading… ") +
+      `KiwiSDR: ${(dir.kiwi ?? []).length} on receiverbook.de, ${(dir.kiwi ?? []).filter((e) => e.u.startsWith("https:")).length} https. ` +
+      `Showing ${list.length} of ${total}, distance from ${here ? "your GPS position" : "Johannesburg"}.`
+  );
+  box.removeAttribute("aria-busy");
+  if (!list.length) {
+    box.innerHTML = `<p class="empty">${q ? `No servers match “${esc(q)}”.` : "No servers for this filter."} <button class="btn ghost small" type="button" data-clear>Clear search and filters</button></p>`;
+    return;
+  }
+  box.innerHTML = list
+    .map((e) => {
+      const sec = e.u.startsWith("https:");
+      const d = dist(e);
+      const kn = e.k === "ubersdr" ? "UberSDR" : e.k === "kiwisdr" ? "KiwiSDR" : "OpenWebRX";
+      const isFav = fv.includes(e.u);
+      const star = `<button class="btn ghost small star" type="button" data-fav="${esc(e.u)}" aria-pressed="${isFav}" aria-label="${isFav ? "Remove from" : "Add to"} favourites: ${esc(e.n || e.s)}">${isFav ? "★" : "☆"}</button>`;
+      const tag = (e.feat ? `<span class="tag feat">${esc(e.feat)}</span> ` : "") + `<span class="tag ${e.k === "ubersdr" ? "uber" : e.k === "kiwisdr" ? "kiwi" : "owrx"}">${kn}</span> ` + (sec ? (e.ok ? `<span class="tag ok">works here</span>` : `<span class="tag">https</span>`) : `<span class="tag warn">http only</span>`) + (e.users ? ` <span class="tag">${esc(e.users)}</span>` : "");
+      return `<div class="dirrow"><div class="dirinfo"><b>${esc(e.n || e.s)}</b><small>${esc([e.s && e.s !== e.n ? e.s : "", e.v ? "v" + e.v : "", Number.isFinite(d) ? `${Math.round(d)} km` : ""].filter(Boolean).join(" · "))}</small>${tag}</div>
+        <div class="dirbtns">${star}${sec ? `<button class="btn primary small" type="button" data-u="${esc(e.u)}" data-k="${safeKind(e.k) ?? "openwebrx"}" data-n="${esc(e.n || e.s)}">Connect</button>` : ""}<a class="btn ghost small" href="${esc(e.u)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(e.n || e.s)} in a new tab">Open ↗</a></div></div>`;
+    })
+    .join("");
+}
+
+function haversineKm(a1: number, o1: number, a2: number, o2: number) {
+  const r = Math.PI / 180;
+  const x = Math.sin(((a2 - a1) * r) / 2) ** 2 + Math.cos(a1 * r) * Math.cos(a2 * r) * Math.sin(((o2 - o1) * r) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(x));
+}
+
+async function loadUberDir() {
+  if (uberDir) return;
+  try {
+    const j = await (await fetch("https://instances.ubersdr.org/api/instances", { cache: "no-store" })).json();
+    uberDir = (j.instances || [])
+      .filter((x: any) => x.is_online !== false && x.public_url)
+      .map((x: any) => ({
+        n: `${x.callsign || ""} ${x.name || ""}`.trim(),
+        s: String(x.location || x.country_name || ""),
+        u: String(x.public_url),
+        v: String(x.version || ""),
+        lat: +x.latitude || 0,
+        lon: +x.longitude || 0,
+        ok: x.tls && x.antenna_connected !== false ? 1 : 0,
+        k: "ubersdr" as const,
+        users: x.max_clients ? `${x.max_clients - (x.available_clients ?? 0)}/${x.max_clients} users` : "",
+      }))
+      .map(cleanDirEntry)
+      .filter((x: DirEntry | null): x is DirEntry => !!x);
+  } catch (e: any) {
+    uberDirErr = e?.message ?? String(e);
+  }
+  renderDir();
+}
+
+async function loadDir() {
+  loadUberDir();
+  if (dir) return;
+  try {
+    const j = await (await fetch("owrx-servers.json", { cache: "no-cache" })).json();
+    const clean = (l: unknown) => (Array.isArray(l) ? l.slice(0, 5000).map(cleanDirEntry).filter((x): x is DirEntry => !!x) : []);
+    dir = { fetched: String(j?.fetched ?? ""), source: String(j?.source ?? ""), probed: !!j?.probed, servers: clean(j?.servers), kiwi: clean(j?.kiwi).map((e) => ({ ...e, k: "kiwisdr" as const })) };
+    renderDir();
+  } catch (e: any) {
+    setText("rxDirInfo", navigator.onLine === false || /fetch|network/i.test(String(e?.message ?? e)) ? "You appear to be offline, so the server directory can't load. You can still add a server by URL." : `Directory unavailable (${e?.message ?? e}); you can still add a server by URL.`);
+    document.getElementById("rxDir")?.removeAttribute("aria-busy");
+  }
+}
+
+function wireRemote() {
+  for (const c of [owrx, uber, kiwi] as RemoteClient[]) {
+    c.onFft = (f) => c === remote && feedRemote(f);
+    c.onLog = (m, k) => c === remote && log(m, (k as any) ?? "");
+    c.onChange = () => c === remote && onRemoteChange();
+  }
+}
+
+function onRemoteChange() {
+    remoteStateChanged();
+    renderRemote();
+    updateReadout();
+    const idle = document.getElementById("specIdle");
+    if (idle && remote.connected) idle.style.display = "none";
+    else if (idle && !running && !pb && remote.state !== "connecting") idle.style.display = "";
+    if (remote.state === "connecting") setChip("dotSource", "txtSource", `Connecting to ${remote.name || remote.label}…`, "warn");
+    else if (remote.state === "error" && !rc.timer) setChip("dotSource", "txtSource", `${remote.label} connection failed`, "err");
+    if (remote.connected) {
+      if (!rc.wasFocused) {
+        rc.wasFocused = true;
+        const d = document.getElementById("btnRxDisconnect");
+        if (d && document.getElementById("pane-rm")?.hidden === false) d.focus({ preventScroll: true });
+      }
+      setChip("dotSource", "txtSource", `${remote.label}: ${remote.name || "remote"}`, "ok");
+      rememberServer(remote.url.page, remote.name || remote.url.page, remote.kind);
+      renderSaved();
+    } else if (remote.state !== "connecting" && remote.state !== "error" && !pb) {
+      if (frames && !running) {
+        resetSpectrum();
+        frames = 0;
+        lastStats = null;
+      }
+      if (recorder.active && !running) toggleRecord();
+      setChip("dotSource", "txtSource", device ? `${sdr?.name ?? "SDR"} ready` : "No source", device ? "ok" : "");
+    }
+    dirty = true;
+}
+
+function bindRemote() {
+  if (!document.getElementById("rxUrl")) return;
+  wireRemote();
+  const url = $<HTMLInputElement>("rxUrl");
+  const go = () => connectRemote(url.value);
+  $("btnRxConnect").addEventListener("click", go);
+  url.addEventListener("keydown", (e) => e.key === "Enter" && go());
+  $("btnRxOpen").addEventListener("click", () => {
+    try {
+      const p = safeHttp(normaliseUrl(url.value).page);
+      if (p) window.open(p, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      log(e?.message ?? String(e), "wn");
+    }
+  });
+  const pick = (e: Event) => {
+    if ((e.target as HTMLElement).closest("button[data-clear]")) {
+      ($("rxSearch") as HTMLInputElement).value = "";
+      ($("rxKind") as HTMLSelectElement).value = "all";
+      renderDir();
+      return;
+    }
+    const f = (e.target as HTMLElement).closest("button[data-fav]") as HTMLButtonElement | null;
+    if (f) {
+      toggleFav(f.dataset.fav!);
+      renderDir();
+      return;
+    }
+    const b = (e.target as HTMLElement).closest("button[data-u]") as HTMLButtonElement | null;
+    if (!b) return;
+    const u = safeHttp(b.dataset.u);
+    if (!u) return;
+    url.value = u;
+    connectRemote(u, safeKind(b.dataset.k));
+    document.getElementById("rxCard")?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  $("rxSaved").addEventListener("click", pick);
+  $("rxDir").addEventListener("click", pick);
+  $("btnRxDisconnect").addEventListener("click", userDisconnectRemote);
+  $("btnRxAudio").addEventListener("click", () => {
+    if (!remote.audioOn && shared.audioOn) shared.setAudio(false);
+    remote.setAudio(!remote.audioOn);
+  });
+  $("rxVol").addEventListener("input", () => remote.setVolume(Number(($("rxVol") as HTMLInputElement).value)));
+  $("rxMode").addEventListener("change", () => remote.setMode(($("rxMode") as HTMLSelectElement).value));
+  $("rxProfile").addEventListener("change", () => {
+    remote.selectProfile(($("rxProfile") as HTMLSelectElement).value);
+    resetSpectrum();
+    frames = 0;
+    analyser.clearHolds();
+  });
+  $("rxFreq").addEventListener("change", () => {
+    const hz = Number(($("rxFreq") as HTMLInputElement).value) * 1e6;
+    if (!remote.tune(hz)) log(remote.kind === "ubersdr" ? "Outside the receiver's range" : `Outside this profile's span (${freqLabel(remote.centreHz - remote.rateHz / 2)} – ${freqLabel(remote.centreHz + remote.rateHz / 2)}); pick another profile`, "wn");
+    renderRemote();
+  });
+  $("rxSquelch").addEventListener("change", () => remote.setSquelch(Number(($("rxSquelch") as HTMLInputElement).value)));
+  $("rxSearch").addEventListener("input", renderDir);
+  $("rxOnlyOk").addEventListener("change", renderDir);
+  $("rxKind").addEventListener("change", renderDir);
+  $("rxSort").addEventListener("change", renderDir);
+  window.addEventListener("webrx:tab", (e) => (e as CustomEvent).detail === "rm" && loadDir());
+  if (document.getElementById("pane-rm")?.hidden === false) loadDir();
+  setInterval(() => remote.connected && renderRemote(), 1000);
+  renderSaved();
+  renderRemote();
+  (window as any).__webrxTest = { ...(window as any).__webrxTest, owrx };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SA interactions (after UberSDR's spectrum UI): drag to pan, wheel/pinch zoom at
+//  the pointer, tap to tune with step snap, drag passband edges, hover read-out,
+//  VFO with scroll-over-digit tuning, label strip, waterfall tuned line.
+//  One code path for local SDR, playback and remote servers.
+// ═══════════════════════════════════════════════════════════════════
+
+function canTune() {
+  return !pb && (remote.connected || isSdrMode());
+}
+
+/** Absolute passband for the active receiver, or null when not demodulating. */
+function passband(): [number, number] | null {
+  if (pb) return null;
+  if (remote.connected) {
+    if (remote.lowCut == null || remote.highCut == null) return null;
+    return [remote.tunedHz + remote.lowCut, remote.tunedHz + remote.highCut];
+  }
+  if (!isSdrMode() || !shared.audioOn) return null;
+  const w = shared.cfg.bandwidth ?? shared.modeInfo().defaultBandwidth ?? 0;
+  if (!w) return null;
+  const t = tunedHz();
+  const sc = shared.cfg.scheme;
+  if (sc === "USB") return [t, t + w];
+  if (sc === "LSB") return [t - w, t];
+  return [t - w / 2, t + w / 2];
+}
+
+function setPassbandEdge(edge: "lo" | "hi", hz: number) {
+  const pbv = passband();
+  if (!pbv) return;
+  const t = tunedHz();
+  if (remote.connected) {
+    let lo = (remote.lowCut ?? 0), hi = (remote.highCut ?? 0);
+    if (edge === "lo") lo = Math.min(hi - 100, hz - t);
+    else hi = Math.max(lo + 100, hz - t);
+    remote.setPassband(lo, hi);
+  } else {
+    const sc = shared.cfg.scheme;
+    const w = Math.max(200, sc === "USB" || sc === "LSB" ? Math.abs(hz - t) : 2 * Math.abs(hz - t));
+    shared.set({ bandwidth: Math.round(w) });
+    renderListen();
+  }
+  dirty = true;
+}
+
+let localLabels: Label[] | null = null;
+function labelsNow(): Label[] {
+  if (remote.connected && !pb) return [...remote.bands, ...remote.bookmarks];
+  if (!localLabels) {
+    const B = (window as any).webrxBands || {};
+    localLabels = [];
+    for (const set of ["misc", "cell"]) for (const [n, lo, hi] of B[set] ?? []) localLabels.push({ hz: lo * 1e6, hi: hi * 1e6, text: n, kind: "band" });
+    document.querySelectorAll<HTMLOptionElement>("#freqPresets option").forEach((o) => localLabels!.push({ hz: parseFloat(o.value) * 1e6, text: o.textContent || o.value, kind: "bookmark" }));
+  }
+  return localLabels;
+}
+
+function snapHz(hz: number) {
+  const st = analyser.cfg.step;
+  return analyser.cfg.snap && st > 0 ? Math.round(hz / st) * st : Math.round(hz);
+}
+
+/** Tunable range of the active source (Hz). */
+function tuneRange(): [number, number] {
+  if (remote.connected) {
+    const full = (remote as any).fullHz as number | undefined;
+    if (full) return [0, full];
+    return [remote.centreHz - remote.rateHz / 2, remote.centreHz + remote.rateHz / 2];
+  }
+  const f = document.getElementById("freq") as HTMLInputElement | null;
+  const lo = parseFloat(f?.min || "") * 1e6, hi = parseFloat(f?.max || "") * 1e6;
+  return [Number.isFinite(lo) ? lo : 0, Number.isFinite(hi) ? hi : 6e9];
+}
+
+/** Digit p (10^p Hz) up/down, on the step grid and clamped to the source range. */
+function digitStep(p: number, dir: number) {
+  if (!canTune()) return;
+  const st = Math.max(1, analyser.cfg.step);
+  const inc = Math.max(10 ** p, st);
+  tuneAny(Math.round((tunedHz() + dir * inc) / st) * st);
+}
+
+/** Tune the active receiver (remote, or local listen offset / centre). */
+function tuneAny(hz: number) {
+  if (!canTune() || !Number.isFinite(hz)) return;
+  const [lo, hi] = tuneRange();
+  hz = Math.min(hi, Math.max(lo, hz));
+  if (remote.connected) {
+    if (!remote.tune(hz)) log(remote.kind === "openwebrx" ? "Outside the server's span — pick another profile" : "Outside the receiver's range", "wn");
+  } else tuneTo(hz);
+  renderVfo();
+  dirty = true;
+}
+
+/** Ask a server that supports it (UberSDR, KiwiSDR) to zoom its own FFT to the current view. */
+let serverZoomTimer = 0;
+let serverZoomPending = false;
+function syncServerZoom() {
+  if (!remote.connected || pb || remote.kind === "openwebrx") return;
+  clearTimeout(serverZoomTimer);
+  serverZoomTimer = window.setTimeout(() => {
+    const [f0, f1] = analyser.viewHz(src());
+    if (analyser.cfg.zoom === 1 && Math.abs((f0 + f1) / 2 - remote.centreHz) < 1) return;
+    if (remote.zoom((f0 + f1) / 2, f1 - f0)) serverZoomPending = true;
+  }, 350);
+}
+/** Called when a remote frame arrives with a new centre/span: the server has zoomed, so reset ours. */
+function serverZoomed() {
+  if (!serverZoomPending) return;
+  serverZoomPending = false;
+  analyser.set({ zoom: 1, pan: 0.5 });
+}
+
+function zoomAt(factor: number, xCss: number, wCss: number) {
+  if (!isSdrMode() && !pb && !remote.connected) return;
+  const s = src();
+  if (!(s.rateHz > 0) || !Number.isFinite(factor)) return;
+  const hz = analyser.xToHz(s, Math.max(analyser.LEFT, xCss), wCss);
+  const z0 = analyser.cfg.zoom;
+  const z1 = Math.max(1, Math.min(64, z0 * factor));
+  if (z1 === z0 && !(remote.connected && remote.kind !== "openwebrx")) return;
+  // keep the frequency under the pointer fixed
+  const frac = (Math.max(analyser.LEFT, xCss) - analyser.LEFT) / Math.max(1, wCss - analyser.LEFT);
+  const lo0 = s.centreHz - s.rateHz / 2;
+  const viewSpan = s.rateHz / z1;
+  const f0 = (hz ?? s.centreHz) - frac * viewSpan;
+  analyser.set({ zoom: z1, pan: (f0 + viewSpan / 2 - lo0) / s.rateHz });
+  syncServerZoom();
+  renderSa();
+  dirty = true;
+}
+
+function bindScopeInteractions() {
+  const sp = $<HTMLCanvasElement>("spectrum");
+  const wf = $<HTMLCanvasElement>("waterfall");
+  sp.tabIndex = 0;
+  sp.setAttribute("role", "application");
+  sp.setAttribute("aria-label", "Spectrum: tap to tune, drag to pan, wheel or pinch to zoom, drag the pink passband edges to change the filter. Keys: left/right tune by step, + and − zoom, Home centres on the tuned frequency.");
+  const pts = new Map<number, { x: number; y: number }>();
+  let drag: null | { mode: "pan" | "edge" | "maybe"; edge?: "lo" | "hi"; x0: number; y0?: number; pan0: number; moved: boolean; pinch0?: number; zoom0?: number; c: HTMLCanvasElement } = null;
+  const rel = (c: HTMLCanvasElement, e: PointerEvent | MouseEvent) => {
+    const r = c.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width };
+  };
+  const edgeAt = (x: number, w: number, touch = false): "lo" | "hi" | null => {
+    const pbv = passband();
+    if (!pbv) return null;
+    const s = src();
+    const a = analyser.hzToX(s, pbv[0], w), b = analyser.hzToX(s, pbv[1], w);
+    const tol = touch ? 22 : 10;
+    if (Math.abs(x - a) <= tol && Math.abs(x - a) <= Math.abs(x - b)) return "lo";
+    if (Math.abs(x - b) <= tol) return "hi";
+    return null;
+  };
+  for (const c of [sp, wf]) {
+    // vertical swipes scroll the page; horizontal drags pan, taps tune, two fingers zoom
+    c.style.touchAction = "pan-y";
+    c.addEventListener("pointerdown", (e) => {
+      if (!isSdrMode() && !pb && !remote.connected) return;
+      c.setPointerCapture(e.pointerId);
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const p = rel(c, e);
+      if (pts.size === 2) {
+        const [a, b] = [...pts.values()];
+        drag = { mode: "pan", x0: p.x, pan0: analyser.cfg.pan, moved: true, pinch0: Math.hypot(a.x - b.x, a.y - b.y), zoom0: analyser.cfg.zoom, c };
+        return;
+      }
+      const edge = c === sp ? edgeAt(p.x, p.w, e.pointerType !== "mouse") : null;
+      drag = { mode: edge ? "edge" : "maybe", edge: edge ?? undefined, x0: p.x, y0: p.y, pan0: analyser.cfg.pan, moved: false, c };
+    });
+    c.addEventListener("pointermove", (e) => {
+      const p = rel(c, e);
+      if (c === sp && e.pointerType === "mouse") {
+        analyser.hoverX = p.x;
+        if (!drag) {
+          const edge = edgeAt(p.x, p.w);
+          analyser.hotEdge = edge;
+          sp.style.cursor = edge ? "ew-resize" : analyser.cfg.zoom > 1 || (remote.connected && remote.kind !== "openwebrx") ? "grab" : "crosshair";
+        }
+        dirty = true;
+      }
+      if (!drag || drag.c !== c) return;
+      if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2 && drag.pinch0) {
+        const [a, b] = [...pts.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        const r = c.getBoundingClientRect();
+        zoomAt((drag.zoom0! * (d / drag.pinch0)) / analyser.cfg.zoom, (a.x + b.x) / 2 - r.left, r.width);
+        return;
+      }
+      const dx = p.x - drag.x0;
+      if (drag.mode === "edge") {
+        const hz = analyser.xToHz(src(), p.x, p.w);
+        if (hz !== null) setPassbandEdge(drag.edge!, hz);
+        drag.moved = true;
+        return;
+      }
+      if (drag.mode === "maybe") {
+        const dy = p.y - (drag.y0 ?? p.y);
+        if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
+          // mostly vertical: it's a scroll, not a tune or a pan
+          drag = null;
+          pts.delete(e.pointerId);
+          try {
+            c.releasePointerCapture(e.pointerId);
+          } catch (_) {}
+          return;
+        }
+        if (Math.abs(dx) > 8) drag.mode = "pan";
+      }
+      if (drag.mode === "pan") {
+        drag.moved = true;
+        const plotW = Math.max(1, p.w - analyser.LEFT);
+        analyser.set({ pan: drag.pan0 - dx / plotW / analyser.cfg.zoom });
+        if (c === sp) sp.style.cursor = "grabbing";
+        dirty = true;
+      }
+    });
+    const end = (e: PointerEvent) => {
+      pts.delete(e.pointerId);
+      if (!drag || drag.c !== c) return;
+      const d = drag;
+      if (pts.size > 0) return;
+      drag = null;
+      if (d.mode === "pan" && d.moved) {
+        // at full span on a server that can move its FFT, a drag re-centres the server
+        if (remote.connected && remote.kind !== "openwebrx" && analyser.cfg.zoom === 1) {
+          const p = rel(c, e);
+          const shift = ((p.x - d.x0) / Math.max(1, p.w - analyser.LEFT)) * remote.rateHz;
+          if (remote.zoom(remote.centreHz - shift, remote.rateHz)) serverZoomPending = true;
+        } else syncServerZoom();
+        renderSa();
+        return;
+      }
+      if (d.mode === "edge" || d.moved || e.type === "pointercancel") return;
+      // a tap
+      const p = rel(c, e);
+      const hz = analyser.xToHz(src(), p.x, p.w);
+      if (hz === null) return;
+      const mode = analyser.cfg.tap;
+      if (mode === "m1") analyser.set({ m1Hz: hz });
+      else if (mode === "m2") analyser.set({ m2Hz: hz });
+      else tuneAny(snapHz(hz));
+      renderSa();
+      dirty = true;
+    };
+    c.addEventListener("pointerup", end);
+    c.addEventListener("pointercancel", end);
+    c.addEventListener("pointerleave", () => {
+      if (c === sp) {
+        analyser.hoverX = null;
+        analyser.hotEdge = null;
+        dirty = true;
+      }
+    });
+    c.addEventListener(
+      "wheel",
+      (e) => {
+        if (!isSdrMode() && !pb && !remote.connected) return;
+        e.preventDefault();
+        const p = rel(c, e);
+        if (e.shiftKey) {
+          tuneAny(snapHz(tunedHz() + (e.deltaY < 0 ? 1 : -1) * Math.max(1, analyser.cfg.step)));
+          return;
+        }
+        zoomAt(e.deltaY < 0 ? 1.25 : 0.8, p.x, p.w);
+      },
+      { passive: false }
+    );
+  }
+  sp.addEventListener("keydown", (e) => {
+    const st = Math.max(1, analyser.cfg.step);
+    const w = sp.getBoundingClientRect().width;
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      tuneAny(snapHz(tunedHz() + (e.key === "ArrowRight" ? st : -st) * (e.shiftKey ? 10 : 1)));
+    } else if (e.key === "+" || e.key === "=") zoomAt(1.5, analyser.hzToX(src(), tunedHz(), w), w);
+    else if (e.key === "-") zoomAt(1 / 1.5, analyser.hzToX(src(), tunedHz(), w), w);
+    else if (e.key === "Home") centreOnTuned();
+  });
+}
+
+function centreOnTuned() {
+  const s = src();
+  analyser.set({ pan: 0.5 + (tunedHz() - s.centreHz) / s.rateHz });
+  if (analyser.cfg.zoom === 1 && remote.connected && remote.kind !== "openwebrx") {
+    if (remote.zoom(tunedHz(), remote.rateHz)) serverZoomPending = true;
+  } else syncServerZoom();
+  renderSa();
+  dirty = true;
+}
+
+
+// ── VFO: big frequency, scroll over a digit to tune it, tap to type ──
+const VFO_DIGITS = 10; // up to 9.999 999 999 GHz
+function renderVfo() {
+  const box = document.getElementById("vfoDigits");
+  if (!box) return;
+  const hz = Math.max(0, Math.round(tunedHz()));
+  const str = String(hz).padStart(VFO_DIGITS, "0");
+  if (box.childElementCount !== VFO_DIGITS) {
+    box.innerHTML = "";
+    for (let i = 0; i < VFO_DIGITS; ++i) {
+      const p = VFO_DIGITS - 1 - i;
+      const d = document.createElement("span");
+      d.className = "vd" + (p % 3 === 2 && i ? " gap" : "");
+      d.dataset.p = String(p);
+      box.appendChild(d);
+    }
+  }
+  let lead = true;
+  box.querySelectorAll<HTMLElement>(".vd").forEach((d, i) => {
+    const ch = str[i];
+    if (ch !== "0" || +d.dataset.p! < 7) lead = false;
+    d.textContent = ch;
+    d.classList.toggle("lead", lead);
+  });
+  box.setAttribute("aria-label", `Tuned ${freqLabel(hz)}`);
+  const pbv = passband();
+  setText("vfoMode", remote.connected && !pb ? remote.mod.toUpperCase() : shared.cfg.scheme);
+  setText("vfoBw", pbv ? hzShort(Math.abs(pbv[1] - pbv[0])) : "—");
+  // signal meter: S-units need a calibrated dBm level (S9 = −73 dBm, 6 dB per S-unit)
+  const lv = remote.connected && !pb && Number.isFinite(remote.smeterDb) ? remote.smeterDb : lastStats?.band;
+  const dbm = remote.connected && !pb ? remote.kind === "kiwisdr" : cfg.cal !== 0;
+  const bar = document.getElementById("vfoMeterBar");
+  if (bar && lv !== undefined && Number.isFinite(lv)) {
+    const u = Math.max(0, Math.min(1, (lv + 127) / 100));
+    bar.style.transform = `scaleX(${u.toFixed(3)})`;
+    let txt = `${lv.toFixed(1)} ${dbm ? "dBm" : "dB"}`;
+    if (dbm) {
+      txt = `${sUnits(lv, tunedHz())} · ${txt}`;
+    }
+    setText("vfoMeterTxt", txt);
+  } else if (bar) {
+    bar.style.transform = "scaleX(0)";
+    setText("vfoMeterTxt", "—");
+  }
+  // passband edge controls (keyboard / screen-reader alternative to dragging)
+  const pbBox = document.getElementById("pbCtl");
+  if (pbBox) {
+    pbBox.hidden = !pbv;
+    if (pbv) {
+      const t = tunedHz();
+      for (const [id, v, out] of [["pbLoIn", pbv[0] - t, "pbLoVal"], ["pbHiIn", pbv[1] - t, "pbHiVal"]] as const) {
+        const el = document.getElementById(id) as HTMLInputElement;
+        if (document.activeElement !== el) el.value = String(Math.round(v));
+        setText(out, `${v > 0 ? "+" : ""}${(v / 1000).toFixed(2)} kHz`);
+      }
+    }
+  }
+  // waterfall tuned line
+  const line = document.getElementById("wfTune");
+  const wf = document.getElementById("waterfall");
+  if (line && wf) {
+    const w = wf.clientWidth;
+    const x = analyser.hzToX(src(), tunedHz(), w);
+    const show = (isSdrMode() || remote.connected) && !pb && x >= analyser.LEFT && x <= w;
+    line.style.display = show ? "" : "none";
+    if (show) {
+      line.style.top = `${wf.offsetTop}px`;
+      line.style.height = `${wf.offsetHeight}px`;
+      line.style.left = `${wf.offsetLeft}px`;
+      line.style.transform = `translateX(${x.toFixed(1)}px)`;
+    }
+  }
+}
+
+function bindVfo() {
+  const box = document.getElementById("vfoDigits");
+  if (!box) return;
+  box.addEventListener(
+    "wheel",
+    (e) => {
+      const d = (e.target as HTMLElement).closest(".vd") as HTMLElement | null;
+      // only once the readout has focus: otherwise the wheel scrolls the page as usual
+      if (!d || !canTune() || document.activeElement !== box) return;
+      e.preventDefault();
+      digitStep(+d.dataset.p!, e.deltaY < 0 ? 1 : -1);
+    },
+    { passive: false }
+  );
+  // touch: swipe up/down on a digit
+  // touch: press and hold a digit (250 ms), then swipe up/down; one step per 32 px
+  let ty: number | null = null, tp = 0, held = false, holdT = 0, swiped = false;
+  box.addEventListener("pointerdown", (e) => {
+    const d = (e.target as HTMLElement).closest(".vd") as HTMLElement | null;
+    if (!d || e.pointerType === "mouse") return;
+    ty = e.clientY;
+    tp = +d.dataset.p!;
+    held = swiped = false;
+    clearTimeout(holdT);
+    holdT = window.setTimeout(() => {
+      held = true;
+      d.classList.add("held");
+      box.setPointerCapture(e.pointerId);
+    }, 250);
+  });
+  box.addEventListener("pointermove", (e) => {
+    if (ty === null) return;
+    const dy = ty - e.clientY;
+    if (!held) {
+      if (Math.abs(dy) > 10) {
+        clearTimeout(holdT);
+        ty = null; // a scroll, not a tune
+      }
+      return;
+    }
+    e.preventDefault();
+    if (Math.abs(dy) >= 32) {
+      digitStep(tp, Math.sign(dy));
+      ty = e.clientY;
+      swiped = true;
+    }
+  });
+  const up = () => {
+    clearTimeout(holdT);
+    ty = null;
+    held = false;
+    box.querySelectorAll(".held").forEach((x) => x.classList.remove("held"));
+  };
+  box.addEventListener("pointerup", up);
+  box.addEventListener("pointercancel", up);
+  box.addEventListener("touchmove", (e) => held && e.preventDefault(), { passive: false });
+  const input = $<HTMLInputElement>("vfoInput");
+  const openInput = () => {
+    if (!canTune()) return;
+    input.hidden = false;
+    box.hidden = true;
+    input.value = String(+(tunedHz() / 1e6).toFixed(6));
+    input.focus();
+    input.select();
+  };
+  const closeInput = (apply: boolean) => {
+    if (input.hidden) return;
+    if (apply) {
+      const v = parseFloat(input.value);
+      if (Number.isFinite(v) && v > 0) tuneAny(v * 1e6);
+    }
+    input.hidden = true;
+    box.hidden = false;
+    box.focus();
+  };
+  box.addEventListener("click", () => {
+    if (swiped) {
+      swiped = false;
+      return;
+    }
+    openInput();
+  });
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openInput();
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      tuneAny(snapHz(tunedHz() + (e.key === "ArrowUp" ? 1 : -1) * analyser.cfg.step));
+    }
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") closeInput(true);
+    if (e.key === "Escape") closeInput(false);
+  });
+  input.addEventListener("blur", () => closeInput(true));
+  $("btnVfoDown").addEventListener("click", () => tuneAny(snapHz(tunedHz() - analyser.cfg.step)));
+  $("btnVfoUp").addEventListener("click", () => tuneAny(snapHz(tunedHz() + analyser.cfg.step)));
+  for (const [id, edge] of [["pbLoIn", "lo"], ["pbHiIn", "hi"]] as const)
+    $(id).addEventListener("input", (e) => {
+      setPassbandEdge(edge, tunedHz() + Number((e.target as HTMLInputElement).value));
+      renderVfo();
+    });
+  const step = $<HTMLSelectElement>("vfoStep");
+  step.value = String(analyser.cfg.step);
+  step.addEventListener("change", () => analyser.set({ step: Number(step.value) }));
+  $("btnScopeZoomIn").addEventListener("click", () => {
+    const w = $("spectrum").getBoundingClientRect().width;
+    zoomAt(2, analyser.hzToX(src(), tunedHz(), w), w);
+  });
+  $("btnScopeZoomOut").addEventListener("click", () => {
+    const w = $("spectrum").getBoundingClientRect().width;
+    zoomAt(0.5, analyser.hzToX(src(), tunedHz(), w), w);
+  });
+  $("btnScopeCentre").addEventListener("click", centreOnTuned);
+  const lb = $("btnScopeLabels");
+  const syncLb = () => lb.setAttribute("aria-pressed", String(analyser.cfg.labels));
+  lb.addEventListener("click", () => {
+    analyser.set({ labels: !analyser.cfg.labels });
+    syncLb();
+    dirty = true;
+  });
+  syncLb();
+  setInterval(renderVfo, 250);
+  window.addEventListener("resize", renderVfo);
+  renderVfo();
 }
 
 // ═══════════════════════════════════════════════════════════════════

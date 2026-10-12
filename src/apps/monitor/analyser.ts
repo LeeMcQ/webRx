@@ -20,6 +20,13 @@ export type Src = {
   dtHi: number;
   thresholdDb: number | null;
   peakStat: { peak: number; peakHz: number } | null;
+  /** Window equivalent noise bandwidth in bins, used to correct summed channel power. */
+  enbw?: number;
+  pbLo?: number | null;
+  pbHi?: number | null;
+  labels?: { hz: number; hi?: number; text: string; kind?: string }[];
+  stats?: string[];
+  units?: string;
 };
 
 export type SaCfg = {
@@ -37,10 +44,18 @@ export type SaCfg = {
   tap: "tune" | "m1" | "m2";
   m1Hz: number | null;
   m2Hz: number | null;
+  fill: "cmap" | "grad";
+  step: number;
+  snap: boolean;
+  labels: boolean;
+  wfFloor: number;
+  wfContrast: number;
+  smooth: number;
+  stats: boolean;
 };
 
 const KEY = "webrx.sa.v1";
-const DEF: SaCfg = { zoom: 1, pan: 0.5, autoRange: true, ref: -20, range: 80, cmap: "turbo", trace: "avg", showMax: false, showMin: false, wfSpeed: 1, chBwHz: 200_000, tap: "tune", m1Hz: null, m2Hz: null };
+const DEF: SaCfg = { zoom: 1, pan: 0.5, autoRange: true, ref: -20, range: 80, cmap: "turbo", trace: "avg", showMax: false, showMin: false, wfSpeed: 1, chBwHz: 200_000, tap: "tune", m1Hz: null, m2Hz: null, fill: "cmap", step: 1000, snap: true, labels: true, wfFloor: 0, wfContrast: 1, smooth: 0, stats: false };
 
 const CMAPS: Record<string, [number, number[]][]> = {
   turbo: [[0, [7, 13, 24]], [0.2, [30, 58, 138]], [0.45, [8, 145, 178]], [0.65, [74, 222, 128]], [0.82, [250, 204, 21]], [1, [239, 68, 68]]],
@@ -98,6 +113,18 @@ export class Analyser {
   /** Frozen copy of the trace shown while the display is frozen. */
   private still: { spec: Float32Array; raw: Float32Array } | null = null;
   readonly LEFT = 38;
+  /** Pointer position over the plot (CSS px) for the hover read-out; null when away. */
+  hoverX: number | null = null;
+  /** Passband edge under the pointer / being dragged. */
+  hotEdge: "lo" | "hi" | null = null;
+  /** Height (CSS px) taken by the label strip on the last draw. */
+  stripH = 0;
+
+  /** Frequency → canvas x (CSS px). */
+  hzToX(s: Src, hz: number, wCss: number) {
+    const [f0, f1] = this.viewHz(s);
+    return this.LEFT + ((hz - f0) / (f1 - f0)) * (wCss - this.LEFT);
+  }
 
   constructor() {
     let c = { ...DEF };
@@ -154,6 +181,20 @@ export class Analyser {
 
   /** The trace shown (and measured by markers): averaged or live. */
   trace(s: Src): Float32Array {
+    const t = this.rawTrace(s);
+    const r = this.cfg.smooth;
+    if (!r || t.length < 8) return t;
+    // display-only smoothing: boxcar over ±r bins in linear power
+    const out = new Float32Array(t.length);
+    for (let k = 0; k < t.length; ++k) {
+      let sum = 0, m = 0;
+      for (let j = Math.max(0, k - r); j <= Math.min(t.length - 1, k + r); ++j) if (Number.isFinite(t[j])) { sum += lin(t[j]); ++m; }
+      out[k] = m ? 10 * Math.log10(sum / m) : t[k];
+    }
+    return out;
+  }
+
+  private rawTrace(s: Src): Float32Array {
     const base = this.still ?? s;
     if (this.cfg.trace === "live" && base.raw.length === base.spec.length) {
       const out = new Float32Array(base.raw.length);
@@ -250,7 +291,8 @@ export class Analyser {
     const k1 = Math.min(n - 1, Math.ceil(this.hzToBin(s, cHz + this.cfg.chBwHz / 2, n)));
     let sum = 0;
     for (let k = k0; k <= k1; ++k) if (Number.isFinite(t[k])) sum += lin(t[k]);
-    const chPower = sum > 0 ? 10 * Math.log10(sum) : NaN;
+    // bins overlap by the window's ENBW: summing them over-counts noise power by that factor
+    const chPower = sum > 0 ? 10 * Math.log10(sum / Math.max(1, s.enbw ?? 1)) : NaN;
     // occupied bandwidth (99 % of the power in view)
     let tot = 0;
     const p: number[] = [];
@@ -273,35 +315,80 @@ export class Analyser {
     const W = c.width, H = c.height;
     const dpr = W / Math.max(1, c.clientWidth);
     ctx.clearRect(0, 0, W, H);
+    const [f0, f1] = this.viewHz(s);
+    const labels = this.cfg.labels && s.sdr ? (s.labels ?? []).filter((l) => (l.hi ?? l.hz) >= f0 && l.hz <= f1) : [];
+    const strip = labels.length ? 30 * dpr : 0;
+    this.stripH = strip / dpr;
     const left = this.LEFT * dpr, bottom = 18 * dpr, pw = W - left, ph = H - bottom;
     const yLo = this.yLo, yHi = this.yHi;
-    const y = (db: number) => ph - ((db - yLo) / Math.max(1e-6, yHi - yLo)) * ph;
+    const y = (db: number) => strip + (ph - strip) * (1 - (db - yLo) / Math.max(1e-6, yHi - yLo));
+    const xHz = (hz: number) => left + ((hz - f0) / (f1 - f0)) * pw;
     ctx.font = `${10 * dpr}px ui-monospace, monospace`;
     ctx.fillStyle = "#64748b";
     ctx.strokeStyle = "rgba(100,116,139,0.18)";
     ctx.lineWidth = 1;
+    // dB grid
     const step = yHi - yLo > 60 ? 20 : 10;
     for (let d = Math.ceil(yLo / step) * step; d <= yHi; d += step) {
       const yy = Math.round(y(d)) + 0.5;
+      if (yy < strip) continue;
       ctx.beginPath(); ctx.moveTo(left, yy); ctx.lineTo(W, yy); ctx.stroke();
-      ctx.fillText(String(d), 2 * dpr, Math.max(10 * dpr, yy + 3 * dpr));
+      ctx.fillText(String(d), 2 * dpr, Math.max(strip + 10 * dpr, yy + 3 * dpr));
     }
-    const [f0, f1] = this.viewHz(s);
-    const xHz = (hz: number) => left + ((hz - f0) / (f1 - f0)) * pw;
-    const sample = ctx.measureText(freqLabel(s.centreHz)).width;
-    const labelEvery = sample * 5 + 40 * dpr < pw ? 1 : 2;
-    for (let i = 0; i <= 4; ++i) {
-      const xx = Math.round(left + (pw * i) / 4) + 0.5;
-      ctx.beginPath(); ctx.moveTo(xx, 0); ctx.lineTo(xx, ph); ctx.stroke();
-      if (s.sdr && i % labelEvery === 0) {
-        const label = freqLabel(f0 + ((f1 - f0) * i) / 4);
+    // frequency scale with "nice" steps (UberSDR-style dense ticks)
+    if (s.sdr) {
+      const span = f1 - f0;
+      const want = Math.max(2, Math.floor(pw / (90 * dpr)));
+      const raw = span / want;
+      const mag = 10 ** Math.floor(Math.log10(raw));
+      const tick = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((t) => t >= raw) ?? raw;
+      const dec = tick >= 1e6 ? 1 : tick >= 1e5 ? 2 : tick >= 1e4 ? 3 : tick >= 1e3 ? 3 : 4;
+      for (let f = Math.ceil(f0 / tick) * tick; f <= f1; f += tick) {
+        const xx = Math.round(xHz(f)) + 0.5;
+        ctx.strokeStyle = "rgba(100,116,139,0.18)";
+        ctx.beginPath(); ctx.moveTo(xx, strip); ctx.lineTo(xx, ph); ctx.stroke();
+        ctx.strokeStyle = "rgba(148,163,184,0.6)";
+        ctx.beginPath(); ctx.moveTo(xx, ph); ctx.lineTo(xx, ph + 4 * dpr); ctx.stroke();
+        const label = Math.abs(f) >= 1e9 ? `${(f / 1e9).toFixed(dec + 2)} G` : `${(f / 1e6).toFixed(dec)}`;
         const tw = ctx.measureText(label).width;
+        ctx.fillStyle = "#64748b";
         ctx.fillText(label, Math.min(W - tw - 2, Math.max(left, xx - tw / 2)), H - 4 * dpr);
       }
-    }
-    if (!s.sdr) {
+    } else {
       ctx.fillText("noise floor", left + 4 * dpr, H - 4 * dpr);
       ctx.fillText("estimated level (not RF power)", left + pw / 2 - 70 * dpr, H - 4 * dpr);
+    }
+    // label strip: band-plan bars on the first row, bookmarks as pills on two rows
+    if (strip) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(left, 0, pw, strip); ctx.clip();
+      ctx.font = `600 ${9.5 * dpr}px system-ui, sans-serif`;
+      const rowEnd = [left - 1, left - 1];
+      for (const l of labels.filter((l) => l.hi !== undefined)) {
+        const a = Math.max(left, xHz(l.hz)), b = Math.min(W, xHz(l.hi!));
+        ctx.fillStyle = "rgba(167,139,250,0.22)";
+        ctx.fillRect(a, 0, Math.max(2, b - a), 3 * dpr);
+        const tw = ctx.measureText(l.text).width;
+        if (b - a > tw + 6 * dpr) { ctx.fillStyle = "#c4b5fd"; ctx.fillText(l.text, a + 3 * dpr, 12 * dpr); rowEnd[0] = Math.max(rowEnd[0], a + tw + 6 * dpr); }
+      }
+      const bm = labels.filter((l) => l.hi === undefined).sort((a, b) => a.hz - b.hz);
+      for (const l of bm) {
+        const x = xHz(l.hz);
+        const text = l.text.length > 18 ? l.text.slice(0, 17) + "…" : l.text;
+        const tw = ctx.measureText(text).width + 8 * dpr;
+        const x0 = Math.max(left, x - tw / 2);
+        const row = rowEnd[0] < x0 ? 0 : rowEnd[1] < x0 ? 1 : -1;
+        if (row < 0) continue;
+        rowEnd[row] = x0 + tw + 2 * dpr;
+        const yy = 3 * dpr + row * 13 * dpr;
+        ctx.fillStyle = "rgba(250,204,21,0.92)";
+        ctx.beginPath(); (ctx as any).roundRect ? (ctx as any).roundRect(x0, yy, tw, 12 * dpr, 3 * dpr) : ctx.rect(x0, yy, tw, 12 * dpr); ctx.fill();
+        ctx.fillStyle = "#1c1917";
+        ctx.fillText(text, x0 + 4 * dpr, yy + 9.5 * dpr);
+        ctx.fillStyle = "rgba(250,204,21,0.5)";
+        ctx.fillRect(Math.round(x), yy + 12 * dpr, 1, strip - yy - 12 * dpr);
+      }
+      ctx.restore();
     }
     const t = this.trace(s);
     const n = t.length || 1;
@@ -309,25 +396,20 @@ export class Analyser {
     const xs = (k: number) => left + ((k + 0.5 - va) / (vb - va)) * pw;
     const clipX = (x0: number, x1: number, fill: string) => {
       const a = Math.max(left, x0), b = Math.min(W, x1);
-      if (b > a) { ctx.fillStyle = fill; ctx.fillRect(a, 0, Math.max(1, b - a), ph); }
+      if (b > a) { ctx.fillStyle = fill; ctx.fillRect(a, strip, Math.max(1, b - a), ph - strip); }
     };
     // measurement band, DT band, channel-power band
-    clipX(xs(s.band[0] - 0.5), xs(s.band[1] - 0.5), "rgba(59,130,246,0.08)");
+    clipX(xs(s.band[0] - 0.5), xs(s.band[1] - 0.5), "rgba(59,130,246,0.06)");
     if (s.sdr) {
-      clipX(xHz(s.dtLo), xHz(s.dtHi), "rgba(34,197,94,0.10)");
-      const cHz = this.cfg.m1Hz ?? s.tunedHz;
-      ctx.strokeStyle = "rgba(167,139,250,0.6)";
-      ctx.setLineDash([3 * dpr, 3 * dpr]);
-      for (const hz of [cHz - this.cfg.chBwHz / 2, cHz + this.cfg.chBwHz / 2]) {
-        const x = xHz(hz);
-        if (x >= left && x <= W) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke(); }
-      }
-      ctx.setLineDash([]);
-      const tx = Math.round(xHz(s.tunedHz)) + 0.5;
-      if (tx >= left && tx <= W) {
-        ctx.strokeStyle = s.audioOn ? "rgba(248,113,113,0.95)" : "rgba(248,113,113,0.5)";
-        ctx.lineWidth = 1.5 * dpr;
-        ctx.beginPath(); ctx.moveTo(tx, 0); ctx.lineTo(tx, ph); ctx.stroke();
+      clipX(xHz(s.dtLo), xHz(s.dtHi), "rgba(34,197,94,0.08)");
+      if (this.cfg.m1Hz !== null) {
+        ctx.strokeStyle = "rgba(167,139,250,0.6)";
+        ctx.setLineDash([3 * dpr, 3 * dpr]);
+        for (const hz of [this.cfg.m1Hz - this.cfg.chBwHz / 2, this.cfg.m1Hz + this.cfg.chBwHz / 2]) {
+          const x = xHz(hz);
+          if (x >= left && x <= W) { ctx.beginPath(); ctx.moveTo(x, strip); ctx.lineTo(x, ph); ctx.stroke(); }
+        }
+        ctx.setLineDash([]);
       }
     }
     if (s.thresholdDb !== null && s.sdr) {
@@ -340,31 +422,80 @@ export class Analyser {
       ctx.fillText(`threshold ${s.thresholdDb.toFixed(1)}`, left + 4 * dpr, y(s.thresholdDb) - 3 * dpr);
       ctx.restore();
     }
-    if (!s.frames || !t.length) return;
-    ctx.save();
-    ctx.beginPath(); ctx.rect(left, 0, pw, ph); ctx.clip();
-    const k0 = Math.max(0, Math.floor(va)), k1 = Math.min(t.length - 1, Math.ceil(vb));
-    const line = (arr: Float32Array, color: string, width = 1) => {
-      if (arr.length !== t.length) return;
+    if (s.frames && t.length) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(left, strip, pw, ph - strip); ctx.clip();
+      const k0 = Math.max(0, Math.floor(va)), k1 = Math.min(t.length - 1, Math.ceil(vb));
+      const line = (arr: Float32Array, color: string, width = 1) => {
+        if (arr.length !== t.length) return;
+        ctx.beginPath();
+        for (let k = k0; k <= k1; ++k) (k === k0 ? ctx.moveTo : ctx.lineTo).call(ctx, xs(k), y(arr[k]));
+        ctx.strokeStyle = color; ctx.lineWidth = width * dpr; ctx.stroke();
+      };
+      if (this.cfg.showMin) line(this.minHold, "rgba(148,163,184,0.7)");
+      if (this.cfg.showMax) line(this.maxHold, "rgba(244,114,182,0.8)");
+      if (s.peakHold && s.sdr) line(s.peak, "rgba(245,158,11,0.55)");
+      // fill: colour-mapped by level (same palette as the waterfall) or the classic cyan wash
+      let fill: CanvasGradient;
+      if (this.cfg.fill === "cmap") {
+        fill = ctx.createLinearGradient(0, ph, 0, strip);
+        const stops = CMAPS[this.cfg.cmap] ?? CMAPS.turbo;
+        for (const [p, col] of stops) fill.addColorStop(p, `rgba(${col.join(",")},${0.35 + 0.55 * p})`);
+      } else {
+        fill = ctx.createLinearGradient(0, strip, 0, ph);
+        fill.addColorStop(0, "rgba(34,211,238,0.35)");
+        fill.addColorStop(1, "rgba(59,130,246,0.02)");
+      }
       ctx.beginPath();
-      for (let k = k0; k <= k1; ++k) (k === k0 ? ctx.moveTo : ctx.lineTo).call(ctx, xs(k), y(arr[k]));
-      ctx.strokeStyle = color; ctx.lineWidth = width * dpr; ctx.stroke();
-    };
-    if (this.cfg.showMin) line(this.minHold, "rgba(148,163,184,0.7)");
-    if (this.cfg.showMax) line(this.maxHold, "rgba(244,114,182,0.8)");
-    if (s.peakHold && s.sdr) line(s.peak, "rgba(245,158,11,0.55)");
-    const grad = ctx.createLinearGradient(0, 0, 0, ph);
-    grad.addColorStop(0, "rgba(34,211,238,0.35)");
-    grad.addColorStop(1, "rgba(59,130,246,0.02)");
-    ctx.beginPath();
-    ctx.moveTo(xs(k0), ph);
-    for (let k = k0; k <= k1; ++k) ctx.lineTo(xs(k), y(t[k]));
-    ctx.lineTo(xs(k1), ph);
-    ctx.closePath();
-    ctx.fillStyle = grad;
-    ctx.fill();
-    line(t, "#22d3ee", 1.2);
-    ctx.restore();
+      ctx.moveTo(xs(k0), ph);
+      for (let k = k0; k <= k1; ++k) ctx.lineTo(xs(k), y(t[k]));
+      ctx.lineTo(xs(k1), ph);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      line(t, this.cfg.fill === "cmap" ? "rgba(226,232,240,0.85)" : "#22d3ee", 1);
+      ctx.restore();
+    }
+    // passband (drag the edges) and tuned frequency line
+    if (s.sdr && s.pbLo != null && s.pbHi != null) {
+      const a = xHz(s.pbLo), b = xHz(s.pbHi);
+      clipX(Math.min(a, b), Math.max(a, b), "rgba(236,72,153,0.13)");
+      for (const [x, edge] of [[a, "lo"], [b, "hi"]] as const) {
+        if (x < left || x > W) continue;
+        const hot = this.hotEdge === edge;
+        ctx.fillStyle = hot ? "rgba(244,114,182,1)" : "rgba(244,114,182,0.7)";
+        ctx.fillRect(Math.round(x) - (hot ? 1 : 0.5) * dpr, strip, (hot ? 2 : 1) * dpr, ph - strip);
+        // grip: rounded tab with two ridges
+        const gy = strip + (ph - strip) / 2 - 14 * dpr;
+        ctx.fillRect(Math.round(x) - 5 * dpr, gy, 10 * dpr, 28 * dpr);
+        ctx.fillStyle = "rgba(15,23,42,0.85)";
+        ctx.fillRect(Math.round(x) - 2 * dpr, gy + 6 * dpr, 1 * dpr, 16 * dpr);
+        ctx.fillRect(Math.round(x) + 1 * dpr, gy + 6 * dpr, 1 * dpr, 16 * dpr);
+      }
+    }
+    if (s.sdr) {
+      const tx = Math.round(xHz(s.tunedHz)) + 0.5;
+      if (tx >= left && tx <= W) {
+        ctx.save();
+        ctx.strokeStyle = s.audioOn ? "rgba(244,114,182,1)" : "rgba(244,114,182,0.75)";
+        ctx.lineWidth = 1.2 * dpr;
+        ctx.setLineDash([5 * dpr, 4 * dpr]);
+        ctx.beginPath(); ctx.moveTo(tx, strip); ctx.lineTo(tx, ph); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(244,114,182,1)";
+        ctx.beginPath(); ctx.moveTo(tx - 5 * dpr, strip); ctx.lineTo(tx + 5 * dpr, strip); ctx.lineTo(tx, strip + 7 * dpr); ctx.fill();
+        // frequency pill on the scale
+        const label = freqLabel(s.tunedHz);
+        ctx.font = `600 ${10 * dpr}px ui-monospace, monospace`;
+        const tw = ctx.measureText(label).width + 8 * dpr;
+        const x0 = Math.min(W - tw, Math.max(left, tx - tw / 2));
+        ctx.fillStyle = "#0b1220";
+        ctx.fillRect(x0, ph + 1 * dpr, tw, bottom - 1 * dpr);
+        ctx.fillStyle = "#f472b6";
+        ctx.fillText(label, x0 + 4 * dpr, H - 4 * dpr);
+        ctx.restore();
+      }
+    }
     // markers
     const mark = (hz: number | null, label: string, color: string) => {
       if (hz === null) return;
@@ -375,23 +506,54 @@ export class Analyser {
       ctx.fillStyle = color;
       ctx.beginPath(); ctx.moveTo(x, py - 2 * dpr); ctx.lineTo(x - 6 * dpr, py - 12 * dpr); ctx.lineTo(x + 6 * dpr, py - 12 * dpr); ctx.fill();
       ctx.font = `600 ${10 * dpr}px system-ui`;
-      ctx.fillText(label, x - 6 * dpr, Math.max(10 * dpr, py - 15 * dpr));
+      ctx.fillText(label, x - 6 * dpr, Math.max(strip + 10 * dpr, py - 15 * dpr));
     };
-    if (this.cfg.m1Hz === null && this.cfg.m2Hz === null && s.peakStat && s.sdr && this.cfg.zoom === 1) {
+    if (s.frames && this.cfg.m1Hz === null && this.cfg.m2Hz === null && s.peakStat && s.sdr && this.cfg.zoom === 1 && this.hoverX === null) {
       const px = xHz(s.peakStat.peakHz), py = y(s.peakStat.peak);
-      ctx.fillStyle = "#fbbf24";
-      ctx.beginPath(); ctx.moveTo(px, py - 2 * dpr); ctx.lineTo(px - 5 * dpr, py - 10 * dpr); ctx.lineTo(px + 5 * dpr, py - 10 * dpr); ctx.fill();
-      const label = `${s.peakStat.peak.toFixed(1)} dB @ ${freqLabel(s.peakStat.peakHz)}`;
-      const tw = ctx.measureText(label).width;
-      ctx.fillStyle = "#e2e8f0";
-      ctx.fillText(label, Math.min(W - tw - 4, Math.max(left + 2, px - tw / 2)), Math.max(12 * dpr, py - 14 * dpr));
+      if (px >= left && px <= W) {
+        ctx.fillStyle = "#fbbf24";
+        ctx.beginPath(); ctx.moveTo(px, py - 2 * dpr); ctx.lineTo(px - 5 * dpr, py - 10 * dpr); ctx.lineTo(px + 5 * dpr, py - 10 * dpr); ctx.fill();
+        ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+        const label = `${s.peakStat.peak.toFixed(1)} dB @ ${freqLabel(s.peakStat.peakHz)}`;
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = "#e2e8f0";
+        ctx.fillText(label, Math.min(W - tw - 4, Math.max(left + 2, px - tw / 2)), Math.max(strip + 12 * dpr, py - 14 * dpr));
+      }
     }
     mark(this.cfg.m1Hz, "M1", "#fbbf24");
     mark(this.cfg.m2Hz, "M2", "#a78bfa");
+    // hover cross-hair with frequency and level
+    if (this.hoverX !== null && s.sdr) {
+      const x = this.hoverX * dpr;
+      if (x >= left && x <= W) {
+        const hz = f0 + ((x - left) / pw) * (f1 - f0);
+        const v = this.levelAtHz(s, hz);
+        ctx.strokeStyle = "rgba(226,232,240,0.45)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, strip); ctx.lineTo(Math.round(x) + 0.5, ph); ctx.stroke();
+        const label = `${freqLabel(hz)}${Number.isFinite(v) ? ` · ${v.toFixed(1)} ${s.units ?? "dB"}` : ""}`;
+        ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+        const tw = ctx.measureText(label).width + 8 * dpr;
+        const x0 = x + tw + 12 * dpr > W ? x - tw - 6 * dpr : x + 6 * dpr;
+        ctx.fillStyle = "rgba(11,18,32,0.88)";
+        ctx.fillRect(x0, strip + 4 * dpr, tw, 15 * dpr);
+        ctx.fillStyle = "#e2e8f0";
+        ctx.fillText(label, x0 + 4 * dpr, strip + 15 * dpr);
+      }
+    }
+    if (this.cfg.stats && s.stats?.length) {
+      ctx.font = `${9.5 * dpr}px ui-monospace, monospace`;
+      const lh = 12 * dpr;
+      const w = Math.max(...s.stats.map((l) => ctx.measureText(l).width)) + 10 * dpr;
+      ctx.fillStyle = "rgba(11,18,32,0.82)";
+      ctx.fillRect(left + 4 * dpr, ph - s.stats.length * lh - 8 * dpr, w, s.stats.length * lh + 4 * dpr);
+      ctx.fillStyle = "#cbd5e1";
+      s.stats.forEach((l, i) => ctx.fillText(l, left + 9 * dpr, ph - (s.stats!.length - i - 1) * lh - 8 * dpr));
+    }
     if (this.frozen) {
       ctx.fillStyle = "rgba(251,191,36,0.9)";
       ctx.font = `700 ${11 * dpr}px system-ui`;
-      ctx.fillText("FROZEN", W - 60 * dpr, 14 * dpr);
+      ctx.fillText("FROZEN", W - 60 * dpr, strip + 14 * dpr);
     }
   }
 
@@ -412,12 +574,24 @@ export class Analyser {
     const [va, vb] = this.view(n);
     const data = this.wfRow.data;
     const lut = this.lut;
+    // waterfall has its own floor and contrast on top of the spectrum's range
+    const lo = this.yLo + this.cfg.wfFloor;
+    const span = Math.max(3, (this.yHi - this.yLo) / Math.max(0.25, this.cfg.wfContrast));
+    // the plot starts LEFT px in on the spectrum: keep the waterfall aligned with it
+    const dpr = W / Math.max(1, c.clientWidth);
+    const x0 = Math.round(this.LEFT * dpr);
+    const pw = W - x0;
     for (let x = 0; x < W; ++x) {
-      const k0 = Math.floor(va + (x * (vb - va)) / W);
-      const k1 = Math.max(k0 + 1, Math.floor(va + ((x + 1) * (vb - va)) / W));
+      if (x < x0) {
+        data[x * 4] = 7; data[x * 4 + 1] = 13; data[x * 4 + 2] = 24; data[x * 4 + 3] = 255;
+        continue;
+      }
+      const px = x - x0;
+      const k0 = Math.floor(va + (px * (vb - va)) / pw);
+      const k1 = Math.max(k0 + 1, Math.floor(va + ((px + 1) * (vb - va)) / pw));
       let v = -Infinity;
       for (let k = k0; k < k1 && k < n; ++k) v = Math.max(v, t[k]);
-      const u = Math.max(0, Math.min(1, (v - this.yLo) / Math.max(1e-6, this.yHi - this.yLo)));
+      const u = Math.max(0, Math.min(1, (v - lo) / span));
       const li = Math.round(u * 255) * 4;
       data[x * 4] = lut[li]; data[x * 4 + 1] = lut[li + 1]; data[x * 4 + 2] = lut[li + 2]; data[x * 4 + 3] = 255;
     }
