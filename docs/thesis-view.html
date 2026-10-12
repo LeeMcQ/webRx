@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="monitor.css" />
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="apple-touch-icon" href="icon-192.png" />
-    <title>MMN Monitor – Lee McQuire</title>
+    <title>webRx – SA · MT · DT monitor</title>
     <style>
       :root {
         --bg: #0b1220;
@@ -390,11 +390,6 @@
       .sheet-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
       .sheet-chips .chip { min-height: 36px; }
 
-      /* remote */
-      .remote-level { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); margin-bottom: var(--s4); }
-      .remote-level > div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: var(--s3) var(--s4); }
-      .remote-level small { display: block; color: #a9b8d0; font-size: var(--t12); }
-      .remote-level b { font: 700 var(--t24)/1.3 var(--mono); white-space: nowrap; }
       .btns.big .btn { min-height: 56px; font-size: var(--t17); }
       .btns.big .btn .i { fill: currentColor; stroke: none; }
       .tuner-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2); margin-bottom: var(--s3); }
@@ -451,6 +446,82 @@
         #spectrum { height: 180px; } #waterfall { height: 110px; }
       }
 
+
+      /* ═══ v3: SA/MT/DT/RM tabs, listening, DT, themes ═══ */
+      .tab b { font-size: var(--t13); letter-spacing: .04em; line-height: 1; }
+      .tab span { font-size: 11px; font-weight: 500; line-height: 1.1; }
+      .tab .i { width: 20px; height: 20px; }
+      @media (max-width: 999px) and (min-height: 501px), (max-width: 999px) and (orientation: portrait) {
+        .tab .i { display: none; } .tab b { font-size: var(--t15); }
+        .tab::before { top: 8px; height: 26px; }
+      }
+      .slot:empty { display: none; }
+      .tabbar { grid-template-columns: repeat(6, 1fr); }
+      .bandtable { display: grid; gap: var(--s2); max-height: 60vh; overflow: auto; }
+      .bandrow { display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s3); text-align: left; min-height: var(--tap); padding: var(--s2) var(--s3);
+        border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--text); cursor: pointer; font: inherit; }
+      .bandrow b { font-size: var(--t13); } .bandrow span { font: var(--t12) var(--mono); color: var(--muted); grid-column: 1; }
+      .bandrow small { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #93c5fd; font-size: var(--t12); }
+      .bandrow:hover { border-color: var(--accent); }
+      .bandrow[aria-disabled="true"] { opacity: .55; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
+      @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) { .tab b.gear { display: none; } }
+      .slot { min-width: 0; }
+      .slot-mini #spectrum { height: 170px; } .slot-mini #waterfall { height: 90px; }
+      .listen-top { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s3); }
+      .listen-top .btn { min-width: 120px; }
+      .listen-top .vol { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+      .tune-steps { flex-direction: row; flex-wrap: wrap; gap: var(--s2); }
+      .tune-steps .btn { flex: 1 1 64px; font: 600 var(--t13) var(--mono); padding: 0 var(--s2); }
+      #spectrum { cursor: crosshair; }
+      .dt-wrap { display: grid; place-items: center; }
+      #dtCanvas { width: min(100%, 420px); aspect-ratio: 1; height: auto; background: transparent; border-radius: 50%; }
+      .dt-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s2); margin: var(--s3) 0; }
+      .dt-guide { min-height: 2.8em; font-size: var(--t15); color: var(--text); }
+      ul.plain { margin: var(--s2) 0 0; padding-left: var(--s5); display: grid; gap: var(--s2); color: var(--muted); font-size: var(--t13); }
+      ul.plain b { color: var(--text); }
+      code { font: var(--t12) var(--mono); background: var(--panel-2); padding: 1px 6px; border-radius: 6px; }
+      p { margin: 0 0 var(--s2); }
+
+      /* density */
+      [data-density="compact"] { --s4: 12px; --tap: 40px; }
+      [data-density="compact"] .card { padding: var(--s3); }
+      [data-density="compact"] .grid, [data-density="compact"] .col { gap: var(--s3); }
+
+      /* light theme: page chrome goes light, scopes stay dark for contrast */
+      [data-theme="light"] {
+        color-scheme: light;
+        --bg: #f4f6fb; --panel: #ffffff; --panel-2: #eef2f8; --line: #d6deea; --text: #0f172a; --muted: #475569;
+      }
+      [data-theme="light"] body { background: var(--bg); }
+      [data-theme="light"] header.appbar, [data-theme="light"] .tabbar { background: rgba(255,255,255,.92); }
+      [data-theme="light"] .card h2, [data-theme="light"] .stat small, [data-theme="light"] .remote-level small,
+      [data-theme="light"] .readout, [data-theme="light"] .field label, [data-theme="light"] .lbl { color: #475569; }
+      [data-theme="light"] .readout b { color: #0f172a; }
+      [data-theme="light"] .tab { color: #475569; } [data-theme="light"] .tab[aria-selected="true"] { color: #0f172a; }
+      [data-theme="light"] .tab[aria-selected="true"] .i { color: #1d4ed8; }
+      [data-theme="light"] .brand h1 { color: #0f172a; }
+      [data-theme="light"] .btn.ghost { background: #fff; color: #0f172a; }
+      [data-theme="light"] .btn.ghost:hover { background: #eef2f8; }
+      [data-theme="light"] .chip { background: #fff; color: #0f172a; }
+      [data-theme="light"] .meter .num { color: #fff; }
+      [data-theme="light"] .log { background: #0b1220; }
+      [data-theme="light"] .sheet, [data-theme="light"] .caldlg { background: #fff; color: #0f172a; }
+      [data-theme="light"] .dt-guide { color: #0f172a; }
+      [data-theme="light"] #dtCanvas { background: #0b1220; }
+      [data-theme="light"] .leaflet-control-layers, [data-theme="light"] .leaflet-bar a { background: #fff; color: #0f172a; border-color: #d6deea; }
+      [data-theme="light"] .leaflet-control-attribution { background: rgba(255,255,255,.85) !important; color: #334155; }
+      [data-theme="light"] .leaflet-control-attribution a { color: #1d4ed8; }
+      [data-theme="light"] code { background: #eef2f8; }
+      [data-theme="light"] .bandrow small { color: #1d4ed8; }
+      /* night: dim red for dark-adapted eyes in the field */
+      [data-theme="night"] { --bg: #0a0000; --panel: #140303; --panel-2: #0f0202; --line: #3a0d0d; --text: #fca5a5; --muted: #d97777; --accent: #b91c1c; --accent-2: #f87171; }
+      [data-theme="night"] body { background: var(--bg); filter: none; }
+      [data-theme="night"] .card h2, [data-theme="night"] .readout, [data-theme="night"] .stat small, [data-theme="night"] .field label, [data-theme="night"] .lbl { color: #e88a8a; }
+      [data-theme="night"] .btn.primary, [data-theme="night"] .bubble, [data-theme="night"] .logo { background: #991b1b; }
+      [data-theme="night"] .btn.go { background: #7f1d1d; }
+      [data-theme="night"] .tab[aria-selected="true"], [data-theme="night"] .tab[aria-selected="true"] .i { color: #fecaca; }
+      [data-theme="night"] canvas, [data-theme="night"] #liveMap { filter: sepia(1) saturate(4) hue-rotate(-50deg) brightness(.75); }
+      [data-motion="reduce"] *, [data-motion="reduce"] *::before, [data-motion="reduce"] *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -479,6 +550,7 @@
     <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3z"/></symbol>
     <symbol id="i-gps" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></symbol>
   </defs>
 </svg>
@@ -486,7 +558,7 @@
     <header class="appbar">
       <div class="brand">
         <svg class="logo" aria-hidden="true"><use href="#i-radio"/></svg>
-        <div><h1>RF MMN Monitor</h1><small>Monitoring system · Lee McQuire</small></div>
+        <div><h1>RF MMN Monitor</h1><small>webRx · one SDR connection for SA · MT · DT</small></div>
       </div>
       <div class="chips status-chips">
         <button class="chip connchip" id="connChip" type="button" aria-haspopup="dialog" aria-controls="connSheet" title="Signal source and connection"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="dot" id="dotSource"></span><span id="txtSource">No source</span></button>
@@ -503,19 +575,22 @@
 
     <nav class="tabbar" aria-label="Sections">
       <div class="tablist" role="tablist" aria-label="Sections">
-      <button class="tab" role="tab" type="button" id="tab-receiver" data-tab="receiver" aria-controls="pane-receiver" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg><span>Receiver</span></button>
-      <button class="tab" role="tab" type="button" id="tab-map" data-tab="map" aria-controls="pane-map" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg><span>Map</span></button>
-      <button class="tab" role="tab" type="button" id="tab-monitor" data-tab="monitor" aria-controls="pane-monitor" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><span>Monitor</span></button>
-      <button class="tab" role="tab" type="button" id="tab-remote" data-tab="remote" aria-controls="pane-remote" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><span>Remote</span></button>
-      <button class="tab" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></button>
+      <button class="tab" role="tab" type="button" id="tab-sa" data-tab="sa" aria-controls="pane-sa" aria-selected="false" tabindex="-1" title="SA · Spectrum Analyser" aria-label="SA · Spectrum Analyser"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg><b>SA</b><span>Spectrum</span></button>
+      <button class="tab" role="tab" type="button" id="tab-mt" data-tab="mt" aria-controls="pane-mt" aria-selected="false" tabindex="-1" title="MT · Mobile Tracking" aria-label="MT · Mobile Tracking"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg><b>MT</b><span>Tracking</span></button>
+      <button class="tab" role="tab" type="button" id="tab-dt" data-tab="dt" aria-controls="pane-dt" aria-selected="false" tabindex="-1" title="DT · Directional Tracking" aria-label="DT · Directional Tracking"><svg class="i" aria-hidden="true"><use href="#i-compass"/></svg><b>DT</b><span>Direction</span></button>
+      <button class="tab" role="tab" type="button" id="tab-rf" data-tab="rf" aria-controls="pane-rf" aria-selected="false" tabindex="-1" title="RF Tech · Wi-Fi, cellular &amp; band tables" aria-label="RF Tech · Wi-Fi, cellular and band tables"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><b>RF</b><span>RF Tech</span></button>
+      <button class="tab" role="tab" type="button" id="tab-rm" data-tab="rm" aria-controls="pane-rm" aria-selected="false" tabindex="-1" title="RM · Remote Monitoring" aria-label="RM · Remote Monitoring"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><b>RM</b><span>Remote</span></button>
+      <button class="tab" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><b class="gear" aria-hidden="true">⚙</b><span>Settings</span></button>
       </div>
     </nav>
 
     <main id="content" tabindex="-1">
-      <section class="pane" id="pane-receiver" role="tabpanel" aria-labelledby="tab-receiver">
-        <h2 class="pane-title">Receiver</h2>
-        <div class="grid g-receiver">
-        <section class="card">
+      <section class="pane" id="pane-sa" role="tabpanel" aria-labelledby="tab-sa">
+        <h2 class="pane-title">SA · Spectrum Analyser</h2>
+        <div class="grid g-split">
+          <div class="col">
+            <div class="slot" data-slot="scope">
+        <section class="card" id="scopeCard" data-move="scope">
           <h2>Spectrum <span class="spacer"></span><span id="specUnits">dBFS</span></h2>
           <div class="scope">
             <canvas id="spectrum"></canvas>
@@ -530,6 +605,7 @@
             <span>DSP <b id="roDsp">—</b></span>
           </div>
         </section>
+            </div>
         <div class="pair">
           <section class="card">
             <h2>Band detail <span class="spacer"></span><span class="lbl" id="bandLbl">centre 50%</span></h2>
@@ -550,13 +626,68 @@
             </div>
           </section>
         </div>
+          </div>
+          <div class="col">
+        <section class="card sdr" id="listenCard">
+          <h2>Listen <span class="spacer"></span><span class="lbl" id="stereoInd"></span></h2>
+          <div class="listen-top">
+            <button class="btn ghost" id="btnAudio" type="button" aria-pressed="false">Audio off</button>
+            <label class="vol"><span class="lbl">Volume</span><input id="vol" type="range" min="0" max="1" step="0.01" aria-label="Volume" /></label>
+          </div>
+          <div class="grid2">
+            <div class="field">
+              <label for="tuneFreq">Tuned frequency (MHz)</label>
+              <input id="tuneFreq" type="number" inputmode="decimal" step="0.0001" />
+            </div>
+            <div class="field">
+              <label for="demodMode">Modulation</label>
+              <select id="demodMode"></select>
+            </div>
+            <div class="field full tune-steps"><button class="btn ghost step" type="button" data-tune-step="-100" aria-label="Tune −100 kHz">−100 k</button><button class="btn ghost step" type="button" data-tune-step="-12.5" aria-label="Tune −12.5 kHz">−12.5 k</button><button class="btn ghost step" type="button" data-tune-step="12.5" aria-label="Tune +12.5 kHz">+12.5 k</button><button class="btn ghost step" type="button" data-tune-step="100" aria-label="Tune +100 kHz">+100 k</button><button class="btn ghost" id="btnTuneCentre" type="button">= Centre</button></div>
+            <div class="field" id="bwField">
+              <label for="demodBw">Bandwidth (kHz)</label>
+              <input id="demodBw" type="number" min="0.1" step="0.1" inputmode="decimal" />
+            </div>
+            <div class="field" id="squelchField">
+              <label for="squelch">Squelch <span id="squelchVal"></span></label>
+              <input id="squelch" type="range" min="0" max="6" step="0.1" />
+            </div>
+            <label class="check" id="stereoField"><input id="stereoChk" type="checkbox" /> Stereo (WBFM)</label>
+          </div>
+          <p class="hint">Tap the spectrum to tune. Audio rides on the same SDR stream as the measurements, so listening never changes what is logged. Tuned <b id="tunedRo">—</b>.</p>
+        </section>
+          <section class="card sdr" id="tunerCard">
+            <h2>Centre frequency <span class="spacer"></span><span class="lbl">steps · presets</span></h2>
+            <div class="tuner-steps">
+              <button class="btn ghost step" type="button" data-step="-1000" aria-label="Tune minus 1 MHz">−1 M</button>
+              <button class="btn ghost step" type="button" data-step="-100" aria-label="Tune minus 100 kHz">−100 k</button>
+              <button class="btn ghost step" type="button" data-step="-10" aria-label="Tune minus 10 kHz">−10 k</button>
+              <button class="btn ghost step" type="button" data-step="10" aria-label="Tune plus 10 kHz">+10 k</button>
+              <button class="btn ghost step" type="button" data-step="100" aria-label="Tune plus 100 kHz">+100 k</button>
+              <button class="btn ghost step" type="button" data-step="1000" aria-label="Tune plus 1 MHz">+1 M</button>
+            </div>
+            <div class="presets" role="group" aria-label="Frequency presets">
+              <button class="chip preset" type="button" data-freq="100.0">FM <small>100.0</small></button>
+              <button class="chip preset" type="button" data-freq="145.5">2 m <small>145.5</small></button>
+              <button class="chip preset" type="button" data-freq="162.4">Marine <small>162.4</small></button>
+              <button class="chip preset" type="button" data-freq="433.92">ISM 433 <small>433.92</small></button>
+              <button class="chip preset" type="button" data-freq="868.0">ISM 868 <small>868.0</small></button>
+              <button class="chip preset" type="button" data-freq="935.0">GSM 900 <small>935.0</small></button>
+              <button class="chip preset" type="button" data-freq="1090.0">ADS-B <small>1090.0</small></button>
+              <button class="chip preset" type="button" data-freq="1575.42">GPS L1 <small>1575.42</small></button>
+            </div>
+          </section>
+
+          </div>
         </div>
       </section>
 
-      <section class="pane" id="pane-map" role="tabpanel" aria-labelledby="tab-map" hidden>
-        <h2 class="pane-title">Map</h2>
+      <section class="pane" id="pane-mt" role="tabpanel" aria-labelledby="tab-mt" hidden>
+        <h2 class="pane-title">MT · Mobile Tracking</h2>
         <div class="grid g-split">
-        <section class="card mapcard">
+          <div class="col">
+            <div class="slot" data-slot="map">
+        <section class="card mapcard" id="mapCard" data-move="map">
           <h2>Map <span class="spacer"></span><span class="lbl">weak <span class="legend"></span> strong</span></h2>
           <div id="liveMap" role="application" aria-label="Map of your position and route"></div>
           <div class="maptools">
@@ -566,6 +697,43 @@
             <span class="lbl">route <b id="mapDistance">0 m</b> · <span id="mapFollow">following</span></span>
           </div>
         </section>
+            </div>
+        <section class="card">
+          <h2>Timeline <span class="spacer"></span><span class="lbl"><span style="color:#60a5fa">━</span> peak <span style="color:#4ade80">━</span> band mean</span></h2>
+          <canvas id="timeline"></canvas>
+        </section>
+          </div>
+          <div class="col">
+            <section class="card">
+              <h2>Recorder</h2>
+            <section class="card">
+              <h2>Recording</h2>
+          <div class="recbox" aria-live="polite">
+            <div class="rechead">
+              <span class="recdot" id="recDot" aria-hidden="true"></span>
+              <b id="recName">No recording yet</b>
+              <span class="spacer"></span>
+              <span class="lbl" id="recSaved"></span>
+            </div>
+            <div class="lbl" id="recMeta">Press Start to record</div>
+            <div class="calline">
+              <span class="lbl" id="calStatus">Not calibrated</span>
+              <span class="spacer"></span>
+              <button class="btn ghost small" id="btnCalibrate" title="Pre-drive noise-floor calibration"><svg class="i" aria-hidden="true"><use href="#i-sliders"/></svg>Calibrate</button>
+            </div>
+            <div class="lbl" id="recHint"></div>
+            <label class="check" id="needFixRow"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
+            <div class="btns">
+              <button class="btn primary" id="btnOpenMap" title="Open this recording in the MMN map"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg>Open in Map</button>
+              <button class="btn ghost" id="btnCSV" title="Save this recording as a CSV file"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>CSV</button>
+              <button class="btn ghost" id="btnShare" title="Send the CSV to another app (email, Drive, WhatsApp…)" hidden><svg class="i" aria-hidden="true"><use href="#i-share"/></svg>Share</button>
+              <button class="btn ghost" id="btnClear" title="Keep this recording and start a new one"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>New recording</button>
+              <button class="btn ghost" id="btnSnap" title="Save the spectrum and waterfall as a picture"><svg class="i" aria-hidden="true"><use href="#i-camera"/></svg>Snapshot</button>
+            </div>
+            <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
+          </div>
+            </section>
+            </section>
         <section class="card">
           <h2>GPS location <span class="spacer"></span><span id="gpsBadge" class="lbl">—</span></h2>
           <div class="inline" style="margin-bottom:8px">
@@ -597,45 +765,75 @@
           </table>
           <div class="nmea" id="gpsNMEA"></div>
         </section>
+          </div>
         </div>
       </section>
 
-      <section class="pane" id="pane-monitor" role="tabpanel" aria-labelledby="tab-monitor" hidden>
-        <h2 class="pane-title">Monitor</h2>
+      <section class="pane" id="pane-dt" role="tabpanel" aria-labelledby="tab-dt" hidden>
+        <h2 class="pane-title">DT · Directional Tracking</h2>
         <div class="grid g-split">
           <div class="col">
-            <section class="card">
-              <h2>Recording</h2>
-          <div class="recbox" aria-live="polite">
-            <div class="rechead">
-              <span class="recdot" id="recDot" aria-hidden="true"></span>
-              <b id="recName">No recording yet</b>
-              <span class="spacer"></span>
-              <span class="lbl" id="recSaved"></span>
-            </div>
-            <div class="lbl" id="recMeta">Press Start to record</div>
-            <div class="calline">
-              <span class="lbl" id="calStatus">Not calibrated</span>
-              <span class="spacer"></span>
-              <button class="btn ghost small" id="btnCalibrate" title="Pre-drive noise-floor calibration"><svg class="i" aria-hidden="true"><use href="#i-sliders"/></svg>Calibrate</button>
-            </div>
-            <div class="lbl" id="recHint"></div>
-            <label class="check" id="needFixRow"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
-            <div class="btns">
-              <button class="btn primary" id="btnOpenMap" title="Open this recording in the MMN map"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg>Open in Map</button>
-              <button class="btn ghost" id="btnCSV" title="Save this recording as a CSV file"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>CSV</button>
-              <button class="btn ghost" id="btnShare" title="Send the CSV to another app (email, Drive, WhatsApp…)" hidden><svg class="i" aria-hidden="true"><use href="#i-share"/></svg>Share</button>
-              <button class="btn ghost" id="btnClear" title="Keep this recording and start a new one"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>New recording</button>
-              <button class="btn ghost" id="btnSnap" title="Save the spectrum and waterfall as a picture"><svg class="i" aria-hidden="true"><use href="#i-camera"/></svg>Snapshot</button>
-            </div>
-            <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
+        <section class="card" id="dtCard">
+          <h2>Max level per bearing <span class="spacer"></span><span class="lbl" id="dtTarget">—</span></h2>
+          <div class="dt-wrap">
+            <canvas id="dtCanvas" role="img" aria-label="Polar plot of the strongest level per compass bearing"></canvas>
           </div>
-            </section>
+          <div class="dt-stats">
+            <div class="stat"><small>Heading</small><b id="dtHeading">—</b></div>
+            <div class="stat"><small>Level</small><b id="dtLevel">—</b></div>
+            <div class="stat"><small>Best bearing</small><b id="dtBest">—</b></div>
+            <div class="stat"><small>Coverage</small><b id="dtCoverage">—</b></div>
+            <div class="stat"><small>Fixes</small><b id="dtFixCount">0</b></div>
+          </div>
+          <p class="hint dt-guide" id="dtGuide" aria-live="polite"></p>
+          <div class="btns">
+            <button class="btn primary" id="btnDtFix" type="button"><svg class="i" aria-hidden="true"><use href="#i-gps"/></svg>Save fix</button>
+            <button class="btn ghost" id="btnDtReset" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear plot</button>
+            <button class="btn ghost" id="btnDtClearFixes" type="button">Clear fixes</button>
+          </div>
+        </section>
+            <div class="slot slot-mini" data-slot="scope"></div>
+          </div>
+          <div class="col">
+            <div class="slot" data-slot="map"></div>
         <section class="card">
-          <h2>Timeline <span class="spacer"></span><span class="lbl"><span style="color:#60a5fa">━</span> peak <span style="color:#4ade80">━</span> band mean</span></h2>
-          <canvas id="timeline"></canvas>
+          <h2>Target &amp; heading</h2>
+          <div class="grid2">
+            <div class="field">
+              <label for="dtFreq">Target frequency (MHz)</label>
+              <input id="dtFreq" type="number" inputmode="decimal" step="0.0001" placeholder="follows tuned" />
+            </div>
+            <div class="field">
+              <label for="dtBw">Target bandwidth (kHz)</label>
+              <input id="dtBw" type="number" min="1" step="1" inputmode="decimal" />
+            </div>
+            <div class="field">
+              <label for="dtSource">Heading source</label>
+              <select id="dtSource">
+                <option value="compass">Phone compass</option>
+                <option value="course">GPS course (moving)</option>
+                <option value="manual">Manual (type the bearing)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="dtOffset">North / mount offset (°)</label>
+              <input id="dtOffset" type="number" step="0.5" inputmode="decimal" />
+            </div>
+            <div class="field full" id="dtManualField">
+              <label for="dtManual">Manual bearing <span id="dtManualVal"></span></label>
+              <input id="dtManual" type="range" min="0" max="359" step="1" />
+            </div>
+            <div class="field full"><button class="btn ghost" id="btnDtCompass" type="button"><svg class="i" aria-hidden="true"><use href="#i-compass"/></svg>Turn on compass</button></div>
+          </div>
+          <p class="hint">Bearings need a directional antenna (Yagi, loop, or your body as a shield); a whip gives an almost round plot. The phone compass reads magnetic north — add the local declination (about −25° in the Western Cape) to the offset for true bearings. Each fix is drawn as a line on the map.</p>
         </section>
           </div>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-rf" role="tabpanel" aria-labelledby="tab-rf" hidden>
+        <h2 class="pane-title">RF Tech</h2>
+        <div class="grid g-split">
           <div class="col">
         <section class="card">
           <h2>Network signal detail <span class="spacer"></span><span class="lbl">estimated</span></h2>
@@ -646,62 +844,61 @@
             <tr><td>Max downlink</td><td id="nDownMax">—</td></tr>
             <tr><td>RTT</td><td id="nRTT">—</td></tr>
             <tr><td>Est. quality</td><td id="nQuality">—</td></tr>
-            <tr><td>Signal est.</td><td id="nRSSI">—</td></tr>
+            <tr><td>Signal est. (not measured)</td><td id="nRSSI">—</td></tr>
             <tr><td>Data saver</td><td id="nSave">—</td></tr>
           </table>
           <div class="bar"><div id="signalBar"></div></div>
           <p class="hint">Browsers can't read raw Wi-Fi/cellular RSSI; these values are estimated from the Network Information API (Chrome/Edge).</p>
         </section>
-        <section class="card">
-          <h2>System log <span class="spacer"></span><span class="lbl" id="measState">Idle</span></h2>
-          <div class="log" id="logBox"></div>
-        </section>
+            <section class="card">
+              <h2>What a browser can and can't see</h2>
+              <ul class="plain">
+                <li><b>Can:</b> connection type, effective type (4g/3g…), estimated downlink and round-trip time, data saver (Network Information API, Chrome/Edge). Shown above and logged when the source is Wi-Fi or Cellular.</li>
+                <li><b>Can't:</b> scan Wi-Fi networks, read RSSI/SSID/BSSID, or read cell ID, band or signal (RSRP/RSRQ). No browser exposes these.</li>
+                <li><b>For real RF:</b> use an SDR in SA — tap a band below to tune it. For phone radio readings, the <b>Radio Bridge</b> Android app (branch <code>radio-bridge</code>, in progress) is planned to feed Wi-Fi, cellular, BLE and GNSS data into RM.</li>
+              </ul>
+              <div class="btns" style="margin-top:12px"><button class="btn ghost" type="button" id="btnRfWifi">Monitor Wi-Fi quality</button><button class="btn ghost" type="button" id="btnRfCell">Monitor cellular quality</button></div>
+            </section>
+          </div>
+          <div class="col">
+            <section class="card">
+              <h2>Band tables <span class="spacer"></span><span class="lbl">tap to tune in SA</span></h2>
+              <div class="field" style="margin-bottom:12px">
+                <label for="bandSet">Table</label>
+                <select id="bandSet">
+                  <option value="cell">South Africa — cellular downlink</option>
+                  <option value="wifi24">Wi-Fi 2.4 GHz channels</option>
+                  <option value="wifi5">Wi-Fi 5 GHz channels</option>
+                  <option value="misc">Other useful bands</option>
+                </select>
+              </div>
+              <div class="bandtable" id="bandTable"></div>
+              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.7 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+            </section>
           </div>
         </div>
       </section>
 
-      <section class="pane" id="pane-remote" role="tabpanel" aria-labelledby="tab-remote" hidden>
-        <h2 class="pane-title">Remote</h2>
+      <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden>
+        <h2 class="pane-title">RM · Remote Monitoring</h2>
         <div class="grid g-split">
-          <section class="card remote-main">
-            <h2>Control <span class="spacer"></span><span class="lbl" id="remoteState">Idle</span></h2>
-            <div class="remote-level" aria-live="off">
-              <div><small>Band level</small><b id="remoteLevel">—</b></div>
-              <div><small>Centre</small><b id="remoteFreq">—</b></div>
-            </div>
-            <div class="btns big">
-              <button class="btn primary" id="mBtnConnect" type="button">Connect</button>
-              <button class="btn go" id="mBtnStart" type="button"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg>Start</button>
-              <button class="btn stop" id="mBtnStop" type="button"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
-            </div>
-          </section>
-          <section class="card sdr" id="tunerCard">
-            <h2>Tuner <span class="spacer"></span><span class="lbl">MHz</span></h2>
-            <div class="tuner-steps">
-              <button class="btn ghost step" type="button" data-step="-1000" aria-label="Tune minus 1 MHz">−1 M</button>
-              <button class="btn ghost step" type="button" data-step="-100" aria-label="Tune minus 100 kHz">−100 k</button>
-              <button class="btn ghost step" type="button" data-step="-10" aria-label="Tune minus 10 kHz">−10 k</button>
-              <button class="btn ghost step" type="button" data-step="10" aria-label="Tune plus 10 kHz">+10 k</button>
-              <button class="btn ghost step" type="button" data-step="100" aria-label="Tune plus 100 kHz">+100 k</button>
-              <button class="btn ghost step" type="button" data-step="1000" aria-label="Tune plus 1 MHz">+1 M</button>
-            </div>
-            <div class="presets" role="group" aria-label="Frequency presets">
-              <button class="chip preset" type="button" data-freq="100.0">FM <small>100.0</small></button>
-              <button class="chip preset" type="button" data-freq="145.5">2 m <small>145.5</small></button>
-              <button class="chip preset" type="button" data-freq="162.4">Marine <small>162.4</small></button>
-              <button class="chip preset" type="button" data-freq="433.92">ISM 433 <small>433.92</small></button>
-              <button class="chip preset" type="button" data-freq="868.0">ISM 868 <small>868.0</small></button>
-              <button class="chip preset" type="button" data-freq="935.0">GSM 900 <small>935.0</small></button>
-              <button class="chip preset" type="button" data-freq="1090.0">ADS-B <small>1090.0</small></button>
-              <button class="chip preset" type="button" data-freq="1575.42">GPS L1 <small>1575.42</small></button>
-            </div>
+          <section class="card">
+            <h2>Remote Monitoring <span class="spacer"></span><span class="lbl">coming next</span></h2>
+            <p>Connect remote webRx nodes and see their measurements here, next to your own. Planned building blocks:</p>
+            <ul class="plain">
+              <li><b>Same record format</b> as the recorder and DT fixes, so a remote node's data lands on the MT map and DT plot unchanged.</li>
+              <li><b>Radio Bridge</b> (branch <code>radio-bridge</code>, Android, work in progress): a phone app that serves Wi-Fi, cellular, BLE and GNSS readings over local HTTP.</li>
+              <li>A relay (WebSocket/WebRTC) for nodes outside your network — needs a hosting decision first.</li>
+            </ul>
           </section>
           <section class="card">
-            <h2>Open</h2>
+            <h2>Other pages</h2>
             <div class="linklist">
-              <a class="btn ghost" href="index.html"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg>Full radio receiver</a>
-              <a class="btn ghost" href="map.html"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg>MMN map &amp; saved recordings</a>
+              <a class="btn ghost" href="map.html"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg>MMN map — heat-map, pins, coverage, licence vs measured</a>
+              <a class="btn ghost" href="index.html"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg>Classic receiver (opens the SDR itself)</a>
+              <a class="btn ghost" href="help.html"><svg class="i" aria-hidden="true"><use href="#i-external"/></svg>Help</a>
             </div>
+            <p class="hint">The MMN map doesn't use the SDR, so it opens alongside a running measurement. The classic receiver is a separate page with its own connection: disconnect here first.</p>
           </section>
         </div>
       </section>
@@ -709,6 +906,10 @@
       <section class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
         <h2 class="pane-title">Settings</h2>
         <div class="grid g-split">
+          <div class="col">
+          <section class="card">
+            <h2>Receiver &amp; logging</h2>
+            <div class="grid2">
           <section class="card">
             <h2>Receiver &amp; logging</h2>
             <div class="grid2">
@@ -783,6 +984,28 @@
             <label class="check sdr"><input id="biasTee" type="checkbox" /> Antenna power / bias-T</label>
             </div>
           </section>
+            </div>
+          </section>
+          </div>
+          <div class="col">
+          <section class="card">
+            <h2>Look &amp; feel</h2>
+            <div class="grid2">
+              <div class="field">
+                <label for="setTheme">Theme</label>
+                <select id="setTheme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">Match system</option><option value="night">Night (red)</option></select>
+              </div>
+              <div class="field">
+                <label for="setDensity">Density</label>
+                <select id="setDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select>
+              </div>
+              <div class="field">
+                <label for="setStartTab">Open on</label>
+                <select id="setStartTab"><option value="last">Last tab used</option><option value="sa">SA · Spectrum</option><option value="mt">MT · Tracking</option><option value="dt">DT · Direction</option><option value="rf">RF Tech</option></select>
+              </div>
+              <label class="check"><input id="setMotion" type="checkbox" /> Reduce motion</label>
+            </div>
+          </section>
           <section class="card">
             <h2>App</h2>
             <div class="linklist">
@@ -791,9 +1014,15 @@
             </div>
             <p class="hint">Settings are saved on this device. The receiver and the monitor can't use the same SDR at the same time.</p>
           </section>
+        <section class="card">
+          <h2>System log <span class="spacer"></span><span class="lbl" id="measState">Idle</span></h2>
+          <div class="log" id="logBox"></div>
+        </section>
+          </div>
         </div>
       </section>
     </main>
+
 
     <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source">
       <svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="bdot" id="bubbleDot"></span>
@@ -908,12 +1137,16 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const TABS = ["receiver", "map", "monitor", "remote", "settings"];
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  const TABS = ["sa", "mt", "dt", "rf", "rm", "settings"];
+  const LEGACY = { receiver: "sa", map: "mt", monitor: "mt", remote: "rm" };
+  const fix = (n) => LEGACY[n] || n;
+  const sysReduce = matchMedia("(prefers-reduced-motion: reduce)");
+  const reduce = { get matches() { return sysReduce.matches || document.documentElement.dataset.motion === "reduce"; } };
   let current = null;
 
   function show(name, opts = {}) {
-    if (!TABS.includes(name)) name = "receiver";
+    name = fix(name);
+    if (!TABS.includes(name)) name = "sa";
     if (name === current) { if (opts.hash !== false && location.hash !== "#" + name) history.replaceState(null, "", "#" + name); return; }
     for (const t of TABS) {
       const tab = $("tab-" + t), pane = $("pane-" + t), on = t === name;
@@ -925,6 +1158,13 @@
       }
     }
     current = name;
+    document.body.dataset.tab = name;
+    // One spectrum and one map, moved into whichever tab is showing them.
+    const pane = $("pane-" + name);
+    document.querySelectorAll("[data-move]").forEach((el) => {
+      const slot = pane.querySelector(`[data-slot="${el.dataset.move}"]`);
+      if (slot && el.parentElement !== slot) slot.appendChild(el);
+    });
     try { localStorage.setItem("monitor.tab", name); } catch (_) {}
     if (opts.hash !== false && location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
     if (opts.focus) $("tab-" + name).focus();
@@ -947,8 +1187,65 @@
       else if (e.key === "End") { e.preventDefault(); show(TABS[TABS.length - 1], { focus: true }); }
     });
   });
-  let start = location.hash.slice(1);
-  if (!TABS.includes(start)) { try { start = localStorage.getItem("monitor.tab") || "receiver"; } catch (_) { start = "receiver"; } }
+  // ── RF Tech: band tables ──
+  const BANDS = {
+    cell: [["B28 · LTE 700", 758, 803], ["B20 · LTE 800", 791, 821], ["B8 · GSM/LTE 900", 925, 960], ["B3 · GSM/LTE 1800", 1805, 1880], ["B1 · UMTS/LTE 2100", 2110, 2170], ["B40 · LTE TDD 2300", 2300, 2400], ["B38 · LTE TDD 2600", 2570, 2620], ["B7 · LTE 2600", 2620, 2690], ["n78 · 5G 3500", 3300, 3800]],
+    wifi24: Array.from({ length: 14 }, (_, i) => { const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c; return [`Channel ${c}`, f - 11, f + 11, f]; }),
+    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165].map((c) => { const f = 5000 + 5 * c; return [`Channel ${c}${c >= 52 && c <= 140 ? " · DFS" : ""}`, f - 10, f + 10, f]; }),
+    misc: [["FM broadcast", 87.5, 108], ["Airband (AM)", 118, 137], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05], ["ISM 433", 433.05, 434.79], ["ISM 868", 868, 868.6], ["ADS-B", 1089, 1091, 1090], ["GPS L1", 1574.4, 1576.4, 1575.42]],
+  };
+  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(3).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
+  const renderBands = () => {
+    const max = parseFloat($("freq").max) || 1766;
+    const rows = BANDS[$("bandSet").value];
+    $("bandTable").innerHTML = rows.map(([n, lo, hi, c]) => {
+      const ctr = c ?? (lo + hi) / 2, out = ctr > max;
+      return `<button type="button" class="bandrow" data-tune="${ctr}" ${out ? 'aria-disabled="true"' : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span><small>${out ? "out of range" : "tune " + fmt(ctr)}</small></button>`;
+    }).join("");
+  };
+  $("bandSet").addEventListener("change", renderBands);
+  $("bandTable").addEventListener("click", (e) => {
+    const b = e.target.closest(".bandrow");
+    if (!b || b.getAttribute("aria-disabled") === "true") return;
+    const f = $("freq");
+    f.value = String(+parseFloat(b.dataset.tune).toFixed(4));
+    f.dispatchEvent(new Event("change", { bubbles: true }));
+    show("sa");
+  });
+  setTimeout(renderBands, 0);
+  window.addEventListener("webrx:tab", (e) => { if (e.detail === "rf") renderBands(); });
+  const pickSource = (v) => { const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change")); };
+  $("btnRfWifi").addEventListener("click", () => pickSource("wifi"));
+  $("btnRfCell").addEventListener("click", () => pickSource("cellular"));
+
+  // ── look & feel settings ──
+  const UI_KEY = "webrx.ui.v1";
+  let ui = { theme: "dark", density: "comfortable", startTab: "last", motion: false };
+  try { ui = { ...ui, ...JSON.parse(localStorage.getItem(UI_KEY) || "{}") }; } catch (_) {}
+  const sysLight = matchMedia("(prefers-color-scheme: light)");
+  const applyUi = () => {
+    const t = ui.theme === "system" ? (sysLight.matches ? "light" : "dark") : ui.theme;
+    document.documentElement.dataset.theme = t;
+    document.documentElement.dataset.density = ui.density;
+    document.documentElement.dataset.motion = ui.motion ? "reduce" : "";
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = t === "light" ? "#f4f6fb" : t === "night" ? "#0a0000" : "#0a101c";
+    try { localStorage.setItem(UI_KEY, JSON.stringify(ui)); } catch (_) {}
+    window.dispatchEvent(new Event("resize"));
+  };
+  for (const [id, key, attr] of [["setTheme", "theme", "value"], ["setDensity", "density", "value"], ["setStartTab", "startTab", "value"], ["setMotion", "motion", "checked"]]) {
+    const el = $(id);
+    el[attr] = ui[key];
+    el.addEventListener("change", () => { ui[key] = el[attr]; applyUi(); });
+  }
+  sysLight.addEventListener("change", applyUi);
+  applyUi();
+
+  let start = fix(location.hash.slice(1));
+  if (!TABS.includes(start)) {
+    if (ui.startTab !== "last") start = ui.startTab;
+    else { try { start = fix(localStorage.getItem("monitor.tab") || "sa"); } catch (_) { start = "sa"; } }
+  }
   show(start, { hash: false, scrollTop: false });
   window.addEventListener("hashchange", () => show(location.hash.slice(1), { hash: false }));
 
@@ -979,15 +1276,11 @@
     chips.appendChild(c);
     const sync = () => { c.firstChild.className = $("dot" + k).className; c.lastChild.textContent = $("txt" + k).textContent; };
     observe($("dot" + k), sync, ["class"]); observe($("txt" + k), sync);
-    if (k === "Gps") c.addEventListener("click", () => { sheet.close(); show("map"); });
+    if (k === "Gps") c.addEventListener("click", () => { sheet.close(); show("mt"); });
   }
 
   const stop = $("btnStop");
   observe(stop, () => { $("recPill").hidden = stop.disabled; }, ["disabled"]);
-  observe($("measState"), () => { $("remoteState").textContent = $("measState").textContent; });
-  const lvl = () => { const n = $("levelNum").textContent; $("remoteLevel").textContent = n === "—" ? "—" : `${n} ${$("levelUnits").textContent}`; };
-  observe($("levelNum"), lvl);
-  observe($("roCenter"), () => { $("remoteFreq").textContent = $("roCenter").textContent; });
 
   // ── tuner ──
   const freq = $("freq");
@@ -1000,7 +1293,7 @@
   };
   const markPreset = () => document.querySelectorAll(".preset").forEach((b) =>
     b.setAttribute("aria-pressed", String(Math.abs(parseFloat(b.dataset.freq) - parseFloat(freq.value)) < 1e-6)));
-  document.querySelectorAll(".step").forEach((b) => b.addEventListener("click", () => setFreq(parseFloat(freq.value) + parseFloat(b.dataset.step) / 1000)));
+  document.querySelectorAll("[data-step]").forEach((b) => b.addEventListener("click", () => setFreq(parseFloat(freq.value) + parseFloat(b.dataset.step) / 1000)));
   document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => setFreq(parseFloat(b.dataset.freq))));
   freq.addEventListener("change", markPreset);
   setTimeout(markPreset, 0);

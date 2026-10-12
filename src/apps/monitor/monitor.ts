@@ -22,6 +22,8 @@ import {
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
+import { shared } from "./listen.js";
+import { dt, formatBearing, norm } from "./dt.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
   Calibration,
@@ -401,6 +403,7 @@ async function sdrLoop(my: number) {
     saveSettings();
     fillRates(sdr?.kind ?? "rtlsdr");
   }
+  shared.setSampleRate(cfg.sampleRate);
   await ctl(() => applyTuning(dev));
   await ctl(() => dev.setGain(cfg.gain));
   await ctl(() => dev.enableBiasTee(cfg.biasTee));
@@ -431,9 +434,18 @@ async function sdrLoop(my: number) {
     a = b;
     b = read();
     if (session !== my) return;
-    processBlock(new Uint8Array(block.data));
+    const bytes = new Uint8Array(block.data);
+    processBlock(bytes);
+    // Same block, same connection: audio and any other receivers.
+    try {
+      shared.feed(bytes, block.frequency || cfg.freqMHz * 1e6);
+    } catch (e: any) {
+      if (!listenErr) log(`Audio: ${e?.message ?? e}`, "er");
+      listenErr = true;
+    }
   }
 }
+let listenErr = false;
 
 function processBlock(bytes: Uint8Array) {
   if (!psd || psd.n !== cfg.fftSize) resetSpectrum();
@@ -457,6 +469,7 @@ function processBlock(bytes: Uint8Array) {
   }
   ++frames;
   lastStats = computeStats();
+  if (isSdrMode()) dt.push(levelAt(dtFreqHz(), dt.st.bwHz), gps.fix?.headingDeg);
   pushWaterfall();
   const now = performance.now();
   if (now - lastTimelineAt > 500) {
@@ -482,6 +495,29 @@ function processBlock(bytes: Uint8Array) {
 function computeStats() {
   const l = spectrumLevels(spec, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
   return { peak: l.peak, peakHz: l.peakHz, band: l.band, spec: l.spec };
+}
+
+/** Mean power (dB, linear average) of the averaged spectrum in [f - bw/2, f + bw/2]. */
+function levelAt(freqHz: number, bw: number): number {
+  const n = spec.length;
+  if (!n) return NaN;
+  const lo = cfg.freqMHz * 1e6 - cfg.sampleRate / 2;
+  const k0 = Math.max(0, Math.floor(((freqHz - bw / 2 - lo) / cfg.sampleRate) * n));
+  const k1 = Math.min(n - 1, Math.ceil(((freqHz + bw / 2 - lo) / cfg.sampleRate) * n));
+  let sum = 0, cnt = 0;
+  for (let k = k0; k <= k1; ++k) {
+    const v = spec[k];
+    if (Number.isFinite(v)) { sum += Math.pow(10, v / 10); ++cnt; }
+  }
+  return cnt ? 10 * Math.log10(sum / cnt) : NaN;
+}
+
+function tunedHz(): number {
+  return cfg.freqMHz * 1e6 + shared.cfg.offsetHz;
+}
+
+function dtFreqHz(): number {
+  return dt.st.freqHz ?? tunedHz();
 }
 
 function bwHz(): number | null {
@@ -1452,6 +1488,24 @@ function drawSpectrum() {
     ctx.fillStyle = "rgba(59,130,246,0.08)";
     ctx.fillRect(left + (b0 / nb) * pw, 0, ((b1 - b0) / nb) * pw, ph);
   }
+  // tuned frequency (listening) and DT target
+  if (isSdrMode()) {
+    const xOf = (hz: number) => left + ((hz - cfg.freqMHz * 1e6) / cfg.sampleRate + 0.5) * pw;
+    const dtx0 = xOf(dtFreqHz() - dt.st.bwHz / 2), dtx1 = xOf(dtFreqHz() + dt.st.bwHz / 2);
+    if (dtx1 > left && dtx0 < W) {
+      ctx.fillStyle = "rgba(34,197,94,0.10)";
+      ctx.fillRect(Math.max(left, dtx0), 0, Math.max(1, Math.min(W, dtx1) - Math.max(left, dtx0)), ph);
+    }
+    const tx = Math.round(xOf(tunedHz())) + 0.5;
+    if (tx >= left && tx <= W) {
+      ctx.strokeStyle = shared.audioOn ? "rgba(248,113,113,0.95)" : "rgba(248,113,113,0.5)";
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(tx, 0);
+      ctx.lineTo(tx, ph);
+      ctx.stroke();
+    }
+  }
   // calibrated threshold line
   {
     const c = activeCalibration();
@@ -1680,6 +1734,7 @@ function updateReadout() {
 function frame() {
   if (dirty) {
     dirty = false;
+    renderDt();
     updateAutoRange();
     drawSpectrum();
     drawWaterfall();
@@ -1874,10 +1929,11 @@ function updateSourceUi() {
 }
 
 function updateButtons() {
-  for (const id of ["btnStart", "mBtnStart"]) ($(id) as HTMLButtonElement).disabled = running;
-  for (const id of ["btnStop", "mBtnStop"]) ($(id) as HTMLButtonElement).disabled = !running;
+  for (const id of ["btnStart", "mBtnStart"]) { const b = $(id) as HTMLButtonElement | null; if (b) b.disabled = running; }
+  for (const id of ["btnStop", "mBtnStop"]) { const b = $(id) as HTMLButtonElement | null; if (b) b.disabled = !running; }
   for (const id of ["btnConnect", "mBtnConnect"]) {
-    const b = $(id) as HTMLButtonElement;
+    const b = $(id) as HTMLButtonElement | null;
+    if (!b) continue;
     b.textContent = device ? "Disconnect" : "Connect";
     b.disabled = running && !device;
   }
@@ -2075,11 +2131,13 @@ function bind() {
     updateButtons();
   };
   $("btnConnect").addEventListener("click", onConnectClick);
-  $("mBtnConnect").addEventListener("click", onConnectClick);
+  $("mBtnConnect")?.addEventListener("click", onConnectClick);
   $("btnStart").addEventListener("click", () => start());
-  $("mBtnStart").addEventListener("click", () => start());
+  $("mBtnStart")?.addEventListener("click", () => start());
   $("btnStop").addEventListener("click", () => stop());
-  $("mBtnStop").addEventListener("click", () => stop());
+  $("mBtnStop")?.addEventListener("click", () => stop());
+  bindListen();
+  bindDt();
   $("btnSnap").addEventListener("click", snapshot);
   $("btnCSV").addEventListener("click", () => exportCsv("download"));
   $("btnShare").hidden = !canShareFiles();
@@ -2157,6 +2215,194 @@ function bind() {
     liveMap?.invalidate();
   });
   bound = true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SA — listening on the shared stream
+// ═══════════════════════════════════════════════════════════════════
+
+function renderListen() {
+  const c = shared.cfg;
+  const btn = document.getElementById("btnAudio") as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.setAttribute("aria-pressed", String(shared.audioOn));
+  btn.textContent = shared.audioOn ? "Audio on" : "Audio off";
+  btn.classList.toggle("primary", shared.audioOn);
+  const info = shared.modeInfo();
+  ($("bwField") as HTMLElement).hidden = !info.hasBandwidth;
+  ($("stereoField") as HTMLElement).hidden = !info.hasStereo;
+  ($("squelchField") as HTMLElement).hidden = !info.hasSquelch;
+  const bw = $<HTMLInputElement>("demodBw");
+  if (document.activeElement !== bw) bw.value = String(Math.round((c.bandwidth ?? info.defaultBandwidth ?? 0) / 100) / 10);
+  $("squelchVal").textContent = c.squelch ? c.squelch.toFixed(1) : "off";
+  const t = $<HTMLInputElement>("tuneFreq");
+  if (document.activeElement !== t) t.value = (tunedHz() / 1e6).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  $("stereoInd").textContent = shared.audioOn && info.hasStereo && c.stereo ? (shared.stereoStatus ? "stereo ●" : "mono") : "";
+  $("tunedRo").textContent = freqLabel(tunedHz());
+  dirty = true;
+}
+
+/** Tune the listening frequency; re-centre the SDR when it falls outside the span. */
+function tuneTo(hz: number) {
+  if (!Number.isFinite(hz) || hz <= 0) return;
+  const centre = cfg.freqMHz * 1e6;
+  const edge = cfg.sampleRate * 0.45;
+  if (Math.abs(hz - centre) <= edge) {
+    shared.set({ offsetHz: Math.round(hz - centre) });
+  } else {
+    shared.set({ offsetHz: 0 });
+    const f = $<HTMLInputElement>("freq");
+    f.value = String(+(hz / 1e6).toFixed(6));
+    f.dispatchEvent(new Event("change"));
+  }
+  renderListen();
+}
+
+function bindListen() {
+  const mode = document.getElementById("demodMode") as HTMLSelectElement | null;
+  if (!mode) return;
+  for (const s of shared.schemes()) mode.add(new Option(s, s));
+  mode.value = shared.cfg.scheme;
+  mode.addEventListener("change", () => shared.set({ scheme: mode.value, bandwidth: null }));
+  $("btnAudio").addEventListener("click", () => {
+    shared.setAudio(!shared.audioOn);
+    log(shared.audioOn ? `Audio on — ${shared.cfg.scheme} at ${freqLabel(tunedHz())}` : "Audio off");
+    if (shared.audioOn && !running) log("Press Start to hear the receiver (the same stream feeds the measurements)", "wn");
+  });
+  const vol = $<HTMLInputElement>("vol");
+  vol.value = String(shared.cfg.volume);
+  vol.addEventListener("input", () => shared.set({ volume: Number(vol.value) }));
+  const bw = $<HTMLInputElement>("demodBw");
+  bw.addEventListener("change", () => {
+    const v = parseFloat(bw.value);
+    shared.set({ bandwidth: Number.isFinite(v) && v > 0 ? v * 1000 : null });
+  });
+  const st = $<HTMLInputElement>("stereoChk");
+  st.checked = shared.cfg.stereo;
+  st.addEventListener("change", () => shared.set({ stereo: st.checked }));
+  const sq = $<HTMLInputElement>("squelch");
+  sq.value = String(shared.cfg.squelch);
+  sq.addEventListener("input", () => shared.set({ squelch: Number(sq.value) }));
+  const t = $<HTMLInputElement>("tuneFreq");
+  t.addEventListener("change", () => tuneTo(parseFloat(t.value) * 1e6));
+  $("btnTuneCentre").addEventListener("click", () => tuneTo(cfg.freqMHz * 1e6));
+  document.querySelectorAll<HTMLButtonElement>("[data-tune-step]").forEach((b) =>
+    b.addEventListener("click", () => tuneTo(tunedHz() + Number(b.dataset.tuneStep) * 1000))
+  );
+  // Tap the spectrum to tune there.
+  const sp = $<HTMLCanvasElement>("spectrum");
+  sp.addEventListener("click", (e) => {
+    if (!isSdrMode()) return;
+    const r = sp.getBoundingClientRect();
+    const left = 38;
+    const x = (e.clientX - r.left - left) / Math.max(1, r.width - left);
+    if (x < 0 || x > 1) return;
+    const step = Math.max(1000, cfg.sampleRate / 2048);
+    tuneTo(Math.round((cfg.freqMHz * 1e6 + (x - 0.5) * cfg.sampleRate) / step) * step);
+  });
+  $("freq").addEventListener("change", () => setTimeout(renderListen, 0));
+  shared.onChange = renderListen;
+  renderListen();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DT — directional tracking (polar max-hold per bearing)
+// ═══════════════════════════════════════════════════════════════════
+
+function renderDt() {
+  const pane = document.getElementById("pane-dt");
+  if (!pane || pane.hidden) return;
+  const units = cfg.cal ? "dBm" : "dBFS";
+  dt.draw($<HTMLCanvasElement>("dtCanvas"), units);
+  $("dtHeading").textContent = dt.heading !== undefined ? formatBearing(dt.heading) : "—";
+  $("dtLevel").textContent = dt.level !== undefined ? `${dt.level.toFixed(1)} ${units}` : "—";
+  const b = dt.best();
+  $("dtBest").textContent = b ? formatBearing(b.bearing) : "—";
+  $("dtCoverage").textContent = `${dt.coverage()}° / 360°`;
+  $("dtFixCount").textContent = String(dt.st.fixes.length);
+  $("dtGuide").textContent = running ? dt.guidance() : "Press Start, then turn slowly through a full circle.";
+  $("dtTarget").textContent = `${freqLabel(dtFreqHz())} · ${dt.st.bwHz / 1000} kHz`;
+}
+
+function renderDtFixes() {
+  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, label: `Fix ${i + 1}: ${formatBearing(f.bearing)} · ${f.level.toFixed(1)} dB · ${freqLabel(f.freqHz)}` })));
+}
+
+function bindDt() {
+  if (!document.getElementById("dtCanvas")) return;
+  const fq = $<HTMLInputElement>("dtFreq");
+  fq.value = dt.st.freqHz ? String(dt.st.freqHz / 1e6) : "";
+  fq.addEventListener("change", () => {
+    const v = parseFloat(fq.value);
+    dt.st.freqHz = Number.isFinite(v) && v > 0 ? v * 1e6 : null;
+    if (dt.st.freqHz && Math.abs(dt.st.freqHz - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
+    dt.reset();
+    dt.save(true);
+    dirty = true;
+  });
+  const bw = $<HTMLInputElement>("dtBw");
+  bw.value = String(dt.st.bwHz / 1000);
+  bw.addEventListener("change", () => {
+    const v = parseFloat(bw.value);
+    if (Number.isFinite(v) && v > 0) dt.st.bwHz = v * 1000;
+    dt.reset();
+    dirty = true;
+  });
+  const src = $<HTMLSelectElement>("dtSource");
+  const man = $<HTMLInputElement>("dtManual");
+  const showMan = () => ($("dtManualField").hidden = dt.st.source !== "manual");
+  src.value = dt.st.source;
+  src.addEventListener("change", () => {
+    dt.st.source = src.value as any;
+    dt.save(true);
+    showMan();
+    if (dt.st.source === "compass" && compass.status.state !== "on") $("btnCompass").click();
+  });
+  man.value = String(dt.st.manual);
+  man.addEventListener("input", () => {
+    dt.st.manual = Number(man.value);
+    $("dtManualVal").textContent = `${man.value}°`;
+    dirty = true;
+  });
+  $("dtManualVal").textContent = `${man.value}°`;
+  const off = $<HTMLInputElement>("dtOffset");
+  off.value = String(dt.st.northOffset);
+  off.addEventListener("change", () => {
+    const v = parseFloat(off.value);
+    dt.st.northOffset = Number.isFinite(v) ? v : 0;
+    dt.save(true);
+  });
+  showMan();
+  $("btnDtReset").addEventListener("click", () => {
+    dt.reset();
+    log("DT polar plot cleared");
+    dirty = true;
+  });
+  $("btnDtFix").addEventListener("click", () => {
+    const f = gps.fix;
+    if (!f) return log("Save fix needs a GPS position (MT tab → Connect GPS)", "wn");
+    const fix = dt.addFix(f.lat, f.lon, dtFreqHz());
+    if (!fix) return log("No bearing measured yet — press Start and turn through a circle", "wn");
+    log(`DT fix ${dt.st.fixes.length}: ${formatBearing(fix.bearing)} at ${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`, "ok");
+    renderDtFixes();
+    dt.reset();
+    dirty = true;
+  });
+  $("btnDtClearFixes").addEventListener("click", () => {
+    dt.clearFixes();
+    renderDtFixes();
+    dirty = true;
+  });
+  $("btnDtCompass").addEventListener("click", () => $("btnCompass").click());
+  setTimeout(renderDtFixes, 500);
+  window.addEventListener("webrx:tab", () => (dirty = true));
+  setInterval(() => {
+    // keep the needle moving when the stream is stopped
+    if (!running) {
+      dt.heading = dt.readHeading(gps.fix?.headingDeg);
+      dirty = true;
+    }
+  }, 250);
 }
 
 // ═══════════════════════════════════════════════════════════════════
