@@ -22,6 +22,7 @@ import {
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
+import { initWifiAnalyser } from "./wifi-ui.js";
 import { shared } from "./listen.js";
 import { analyser, CMAP_NAMES, type Src } from "./analyser.js";
 import * as sess from "./sessions.js";
@@ -3693,6 +3694,7 @@ export function initMonitor() {
   }
 
   restoreRecording();
+  initWifiAnalyser();
   requestAnimationFrame(frame);
   dirty = true;
 }

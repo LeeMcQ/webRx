@@ -466,6 +466,18 @@
       .bandrow[aria-disabled="true"] { opacity: .5; cursor: not-allowed; border-style: dashed; filter: grayscale(1); }
       .bandrow[aria-disabled="true"]:hover { border-color: var(--line, rgba(255,255,255,.12)); }
       .bandrow i { grid-column: 1; font-style: normal; font-size: var(--t12); color: var(--muted); }
+      .wfdemo { display: flex; gap: 8px; align-items: center; font-size: var(--t13); margin-bottom: 8px; }
+      .lbl.demo { color: #fbbf24; }
+      .wfempty { padding: 12px; border: 1px dashed rgba(148,163,184,.35); border-radius: 8px; font-size: var(--t13); }
+      #wfViews h3 { font-size: var(--t13); margin: 14px 0 6px; }
+      #wfBand { display: flex; gap: 6px; margin-top: 12px; } #wfBand [aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+      .wfgraph { height: 200px; }
+      .wfratewrap { max-height: 220px; overflow: auto; } .wfrate tr.best th, .wfrate tr.best td { color: var(--ok); font-weight: 600; } .stars { letter-spacing: 1px; }
+      .wfaps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+      .wfap { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 8px 10px; border-left: 4px solid var(--c); border-radius: 6px; background: rgba(148,163,184,.06); min-width: 0; }
+      .wfap.me { background: rgba(96,165,250,.12); }
+      .wfap code, .wfap small { display: block; font-size: var(--t12); color: var(--muted); overflow-wrap: anywhere; }
+      .wfrssi { font: 600 var(--t13) var(--mono); color: var(--c); } .wfmeta { grid-column: 1 / -1; font: var(--t12) var(--mono); color: var(--muted); overflow-wrap: anywhere; }
       .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       .nettable th { text-align: left; font-weight: 500; color: var(--muted); }
       #pane-rf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
@@ -1086,6 +1098,29 @@
             </section>
           </div>
           <div class="col">
+        <section class="card" id="wfCard">
+          <h2>Wi-Fi analyser <span class="spacer"></span><span class="lbl" id="wfSource">no data</span></h2>
+          <label class="wfdemo"><input type="checkbox" id="wfDemo" /> Show demo data (made-up access points, not a scan)</label>
+          <div id="wfEmpty" class="wfempty">
+            <p><b>No Wi-Fi scan data.</b> Browsers can't scan Wi-Fi networks. Connect the <b>Radio Bridge</b> Android app: it sends <code>WifiManager.getScanResults()</code> and the current connection here (<code>window.webrxWifi.push({aps, connection})</code>).</p>
+          </div>
+          <div id="wfViews" hidden>
+            <h3>Current connection</h3><div id="wfConn"></div>
+            <div class="seg" id="wfBand" role="group" aria-label="Wi-Fi band">
+              <button type="button" class="btn ghost small" data-band="2.4" aria-pressed="true">2.4 GHz</button><button type="button" class="btn ghost small" data-band="5" aria-pressed="false">5 GHz</button><button type="button" class="btn ghost small" data-band="6" aria-pressed="false">6 GHz</button>
+            </div>
+            <h3>Channel graph</h3>
+            <canvas id="wfChanGraph" class="wfgraph" role="img" aria-label="Access points by channel and signal strength"></canvas>
+            <h3>Channel rating</h3>
+            <p class="hint" id="wfBest"></p>
+            <div class="wfratewrap"><table class="nettable wfrate"><caption class="sr-only">Overlapping access points and rating per channel</caption><thead><tr><th scope="col">Ch</th><th scope="col">APs</th><th scope="col">Rating</th></tr></thead><tbody id="wfRating"></tbody></table></div>
+            <h3>Time graph <small>(RSSI, last 5 min)</small></h3>
+            <canvas id="wfTimeGraph" class="wfgraph" role="img" aria-label="Signal strength of each access point over the last five minutes"></canvas>
+            <h3>Access points (<span id="wfApCount">0</span>)</h3>
+            <ul class="wfaps" id="wfAps"></ul>
+          </div>
+          <p class="hint">Distance is a rough free-space estimate, d = 10^((27.55 − 20·log10 f + |RSSI|)/20). Walls, antennas and transmit power can make it wrong by a factor of 2–10. Wi-Fi scan throttling: Android 9+ allows each app 4 scans per 2 minutes in the foreground, so updates can be slow. You can turn throttling off in Developer options → "Wi-Fi scan throttling".</p>
+        </section>
             <section class="card">
               <h2>Band tables <span class="spacer"></span><span class="lbl">tap to tune in SA</span></h2>
               <div class="field" style="margin-bottom:12px">
