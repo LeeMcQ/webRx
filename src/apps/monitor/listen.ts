@@ -19,9 +19,10 @@ type ListenCfg = {
   squelch: number;
   volume: number;
   offsetHz: number;
+  deemph: number; // WBFM de-emphasis time constant, µs
 };
 
-const defaults: ListenCfg = { scheme: "WBFM", bandwidth: null, stereo: true, squelch: 0, volume: 0.5, offsetHz: 0 };
+const defaults: ListenCfg = { scheme: "WBFM", bandwidth: null, stereo: true, squelch: 0, volume: 0.5, offsetHz: 0, deemph: 50 };
 
 function load(): ListenCfg {
   try {
@@ -51,7 +52,7 @@ export class SharedStream {
   /** Audio needs a user gesture to start, so the demodulator is created on first use. */
   private ensureDemod() {
     if (this.demod) return;
-    this.demod = new Demodulator();
+    this.demod = new Demodulator({ modeOptions: { WBFM: { deemphasizerTc: this.cfg.deemph } } });
     this.demod.addEventListener("stereo-status", (e: any) => {
       this.stereoStatus = !!e.detail;
       this.onChange?.();
@@ -115,7 +116,14 @@ export class SharedStream {
     if (this.demod) {
       if ("volume" in patch) this.demod.setVolume(this.audioOn ? this.cfg.volume : 0);
       if ("offsetHz" in patch) this.demod.setFrequencyOffset(this.cfg.offsetHz);
-      if ("scheme" in patch || "bandwidth" in patch || "stereo" in patch || "squelch" in patch) this.applyMode();
+      if ("deemph" in patch) {
+        // The time constant is a constructor option: rebuild the demodulator.
+        this.demod.setVolume(0);
+        this.demod = null;
+        if (this.audioOn) this.ensureDemod();
+        else this.rebuild();
+      }
+      if (this.demod && ("scheme" in patch || "bandwidth" in patch || "stereo" in patch || "squelch" in patch)) this.applyMode();
     }
     this.onChange?.();
   }

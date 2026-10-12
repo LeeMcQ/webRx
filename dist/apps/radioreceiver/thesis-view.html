@@ -522,6 +522,63 @@
       [data-theme="night"] .tab[aria-selected="true"], [data-theme="night"] .tab[aria-selected="true"] .i { color: #fecaca; }
       [data-theme="night"] canvas, [data-theme="night"] #liveMap { filter: sepia(1) saturate(4) hue-rotate(-50deg) brightness(.75); }
       [data-motion="reduce"] *, [data-motion="reduce"] *::before, [data-motion="reduce"] *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+
+      /* ═══ v4: analyser folds, sessions, player, status panel ═══ */
+      .fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; min-height: var(--tap); margin: calc(-1 * var(--s2)) 0; }
+      .fold > summary::-webkit-details-marker { display: none; }
+      .fold > summary h2 { margin: 0; flex: 1; }
+      .fold > summary::after { content: ""; width: 10px; height: 10px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .2s var(--ease); margin-right: 4px; }
+      .fold[open] > summary::after { transform: rotate(-135deg); }
+      .fold[open] > summary { margin-bottom: var(--s3); }
+      .ro { display: flex; align-items: center; min-height: var(--tap); font: 600 var(--t15) var(--mono); }
+      .legendbar { display: block; height: 8px; border-radius: 4px; margin-top: 6px; }
+      .btns.markers { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); margin-bottom: var(--s3); }
+      .ro-table td:first-child { width: 50%; }
+      .btn.rec { background: transparent; border: 1px solid #7f1d1d; color: #fecaca; padding: 0 var(--s3); min-height: 40px; font: 600 var(--t13) var(--mono); }
+      .btn.rec .recdot2 { width: 12px; height: 12px; border-radius: 50%; background: #ef4444; flex: none; }
+      .btn.rec.on { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+      .btn.rec.on .recdot2 { background: #fff; animation: pulse 1.2s infinite; }
+      .sesslist { display: grid; gap: var(--s2); }
+      .sesslist:empty::before { content: "No sessions yet — press Rec in the top bar while measuring."; color: var(--muted); font-size: var(--t13); }
+      .sessrow { border: 1px solid var(--line); border-radius: 12px; padding: var(--s3); display: grid; gap: var(--s2); background: var(--panel-2); }
+      .sessname { width: 100%; font-weight: 600; }
+      .sessinfo small { display: block; color: var(--muted); font-size: var(--t12); margin-top: 4px; }
+      .sessbtns { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
+      .sessbtns .btn.small { min-height: var(--tap); padding: 0 var(--s2); }
+      .player { position: fixed; z-index: 44; left: calc(var(--s3) + var(--sal)); right: calc(var(--s3) + var(--sar)); bottom: calc(var(--nav-h) + var(--sab) + var(--s3));
+        background: rgba(17,26,43,.97); border: 1px solid #4c3a8a; border-radius: 16px; padding: var(--s2) var(--s3); box-shadow: 0 10px 30px rgba(0,0,0,.45); backdrop-filter: blur(10px); }
+      .pbname { display: block; font-size: var(--t13); color: #c4b5fd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .pbrow { display: flex; align-items: center; gap: var(--s2); }
+      .pbrow input[type=range] { flex: 1; min-width: 60px; accent-color: #a78bfa; }
+      .pbtime { font: var(--t12) var(--mono); color: var(--muted); white-space: nowrap; }
+      .pbrow select { width: auto; min-width: 64px; }
+      body.playing .bubble { bottom: calc(var(--nav-h) + var(--sab) + 120px); }
+      body.playing main { padding-bottom: calc(var(--nav-h) + var(--sab) + 200px); }
+      @media (max-width: 520px) { #pbTime { display: none; } #pbPrev, #pbNext { display: none; } }
+      /* status panel: slide-out on mobile, docked on desktop */
+      .statuspanel { position: fixed; z-index: 42; right: 0; top: calc(56px + var(--sat) + 72px); transform: translateX(calc(100% - 0px)); transition: transform .25s var(--ease); }
+      .statuspanel .sp-toggle { position: absolute; left: -44px; top: 0; width: 44px; min-height: 88px; border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px;
+        background: rgba(17,26,43,.95); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; font-size: 11px; font-weight: 600; }
+      .statuspanel.open { transform: none; }
+      .sp-body { width: min(300px, 82vw); max-height: calc(100dvh - 56px - var(--sat) - var(--nav-h) - var(--sab) - 100px); overflow: auto; padding: var(--s3) var(--s4) var(--s4);
+        background: rgba(17,26,43,.97); border: 1px solid var(--line); border-right: 0; border-radius: 0 0 0 14px; box-shadow: -10px 10px 30px rgba(0,0,0,.35); backdrop-filter: blur(10px); }
+      .sp-body h2 { margin: 0 0 var(--s2); font-size: var(--t12); letter-spacing: .1em; text-transform: uppercase; color: #a9b8d0; }
+      .sp-body dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px var(--s3); margin: 0; font-size: var(--t13); }
+      .sp-body dt { color: var(--muted); }
+      .sp-body dd { margin: 0; font-family: var(--mono); font-size: var(--t12); text-align: right; overflow-wrap: anywhere; }
+      .sp-chips { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); }
+      @media (min-width: 1280px) {
+        .statuspanel { top: calc(56px + var(--sat)); bottom: 0; transform: none; }
+        .statuspanel .sp-toggle { display: none; }
+        .sp-body { width: 280px; height: 100%; max-height: none; border-radius: 0; border-top: 0; box-shadow: none; background: rgba(10,16,28,.7); }
+        main { margin-right: 280px; }
+        .player { left: calc(var(--rail-w) + var(--s4)); right: calc(280px + var(--s4)); bottom: var(--s4); }
+      }
+      @media (min-width: 1000px) and (max-width: 1279px) { .player { left: calc(var(--rail-w) + var(--s4)); bottom: var(--s4); } }
+      [data-theme="light"] .sp-body, [data-theme="light"] .statuspanel .sp-toggle, [data-theme="light"] .player { background: rgba(255,255,255,.97); color: #0f172a; }
+      [data-theme="light"] .sp-body h2, [data-theme="light"] .sp-body dt { color: #475569; }
+      [data-theme="light"] .pbname { color: #5b21b6; }
+      [data-theme="light"] .btn.rec { color: #991b1b; border-color: #fca5a5; } [data-theme="light"] .btn.rec.on { color: #fff; }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -551,6 +608,9 @@
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
     <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+    <symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M19 20 9 12l10-8zM5 19V5"/></symbol>
+    <symbol id="i-skip-fwd" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8zM19 5v14"/></symbol>
     <symbol id="i-gps" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></symbol>
   </defs>
 </svg>
@@ -563,11 +623,10 @@
       <div class="chips status-chips">
         <button class="chip connchip" id="connChip" type="button" aria-haspopup="dialog" aria-controls="connSheet" title="Signal source and connection"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="dot" id="dotSource"></span><span id="txtSource">No source</span></button>
         <button class="chip" id="chipGps" type="button" title="GPS"><span class="dot" id="dotGps"></span><span id="txtGps">GPS: detecting…</span></button>
-        <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
-        <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
       </div>
       <div class="transport">
-        <span class="recpill" id="recPill" hidden><span class="dot live"></span>REC</span>
+        <span class="recpill" id="recPill" hidden><span class="dot live"></span>LIVE</span>
+        <button class="btn rec" id="btnRec" type="button" aria-pressed="false" aria-label="Record session" title="Record session (spectrum, GPS, heading, levels)"><span class="recdot2" aria-hidden="true"></span><span id="recTimer">Rec</span></button>
         <button class="btn go" id="btnStart" type="button" aria-label="Start measuring" title="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start</span></button>
         <button class="btn stop" id="btnStop" type="button" aria-label="Stop measuring" title="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop</span></button>
       </div>
@@ -628,6 +687,79 @@
         </div>
           </div>
           <div class="col">
+        <details class="card fold" open>
+          <summary><h2>Frequency &amp; span</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="saCentre">Centre (MHz)</label><input id="saCentre" type="number" step="0.001" inputmode="decimal" /></div>
+              <div class="field"><label>Span shown</label><output id="saSpanRo" class="ro">—</output></div>
+              <div class="field"><label for="saStart">Start (MHz)</label><input id="saStart" type="number" step="0.001" inputmode="decimal" /></div>
+              <div class="field"><label for="saStop">Stop (MHz)</label><input id="saStop" type="number" step="0.001" inputmode="decimal" /></div>
+              <div class="field full"><label for="saZoom">Zoom</label>
+                <div class="inline"><button class="btn ghost icon" id="btnSaZoomOut" type="button" aria-label="Zoom out"><svg class="i" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                <select id="saZoom" style="flex:1"><option value="1">1× (full span)</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option><option value="32">32×</option><option value="64">64×</option></select>
+                <button class="btn ghost icon" id="btnSaZoomIn" type="button" aria-label="Zoom in"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                <button class="btn ghost" id="btnSaZoomM1" type="button">On M1</button></div></div>
+              <div class="field full"><label for="saPan">Pan</label><input id="saPan" type="range" min="0" max="1000" step="1" /></div>
+            </div>
+            <p class="hint">The widest span is the sample rate (Settings). Start/stop zooms the view; outside the span it re-centres the SDR. Ctrl + wheel zooms on desktop.</p>
+          </div>
+        </details>
+        <details class="card fold">
+          <summary><h2>Resolution &amp; amplitude</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="saFft">FFT size</label><select id="saFft"><option>256</option><option>512</option><option>1024</option><option>2048</option><option>4096</option><option>8192</option><option>16384</option></select></div>
+              <div class="field"><label>RBW</label><output id="saRbw" class="ro">—</output></div>
+              <div class="field full"><label for="saAvg">Averaging</label><input id="saAvg" type="range" min="0" max="0.95" step="0.05" /></div>
+              <label class="check"><input id="saAuto" type="checkbox" /> Auto range</label>
+              <div class="field"><label for="saRef">Ref level (dB, top)</label><input id="saRef" type="number" step="1" inputmode="decimal" /></div>
+              <div class="field"><label for="saRange">Range (dB)</label><select id="saRange"><option>20</option><option>40</option><option>60</option><option>80</option><option>100</option><option>120</option></select></div>
+            </div>
+          </div>
+        </details>
+        <details class="card fold">
+          <summary><h2>Display &amp; traces</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="saTrace">Main trace</label><select id="saTrace"><option value="avg">Average</option><option value="live">Live (no averaging)</option></select></div>
+              <div class="field"><label for="saCmap">Colour map</label><select id="saCmap"></select><span class="legendbar" id="saLegend" aria-hidden="true"></span></div>
+              <label class="check"><input id="saMax" type="checkbox" /> Max hold</label>
+              <label class="check"><input id="saMin" type="checkbox" /> Min hold</label>
+              <label class="check"><input id="saPeak" type="checkbox" /> Peak hold (decaying)</label>
+              <div class="field"><label for="saWf">Waterfall speed</label><select id="saWf"><option value="1">Fast (every frame)</option><option value="2">½</option><option value="4">¼</option><option value="8">⅛</option><option value="16">1/16</option></select></div>
+            </div>
+            <div class="btns" style="margin-top:8px">
+              <button class="btn ghost" id="btnSaClear" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear holds</button>
+              <button class="btn ghost" id="btnSaFreeze" type="button" aria-pressed="false">Freeze display</button>
+              <button class="btn ghost" id="btnSaSnap" type="button"><svg class="i" aria-hidden="true"><use href="#i-camera"/></svg>Screenshot</button>
+            </div>
+            <p class="hint">Freeze only stops the display; measuring, the thesis recorder and sessions keep running.</p>
+          </div>
+        </details>
+        <details class="card fold">
+          <summary><h2>Markers &amp; measurements</h2></summary>
+          <div class="foldbody">
+            <div class="field" style="margin-bottom:8px"><label for="saTap">Tap on spectrum</label><select id="saTap"><option value="tune">Tunes the receiver</option><option value="m1">Places marker 1</option><option value="m2">Places marker 2</option></select></div>
+            <div class="btns markers">
+              <button class="btn ghost" id="btnM1Peak" type="button">M1 → peak</button>
+              <button class="btn ghost" id="btnM1Next" type="button">Next peak</button>
+              <button class="btn ghost" id="btnM2Delta" type="button">Δ marker</button>
+              <button class="btn ghost" id="btnMTune" type="button">Tune to M1</button>
+              <button class="btn ghost" id="btnMClear" type="button">Clear</button>
+            </div>
+            <table class="ro-table">
+              <tr><td>M1</td><td id="saM1">—</td></tr>
+              <tr><td>M2</td><td id="saM2">—</td></tr>
+              <tr><td>Delta</td><td id="saDelta">—</td></tr>
+              <tr><td>Noise floor (median in view)</td><td id="saFloor">—</td></tr>
+              <tr><td>Channel power</td><td id="saChPow">—</td></tr>
+              <tr><td>Occupied BW (99 %, view)</td><td id="saObw">—</td></tr>
+            </table>
+            <div class="field" style="margin-top:8px"><label for="saChBw">Channel width (kHz, around M1 or tuned)</label><input id="saChBw" type="number" min="1" step="1" inputmode="decimal" /></div>
+            <p class="hint">Levels are relative (dBFS) unless a calibration offset is set (dBm). Channel power sums the bins in the channel.</p>
+          </div>
+        </details>
         <section class="card sdr" id="listenCard">
           <h2>Listen <span class="spacer"></span><span class="lbl" id="stereoInd"></span></h2>
           <div class="listen-top">
@@ -656,6 +788,17 @@
           </div>
           <p class="hint">Tap the spectrum to tune. Audio rides on the same SDR stream as the measurements, so listening never changes what is logged. Tuned <b id="tunedRo">—</b>.</p>
         </section>
+        <details class="card fold">
+          <summary><h2>RF front-end</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="feUpconv">Upconverter LO (MHz)</label><input id="feUpconv" type="number" step="0.001" inputmode="decimal" placeholder="0 = off" /></div>
+              <div class="field"><label for="fePpm">Clock correction (PPM)</label><input id="fePpm" type="number" step="1" inputmode="numeric" /></div>
+              <div class="field"><label for="feDeemph">WBFM de-emphasis</label><select id="feDeemph"><option value="50">50 µs (Europe, Africa)</option><option value="75">75 µs (Americas, Korea)</option></select></div>
+            </div>
+            <p class="hint">Gain, amp, bias-T, sample rate and DC removal are in Settings. With an upconverter the tuner sits at RF + LO; all readouts and recordings show the RF frequency.</p>
+          </div>
+        </details>
           <section class="card sdr" id="tunerCard">
             <h2>Centre frequency <span class="spacer"></span><span class="lbl">steps · presets</span></h2>
             <div class="tuner-steps">
@@ -704,10 +847,17 @@
         </section>
           </div>
           <div class="col">
+            <section class="card" id="sessCard">
+              <h2>Sessions <span class="spacer"></span><span class="lbl" id="sessUsage"></span></h2>
+              <p class="hint" style="margin:0 0 8px">Press <b>Rec</b> (top bar, any tab) to record spectrum frames, GPS, heading and levels together. Play them back here; SA, MT and DT replay as if live.</p>
+              <div class="sesslist" id="sessList"></div>
+              <div class="btns" style="margin-top:8px">
+                <button class="btn ghost" id="btnSessImport" type="button"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Import JSON</button>
+              </div>
+              <input id="sessFile" type="file" accept=".json,application/json" multiple hidden />
+            </section>
             <section class="card">
-              <h2>Recorder</h2>
-            <section class="card">
-              <h2>Recording</h2>
+              <h2>Thesis recorder (CSV pins)</h2>
           <div class="recbox" aria-live="polite">
             <div class="rechead">
               <span class="recdot" id="recDot" aria-hidden="true"></span>
@@ -732,7 +882,6 @@
             </div>
             <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
           </div>
-            </section>
             </section>
         <section class="card">
           <h2>GPS location <span class="spacer"></span><span id="gpsBadge" class="lbl">—</span></h2>
@@ -910,9 +1059,6 @@
           <section class="card">
             <h2>Receiver &amp; logging</h2>
             <div class="grid2">
-          <section class="card">
-            <h2>Receiver &amp; logging</h2>
-            <div class="grid2">
             <div class="field sdr">
               <label for="freq">Centre frequency (MHz)</label>
               <input id="freq" type="number" inputmode="decimal" step="0.001" min="0.5" max="6000" value="433.92" list="freqPresets" />
@@ -984,10 +1130,17 @@
             <label class="check sdr"><input id="biasTee" type="checkbox" /> Antenna power / bias-T</label>
             </div>
           </section>
-            </div>
-          </section>
           </div>
           <div class="col">
+          <section class="card">
+            <h2>Session recording</h2>
+            <div class="grid2">
+              <div class="field"><label for="limMB">Size limit (MB)</label><input id="limMB" type="number" min="5" step="5" inputmode="numeric" /></div>
+              <div class="field"><label for="limMin">Time limit (minutes)</label><input id="limMin" type="number" min="1" step="1" inputmode="numeric" /></div>
+              <div class="field"><label for="limFps">Frames per second</label><select id="limFps"><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8">8</option></select></div>
+            </div>
+            <p class="hint">About 1.2 kB per frame (spectrum down-sampled to ≤1024 points at 0.5 dB steps): 4 frames/s ≈ 17 MB per hour.</p>
+          </section>
           <section class="card">
             <h2>Look &amp; feel</h2>
             <div class="grid2">
@@ -1022,6 +1175,46 @@
         </div>
       </section>
     </main>
+
+    <aside class="statuspanel" id="statusPanel" aria-label="Live status">
+      <button class="sp-toggle" id="spToggle" type="button" aria-controls="spBody" aria-expanded="false" aria-label="Show live status"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><span>Live</span></button>
+      <div class="sp-body" id="spBody" tabindex="0">
+        <h2>Live status</h2>
+        <dl>
+          <dt>Centre</dt><dd id="spCentre">—</dd>
+          <dt>Tuned</dt><dd id="spTuned">—</dd>
+          <dt>Span (BW)</dt><dd id="spSpan">—</dd>
+          <dt>RBW / FFT</dt><dd id="spRbw">—</dd>
+          <dt>Sample rate</dt><dd id="spRate">—</dd>
+          <dt>Gain / amp</dt><dd id="spGain">—</dd>
+          <dt>Modulation</dt><dd id="spMode">—</dd>
+          <dt>Level</dt><dd id="spLevel">—</dd>
+          <dt>Peak</dt><dd id="spPeak">—</dd>
+          <dt>Noise floor</dt><dd id="spFloor">—</dd>
+          <dt>GPS</dt><dd id="spGps">—</dd>
+          <dt>Heading</dt><dd id="spHeading">—</dd>
+          <dt>Recording</dt><dd id="spRec">—</dd>
+          <dt>Device</dt><dd id="spDevice">—</dd>
+        </dl>
+        <div class="sp-chips">
+          <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
+          <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="player" id="player" hidden role="region" aria-label="Session playback">
+      <b class="pbname" id="pbName"></b>
+      <div class="pbrow">
+        <button class="btn ghost icon" id="pbPrev" type="button" aria-label="Previous frame"><svg class="i" aria-hidden="true"><use href="#i-skip-back"/></svg></button>
+        <button class="btn primary icon" id="pbPlay" type="button" aria-label="Play"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg></button>
+        <button class="btn ghost icon" id="pbNext" type="button" aria-label="Next frame"><svg class="i" aria-hidden="true"><use href="#i-skip-fwd"/></svg></button>
+        <input id="pbSeek" type="range" min="0" max="1000" step="1" value="0" aria-label="Seek" />
+        <span class="pbtime" id="pbTime">0:00 / 0:00</span>
+        <select id="pbSpeed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option><option value="16">16×</option></select>
+        <button class="btn ghost icon" id="pbClose" type="button" aria-label="Close playback"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+    </div>
 
 
     <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source">

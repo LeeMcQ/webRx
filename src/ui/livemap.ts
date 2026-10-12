@@ -186,6 +186,37 @@ export class LiveMap {
     this.map.invalidateSize();
   }
 
+  private pbLayer = L.layerGroup();
+  private pbCursor: L.CircleMarker | null = null;
+
+  /** Playback of a recorded session: its own route and pins (the live track is untouched). */
+  setPlayback(pts: { lat: number; lon: number; level?: number }[] | null, lo = -100, hi = -20) {
+    this.pbLayer.clearLayers();
+    this.pbCursor = null;
+    if (!pts) {
+      this.pbLayer.remove();
+      return;
+    }
+    this.pbLayer.addTo(this.map);
+    const ll = pts.map((p) => L.latLng(p.lat, p.lon));
+    if (!ll.length) return;
+    L.polyline(ll, { color: "#a78bfa", weight: 4, opacity: 0.8 }).addTo(this.pbLayer);
+    const step = Math.max(1, Math.floor(pts.length / 400));
+    for (let i = 0; i < pts.length; i += step) {
+      const v = pts[i].level;
+      const t = v === undefined ? 0 : Math.max(0, Math.min(1, (v - lo) / Math.max(1, hi - lo)));
+      L.circleMarker(ll[i], { radius: 4, weight: 0, fillOpacity: 0.9, fillColor: `hsl(${240 - t * 240},85%,52%)` }).addTo(this.pbLayer);
+    }
+    this.pbCursor = L.circleMarker(ll[0], { radius: 8, color: "#fff", weight: 2, fillColor: "#a78bfa", fillOpacity: 1 }).addTo(this.pbLayer);
+    this.follow = false;
+    this.map.fitBounds(L.latLngBounds(ll).pad(0.2), { maxZoom: 17 });
+    this.emitStats();
+  }
+
+  setPlaybackCursor(lat: number, lon: number) {
+    this.pbCursor?.setLatLng([lat, lon]);
+  }
+
   private bearings = L.layerGroup();
 
   /** DT bearing fixes: a line from each fix position along its best bearing. */
