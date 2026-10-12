@@ -1735,7 +1735,7 @@ function renderGps() {
     $("gpsBadge").title = st.message;
   }
   ($("btnGPS") as HTMLButtonElement).textContent =
-    st.state === "fix" || st.state === "searching" ? "Reconnect" : "📡 Connect";
+    st.state === "fix" || st.state === "searching" ? "Reconnect GPS" : "Connect GPS";
 }
 
 let lastGpsMsg = "";
@@ -1776,7 +1776,7 @@ function renderCompass() {
   const rose = document.getElementById("compassRose");
   if (rose) rose.classList.toggle("live", st.state === "on");
   const btn = document.getElementById("btnCompass") as HTMLButtonElement | null;
-  if (btn) btn.textContent = st.state === "on" || st.state === "starting" ? "🧭 Compass on" : "🧭 Compass";
+  if (btn) btn.textContent = st.state === "on" || st.state === "starting" ? "Compass on" : "Compass";
   liveMap?.setHeading(st.state === "on" && st.source !== "relative" ? h : undefined);
 }
 
@@ -2119,7 +2119,10 @@ function bind() {
   $("btnGPS").addEventListener("click", connectGps);
   $("chipGps").addEventListener("click", () => {
     if (gps.status.state === "off" || gps.status.state === "error") connectGps();
-    else document.getElementById("gpsSource")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    else {
+      (window as any).webrxShowTab?.("map");
+      requestAnimationFrame(() => document.getElementById("gpsSource")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    }
   });
 
   const install = $<HTMLButtonElement>("btnInstall");
@@ -2148,6 +2151,11 @@ function bind() {
   });
   window.addEventListener("pagehide", onPageHidden);
   new ResizeObserver(() => (dirty = true)).observe(document.body);
+  // The page is split into tabs: redraw canvases at their real size when a tab is shown.
+  window.addEventListener("webrx:tab", () => {
+    dirty = true;
+    liveMap?.invalidate();
+  });
   bound = true;
 }
 
@@ -2200,7 +2208,7 @@ export function initMonitor() {
   } else {
     ($("gpsSource") as HTMLSelectElement).value = hasWebSerial() ? "gmouse" : "phone";
     setChip("dotGps", "txtGps", hasWebSerial() ? "G-MOUSE — press Connect" : "GPS — press Connect", "warn");
-    log(hasWebSerial() ? "Desktop — press 📡 Connect to open the G-MOUSE USB port" : "Press 📡 Connect to use this device's location", "wn");
+    log(hasWebSerial() ? "Desktop — press Connect GPS (Map tab) to open the G-MOUSE USB port" : "Press Connect GPS (Map tab) to use this device's location", "wn");
   }
 
   restoreRecording();
