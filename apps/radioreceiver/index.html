@@ -53,6 +53,12 @@
     <title>Radio Receiver</title>
   </head>
   <body>
+    <aside id="spaHint" style="position:fixed;z-index:50;left:12px;bottom:calc(12px + env(safe-area-inset-bottom));max-width:min(420px,calc(100vw - 24px));display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:12px;background:#0f172a;color:#e2e8f0;border:1px solid #1e3a5f;font:13px/1.35 system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.35)">
+      <span>Classic receiver: this page opens the SDR on its own. For listening, measuring, tracking and DT on <b>one</b> connection, use the
+        <a href="thesis-view.html#sa" style="color:#93c5fd">RF MMN Monitor</a>.</span>
+      <button type="button" aria-label="Dismiss" onclick="this.parentElement.remove();try{localStorage.setItem('webrx.spaHint','1')}catch(e){}" style="min-width:44px;min-height:44px;border:0;border-radius:10px;background:#1e293b;color:inherit;font-size:18px;cursor:pointer">✕</button>
+    </aside>
+    <script>try{if(localStorage.getItem('webrx.spaHint'))document.getElementById('spaHint').remove()}catch(e){}</script>
     <div id="boot"><img src="icon-192.png" alt="" /> Loading radio…</div>
   </body>
 </html>

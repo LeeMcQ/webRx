@@ -186,6 +186,21 @@ export class LiveMap {
     this.map.invalidateSize();
   }
 
+  private bearings = L.layerGroup();
+
+  /** DT bearing fixes: a line from each fix position along its best bearing. */
+  setBearings(list: { lat: number; lon: number; bearing: number; label?: string }[], lengthM = 3000) {
+    if (!this.map.hasLayer(this.bearings)) this.bearings.addTo(this.map);
+    this.bearings.clearLayers();
+    for (const f of list) {
+      const p = L.latLng(f.lat, f.lon);
+      L.polyline([p, this.offset(p, f.bearing, lengthM)], { color: "#22c55e", weight: 3, dashArray: "8 6", opacity: 0.9 })
+        .bindTooltip(f.label ?? `${Math.round(f.bearing)}°`)
+        .addTo(this.bearings);
+      L.circleMarker(p, { radius: 5, color: "#fff", weight: 2, fillColor: "#22c55e", fillOpacity: 1 }).addTo(this.bearings);
+    }
+  }
+
   private drawCone() {
     if (!this.lastFix) return;
     // Prefer the compass; fall back to GPS course when moving (> 3 km/h).

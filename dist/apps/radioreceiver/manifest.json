@@ -44,7 +44,7 @@
   ],
   "shortcuts": [
     {
-      "name": "Radio receiver",
+      "name": "Classic radio receiver",
       "short_name": "Receiver",
       "url": "./index.html",
       "icons": [
@@ -56,7 +56,7 @@
       ]
     },
     {
-      "name": "MMN monitor",
+      "name": "RF MMN Monitor (SA · MT · DT)",
       "short_name": "Monitor",
       "url": "./thesis-view.html",
       "icons": [
