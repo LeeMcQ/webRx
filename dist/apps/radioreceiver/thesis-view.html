@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0b1220" />
+    <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -260,26 +260,238 @@
       .calkey .band { color: rgba(59, 130, 246, 0.5); }
       .btn:disabled { opacity: 0.45; cursor: default; }
     </style>
+    <style>
+      /* ═══ Redesign 2026-10: app shell, tabs, connection bubble ═══ */
+      :root {
+        --bg: #0a101c; --panel: #111a2b; --panel-2: #0d1524; --line: #1f2d47;
+        --text: #e6edf7; --muted: #93a4bf; --accent: #3b82f6; --accent-2: #22d3ee;
+        --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px;
+        --t12: 12px; --t13: 13px; --t15: 15px; --t17: 17px; --t20: 20px; --t24: 24px;
+        --tap: 44px; --nav-h: 64px; --rail-w: 88px; --radius: 14px;
+        --sat: env(safe-area-inset-top); --sab: env(safe-area-inset-bottom);
+        --sal: env(safe-area-inset-left); --sar: env(safe-area-inset-right);
+        --ease: cubic-bezier(.2,.7,.2,1);
+      }
+      body { font-size: var(--t15); padding-bottom: 0; background:
+        radial-gradient(1200px 600px at 80% -10%, rgba(59,130,246,.08), transparent 60%), var(--bg); background-attachment: fixed; }
+      .i { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .skip { position: absolute; left: -999px; top: var(--s2); z-index: 100; background: var(--accent); color: #fff; padding: var(--s2) var(--s3); border-radius: 8px; }
+      .skip:focus { left: var(--s2); }
+      :focus-visible { outline: 2px solid var(--accent-2) !important; outline-offset: 2px; }
+
+      /* app bar */
+      header.appbar {
+        position: sticky; top: 0; z-index: 30; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s3);
+        padding: calc(var(--s2) + var(--sat)) calc(var(--s4) + var(--sar)) var(--s2) calc(var(--s4) + var(--sal));
+        min-height: calc(56px + var(--sat)); background: rgba(10,16,28,.88); backdrop-filter: blur(12px) saturate(1.2);
+        border-bottom: 1px solid var(--line);
+      }
+      .brand { flex-direction: row; align-items: center; gap: var(--s3); margin-right: auto; }
+      .brand h1 { margin: 0; font-size: var(--t17); line-height: 1.2; letter-spacing: .01em; white-space: nowrap; }
+      .brand small { display: block; color: var(--muted); font-size: var(--t12); letter-spacing: .04em; text-transform: none; }
+      .logo { width: 32px; height: 32px; padding: 6px; border-radius: 10px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2)); flex: none; }
+      .status-chips { flex-wrap: nowrap; gap: var(--s2); }
+      .chip { min-height: 32px; padding: 0 var(--s3); font-size: var(--t13); }
+      button.chip:hover { border-color: #2d4166; background: #13203a; }
+      .transport { display: flex; gap: var(--s2); align-items: center; }
+      .transport .btn { min-height: 40px; padding: 0 var(--s4); display: inline-flex; align-items: center; gap: var(--s2); }
+      .transport .btn .i { width: 16px; height: 16px; fill: currentColor; stroke: none; }
+      .transport .btn:disabled { display: none; }
+      .recpill { display: inline-flex; align-items: center; gap: 6px; font: 700 var(--t12) var(--mono); color: #fca5a5; letter-spacing: .08em; }
+
+      .btn { min-height: var(--tap); border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);
+        font-size: var(--t15); text-decoration: none; transition: background-color .15s, filter .15s, transform .08s, opacity .15s; }
+      .btn .i { width: 18px; height: 18px; }
+      .btn.small { min-height: 36px; font-size: var(--t13); }
+      .btn.go { background: #15803d; }
+      .tablist { display: contents; }
+      .connchip .i { width: 16px; height: 16px; color: #93c5fd; } .btn.stop { background: #dc2626; }
+      .btn.ghost { background: rgba(255,255,255,.02); }
+      .btn.ghost:hover { background: rgba(255,255,255,.06); filter: none; }
+      .btn.icon { width: var(--tap); padding: 0; }
+      .btn.wide { width: 100%; }
+      select, input[type="number"], input[type="text"] { min-height: var(--tap); border-radius: 10px; padding: 0 var(--s3); font-size: var(--t15); }
+      .check { min-height: var(--tap); font-size: var(--t15); }
+      .check input { width: 20px; height: 20px; }
+      input[type="range"] { min-height: 32px; }
+      .field label, .lbl { font-size: var(--t12); color: var(--muted); }
+      .hint { font-size: var(--t13); }
+      td:first-child { color: var(--muted); }
+      .card h2 { font-size: var(--t12); color: #a9b8d0; margin-bottom: var(--s3); min-height: 20px; }
+      .card { border-radius: var(--radius); padding: var(--s4); box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.18); }
+      .readout { font-size: var(--t12); color: #a9b8d0; min-height: 40px; align-content: flex-start; }
+      .stat small { font-size: var(--t12); color: #a9b8d0; }
+      .meter .num small { font-size: var(--t12); color: #c3cfe2; }
+      .log { font-size: var(--t12); height: 220px; color: #a9b8d0; }
+      .maptools .btn { min-height: 40px; font-size: var(--t13); }
+      .maptools .lbl { font-size: var(--t12); }
+
+      /* panes */
+      main { display: block; max-width: 1440px; padding: var(--s4) calc(var(--s4) + var(--sar)) calc(var(--nav-h) + var(--sab) + 88px) calc(var(--s4) + var(--sal)); }
+      main:focus { outline: none; }
+      .pane-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+      .pane.enter { animation: paneIn .22s var(--ease); }
+      @keyframes paneIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+      .grid { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); align-items: start; }
+      .grid > .pair { gap: var(--s4); }
+      .col { gap: var(--s4); }
+      .recbox { margin-top: 0; border: 0; padding: 0; gap: var(--s3); }
+      .recbox .btns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .mapcard #liveMap { height: calc(100dvh - 56px - var(--sat) - var(--nav-h) - var(--sab) - 250px); min-height: 280px; }
+
+      /* bottom tab bar (mobile) */
+      .tabbar {
+        position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr);
+        height: calc(var(--nav-h) + var(--sab)); padding: 0 var(--sar) var(--sab) var(--sal);
+        background: rgba(10,16,28,.94); backdrop-filter: blur(14px) saturate(1.2); border-top: 1px solid var(--line);
+      }
+      .tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+        min-height: var(--tap); border: 0; background: none; color: var(--muted); font-size: var(--t12); font-weight: 600; cursor: pointer;
+        -webkit-tap-highlight-color: transparent; transition: color .15s; }
+      .tab .i { width: 22px; height: 22px; transition: transform .2s var(--ease); }
+      .tab::before { content: ""; position: absolute; top: 6px; width: 56px; height: 32px; border-radius: 16px; background: rgba(59,130,246,.18);
+        transform: scaleX(.4); opacity: 0; transition: transform .2s var(--ease), opacity .2s; }
+      .tab[aria-selected="true"] { color: #fff; }
+      .tab[aria-selected="true"]::before { transform: none; opacity: 1; }
+      .tab[aria-selected="true"] .i { color: #93c5fd; }
+      .tab:hover { color: #cbd5e1; }
+
+      /* floating connection bubble (mobile, bottom-right above the tab bar) */
+      .bubble {
+        position: fixed; z-index: 45; right: calc(var(--s4) + var(--sar)); bottom: calc(var(--nav-h) + var(--sab) + var(--s4));
+        width: 56px; height: 56px; border-radius: 50%; border: 1px solid rgba(255,255,255,.12); cursor: pointer;
+        display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #2563eb, #0891b2);
+        box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 0 rgba(34,197,94,0); transition: transform .15s var(--ease), box-shadow .3s;
+      }
+      .bubble .i { width: 24px; height: 24px; }
+      .bubble:active { transform: scale(.94); }
+      .bdot { position: absolute; top: 4px; right: 4px; width: 14px; height: 14px; border-radius: 50%; background: #64748b; border: 2px solid var(--bg); }
+      .bdot.ok { background: var(--ok); } .bdot.warn { background: var(--warn); } .bdot.err { background: var(--err); }
+      .bdot.live { background: var(--ok); animation: pulse 1.4s infinite; }
+      .bubble.live { box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 4px rgba(34,197,94,.35); }
+
+      /* connection sheet */
+      .sheet { width: min(480px, 100vw); max-width: 100vw; margin: auto auto 0; max-height: 88dvh; border: 1px solid var(--line); border-bottom: 0;
+        border-radius: 20px 20px 0 0; background: var(--panel); color: var(--text); padding: var(--s2) var(--s5) calc(var(--s5) + var(--sab)); }
+      .sheet[open] { display: flex; flex-direction: column; gap: var(--s3); animation: sheetUp .26s var(--ease); }
+      .sheet::backdrop { background: rgba(2,6,14,.6); backdrop-filter: blur(2px); }
+      @keyframes sheetUp { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+      .grab { width: 40px; height: 4px; border-radius: 2px; background: #334155; margin: 4px auto 4px; }
+      .calhead { font-size: var(--t17); }
+      .connstat { display: flex; align-items: center; gap: var(--s2); padding: var(--s3); border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); font-size: var(--t15); }
+      .sheet-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+      .sheet-chips .chip { min-height: 36px; }
+
+      /* remote */
+      .remote-level { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); margin-bottom: var(--s4); }
+      .remote-level > div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: var(--s3) var(--s4); }
+      .remote-level small { display: block; color: #a9b8d0; font-size: var(--t12); }
+      .remote-level b { font: 700 var(--t24)/1.3 var(--mono); white-space: nowrap; }
+      .btns.big .btn { min-height: 56px; font-size: var(--t17); }
+      .btns.big .btn .i { fill: currentColor; stroke: none; }
+      .tuner-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2); margin-bottom: var(--s3); }
+      .step { font: 600 var(--t15) var(--mono); }
+      .presets { display: flex; flex-wrap: wrap; gap: var(--s2); }
+      .preset { min-height: var(--tap); cursor: pointer; font-size: var(--t13); }
+      .preset small { color: var(--muted); font-family: var(--mono); }
+      .preset[aria-pressed="true"] { border-color: var(--accent); background: rgba(59,130,246,.15); }
+      .linklist { display: grid; gap: var(--s2); }
+      .linklist .btn { justify-content: flex-start; padding: 0 var(--s4); }
+
+      /* mobile */
+      @media (max-width: 999px) {
+        .status-chips { display: none; }
+        .brand small { display: none; }
+        .transport .btn span { display: none; }
+        .transport .btn { width: var(--tap); padding: 0; min-height: var(--tap); }
+        main { padding-top: var(--s3); }
+        #spectrum { height: 210px; } #waterfall { height: 150px; }
+        .caldlg { width: 100vw; max-width: 100vw; max-height: 100dvh; margin: 0; height: 100dvh; border-radius: 0; padding-top: calc(var(--s3) + var(--sat)); }
+      }
+      @media (max-width: 380px) { .brand h1 { font-size: var(--t15); } }
+
+      /* desktop: side rail + header status */
+      @media (min-width: 1000px) {
+        .tabbar { top: calc(56px + var(--sat)); bottom: 0; right: auto; width: var(--rail-w); height: auto; display: flex; flex-direction: column;
+          gap: var(--s2); padding: var(--s4) 0; border-top: 0; border-right: 1px solid var(--line); background: rgba(10,16,28,.6); }
+        .tab { height: 64px; flex: none; }
+        .tab::before { top: 6px; }
+        main { margin-left: var(--rail-w); padding: var(--s6) var(--s6) var(--s8); max-width: calc(1440px + var(--rail-w)); }
+        .bubble { display: none; }
+        .g-split { grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); }
+        .g-receiver .pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        #spectrum { height: 320px; } #waterfall { height: 240px; }
+        .mapcard #liveMap { height: calc(100dvh - 56px - 200px); min-height: 420px; }
+        .sheet { margin: auto; border-radius: 20px; border-bottom: 1px solid var(--line); padding-bottom: var(--s5); }
+        .grab { display: none; }
+      }
+      @media (min-width: 1000px) and (max-width: 1180px) { #chipNet, #chipDsp { display: none; } }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+      }
+
+    </style>
   </head>
   <body>
-    <header>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-radio" viewBox="0 0 24 24"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="M14.1 5.9 9.9 3.8a2 2 0 0 0-1.8 0L3.6 6A1 1 0 0 0 3 7v12.4a1 1 0 0 0 1.4.9l3.7-1.9a2 2 0 0 1 1.8 0l4.2 2.1a2 2 0 0 0 1.8 0l4.5-2.3a1 1 0 0 0 .6-.9V4.9a1 1 0 0 0-1.4-.9l-3.7 1.9a2 2 0 0 1-1.8 0z"/><path d="M15 5.8v15M9 3.2v15"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-remote" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h.01M14 14h.01M10 17.5h.01M14 17.5h.01"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-crosshair" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-gps" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></symbol>
+  </defs>
+</svg>
+    <a class="skip" href="#content">Skip to content</a>
+    <header class="appbar">
       <div class="brand">
-        <b>RF MMN Monitor</b>
-        <small>Monitoring system · software interface</small>
+        <svg class="logo" aria-hidden="true"><use href="#i-radio"/></svg>
+        <div><h1>RF MMN Monitor</h1><small>Monitoring system · Lee McQuire</small></div>
       </div>
-      <div class="chips">
-        <span class="chip" id="chipSource"><span class="dot" id="dotSource"></span><span id="txtSource">No source</span></span>
-        <button class="chip" id="chipGps" title="GPS"><span class="dot" id="dotGps"></span><span id="txtGps">GPS: detecting…</span></button>
+      <div class="chips status-chips">
+        <button class="chip connchip" id="connChip" type="button" aria-haspopup="dialog" aria-controls="connSheet" title="Signal source and connection"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="dot" id="dotSource"></span><span id="txtSource">No source</span></button>
+        <button class="chip" id="chipGps" type="button" title="GPS"><span class="dot" id="dotGps"></span><span id="txtGps">GPS: detecting…</span></button>
         <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
         <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
-        <button class="chip" id="btnInstall" hidden>⬇ Install app</button>
-        <a class="chip" href="map.html" title="Open recordings on the MMN map">🗺 Map</a>
-        <a class="chip" href="index.html" title="Open the full radio receiver">📻 Receiver</a>
+      </div>
+      <div class="transport">
+        <span class="recpill" id="recPill" hidden><span class="dot live"></span>REC</span>
+        <button class="btn go" id="btnStart" type="button" aria-label="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start</span></button>
+        <button class="btn stop" id="btnStop" type="button" aria-label="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop</span></button>
       </div>
     </header>
 
-    <main>
-      <div class="col">
+    <nav class="tabbar" aria-label="Sections">
+      <div class="tablist" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" type="button" id="tab-receiver" data-tab="receiver" aria-controls="pane-receiver" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg><span>Receiver</span></button>
+      <button class="tab" role="tab" type="button" id="tab-map" data-tab="map" aria-controls="pane-map" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg><span>Map</span></button>
+      <button class="tab" role="tab" type="button" id="tab-monitor" data-tab="monitor" aria-controls="pane-monitor" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><span>Monitor</span></button>
+      <button class="tab" role="tab" type="button" id="tab-remote" data-tab="remote" aria-controls="pane-remote" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><span>Remote</span></button>
+      <button class="tab" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></button>
+      </div>
+    </nav>
+
+    <main id="content" tabindex="-1">
+      <section class="pane" id="pane-receiver" role="tabpanel" aria-labelledby="tab-receiver">
+        <h2 class="pane-title">Receiver</h2>
+        <div class="grid g-receiver">
         <section class="card">
           <h2>Spectrum <span class="spacer"></span><span id="specUnits">dBFS</span></h2>
           <div class="scope">
@@ -295,7 +507,6 @@
             <span>DSP <b id="roDsp">—</b></span>
           </div>
         </section>
-
         <div class="pair">
           <section class="card">
             <h2>Band detail <span class="spacer"></span><span class="lbl" id="bandLbl">centre 50%</span></h2>
@@ -316,42 +527,168 @@
             </div>
           </section>
         </div>
+        </div>
+      </section>
 
-        <section class="card">
+      <section class="pane" id="pane-map" role="tabpanel" aria-labelledby="tab-map" hidden>
+        <h2 class="pane-title">Map</h2>
+        <div class="grid g-split">
+        <section class="card mapcard">
           <h2>Map <span class="spacer"></span><span class="lbl">weak <span class="legend"></span> strong</span></h2>
           <div id="liveMap" role="application" aria-label="Map of your position and route"></div>
           <div class="maptools">
-            <button class="btn ghost" id="btnMapCentre">◎ Centre</button>
-            <button class="btn ghost" id="btnMapFit">⤢ Route</button>
-            <button class="btn ghost" id="btnMapClear">🗑 Clear route</button>
+            <button class="btn ghost" id="btnMapCentre"><svg class="i" aria-hidden="true"><use href="#i-crosshair"/></svg>Centre</button>
+            <button class="btn ghost" id="btnMapFit"><svg class="i" aria-hidden="true"><use href="#i-route"/></svg>Fit route</button>
+            <button class="btn ghost" id="btnMapClear"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear route</button>
             <span class="lbl">route <b id="mapDistance">0 m</b> · <span id="mapFollow">following</span></span>
           </div>
         </section>
+        <section class="card">
+          <h2>GPS location <span class="spacer"></span><span id="gpsBadge" class="lbl">—</span></h2>
+          <div class="inline" style="margin-bottom:8px">
+            <select id="gpsSource" style="flex:1" aria-label="GPS source">
+              <option value="phone">Phone / device GPS</option>
+              <option value="gmouse">G-MOUSE USB (NMEA)</option>
+              <option value="off">Off</option>
+            </select>
+            <button class="btn primary" id="btnGPS" >Connect GPS</button>
+          </div>
+          <div class="compassrow">
+            <div class="rose" id="compassRose" aria-hidden="true"><div class="needle" id="compassNeedle"></div></div>
+            <div style="flex:1; min-width:0">
+              <small>Compass (phone)</small>
+              <div class="val" id="gpsCompass">—</div>
+            </div>
+            <button class="btn ghost" id="btnCompass" style="flex:none">Compass</button>
+          </div>
+          <table>
+            <tr><td>Latitude</td><td id="gpsLat">—</td></tr>
+            <tr><td>Longitude</td><td id="gpsLon">—</td></tr>
+            <tr><td>Altitude</td><td id="gpsAlt">—</td></tr>
+            <tr><td>Speed</td><td id="gpsSpeed">—</td></tr>
+            <tr><td>Course (GPS)</td><td id="gpsHeading">—</td></tr>
+            <tr><td>Satellites</td><td id="gpsSats">—</td></tr>
+            <tr><td>Fix quality</td><td id="gpsFix">—</td></tr>
+            <tr><td>Accuracy</td><td id="gpsAcc">—</td></tr>
+            <tr><td>Last fix</td><td id="gpsTime">—</td></tr>
+          </table>
+          <div class="nmea" id="gpsNMEA"></div>
+        </section>
+        </div>
+      </section>
 
+      <section class="pane" id="pane-monitor" role="tabpanel" aria-labelledby="tab-monitor" hidden>
+        <h2 class="pane-title">Monitor</h2>
+        <div class="grid g-split">
+          <div class="col">
+            <section class="card">
+              <h2>Recording</h2>
+          <div class="recbox" aria-live="polite">
+            <div class="rechead">
+              <span class="recdot" id="recDot" aria-hidden="true"></span>
+              <b id="recName">No recording yet</b>
+              <span class="spacer"></span>
+              <span class="lbl" id="recSaved"></span>
+            </div>
+            <div class="lbl" id="recMeta">Press Start to record</div>
+            <div class="calline">
+              <span class="lbl" id="calStatus">Not calibrated</span>
+              <span class="spacer"></span>
+              <button class="btn ghost small" id="btnCalibrate" title="Pre-drive noise-floor calibration"><svg class="i" aria-hidden="true"><use href="#i-sliders"/></svg>Calibrate</button>
+            </div>
+            <div class="lbl" id="recHint"></div>
+            <label class="check" id="needFixRow"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
+            <div class="btns">
+              <button class="btn primary" id="btnOpenMap" title="Open this recording in the MMN map"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg>Open in Map</button>
+              <button class="btn ghost" id="btnCSV" title="Save this recording as a CSV file"><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>CSV</button>
+              <button class="btn ghost" id="btnShare" title="Send the CSV to another app (email, Drive, WhatsApp…)" hidden><svg class="i" aria-hidden="true"><use href="#i-share"/></svg>Share</button>
+              <button class="btn ghost" id="btnClear" title="Keep this recording and start a new one"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>New recording</button>
+              <button class="btn ghost" id="btnSnap" title="Save the spectrum and waterfall as a picture"><svg class="i" aria-hidden="true"><use href="#i-camera"/></svg>Snapshot</button>
+            </div>
+            <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
+          </div>
+            </section>
         <section class="card">
           <h2>Timeline <span class="spacer"></span><span class="lbl"><span style="color:#60a5fa">━</span> peak <span style="color:#4ade80">━</span> band mean</span></h2>
           <canvas id="timeline"></canvas>
         </section>
-      </div>
-
-      <div class="col">
+          </div>
+          <div class="col">
         <section class="card">
-          <h2>Signal source</h2>
-          <div class="grid2">
-            <div class="field full">
-              <label for="sourceSelect">Source</label>
-              <select id="sourceSelect">
-                <optgroup label="Radio SDR">
-                  <option value="auto">Auto — RTL-SDR or HackRF (WebUSB)</option>
-                  <option value="rtlsdr">RTL-SDR (WebUSB)</option>
-                  <option value="hackrf">HackRF Pro / HackRF One (WebUSB)</option>
-                </optgroup>
-                <optgroup label="Device network">
-                  <option value="wifi">Wi-Fi signal monitor (Network Info API)</option>
-                  <option value="cellular">Cellular / mobile network monitor</option>
-                </optgroup>
-              </select>
+          <h2>Network signal detail <span class="spacer"></span><span class="lbl">estimated</span></h2>
+          <table>
+            <tr><td>Connection type</td><td id="nType">—</td></tr>
+            <tr><td>Effective type</td><td id="nEffType">—</td></tr>
+            <tr><td>Downlink</td><td id="nDownlink">—</td></tr>
+            <tr><td>Max downlink</td><td id="nDownMax">—</td></tr>
+            <tr><td>RTT</td><td id="nRTT">—</td></tr>
+            <tr><td>Est. quality</td><td id="nQuality">—</td></tr>
+            <tr><td>Signal est.</td><td id="nRSSI">—</td></tr>
+            <tr><td>Data saver</td><td id="nSave">—</td></tr>
+          </table>
+          <div class="bar"><div id="signalBar"></div></div>
+          <p class="hint">Browsers can't read raw Wi-Fi/cellular RSSI; these values are estimated from the Network Information API (Chrome/Edge).</p>
+        </section>
+        <section class="card">
+          <h2>System log <span class="spacer"></span><span class="lbl" id="measState">Idle</span></h2>
+          <div class="log" id="logBox"></div>
+        </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-remote" role="tabpanel" aria-labelledby="tab-remote" hidden>
+        <h2 class="pane-title">Remote</h2>
+        <div class="grid g-split">
+          <section class="card remote-main">
+            <h2>Control <span class="spacer"></span><span class="lbl" id="remoteState">Idle</span></h2>
+            <div class="remote-level" aria-live="off">
+              <div><small>Band level</small><b id="remoteLevel">—</b></div>
+              <div><small>Centre</small><b id="remoteFreq">—</b></div>
             </div>
+            <div class="btns big">
+              <button class="btn primary" id="mBtnConnect" type="button">Connect</button>
+              <button class="btn go" id="mBtnStart" type="button"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg>Start</button>
+              <button class="btn stop" id="mBtnStop" type="button"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+            </div>
+          </section>
+          <section class="card sdr" id="tunerCard">
+            <h2>Tuner <span class="spacer"></span><span class="lbl">MHz</span></h2>
+            <div class="tuner-steps">
+              <button class="btn ghost step" type="button" data-step="-1000" aria-label="Tune minus 1 MHz">−1 M</button>
+              <button class="btn ghost step" type="button" data-step="-100" aria-label="Tune minus 100 kHz">−100 k</button>
+              <button class="btn ghost step" type="button" data-step="-10" aria-label="Tune minus 10 kHz">−10 k</button>
+              <button class="btn ghost step" type="button" data-step="10" aria-label="Tune plus 10 kHz">+10 k</button>
+              <button class="btn ghost step" type="button" data-step="100" aria-label="Tune plus 100 kHz">+100 k</button>
+              <button class="btn ghost step" type="button" data-step="1000" aria-label="Tune plus 1 MHz">+1 M</button>
+            </div>
+            <div class="presets" role="group" aria-label="Frequency presets">
+              <button class="chip preset" type="button" data-freq="100.0">FM <small>100.0</small></button>
+              <button class="chip preset" type="button" data-freq="145.5">2 m <small>145.5</small></button>
+              <button class="chip preset" type="button" data-freq="162.4">Marine <small>162.4</small></button>
+              <button class="chip preset" type="button" data-freq="433.92">ISM 433 <small>433.92</small></button>
+              <button class="chip preset" type="button" data-freq="868.0">ISM 868 <small>868.0</small></button>
+              <button class="chip preset" type="button" data-freq="935.0">GSM 900 <small>935.0</small></button>
+              <button class="chip preset" type="button" data-freq="1090.0">ADS-B <small>1090.0</small></button>
+              <button class="chip preset" type="button" data-freq="1575.42">GPS L1 <small>1575.42</small></button>
+            </div>
+          </section>
+          <section class="card">
+            <h2>Open</h2>
+            <div class="linklist">
+              <a class="btn ghost" href="index.html"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg>Full radio receiver</a>
+              <a class="btn ghost" href="map.html"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg>MMN map &amp; saved recordings</a>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+        <h2 class="pane-title">Settings</h2>
+        <div class="grid g-split">
+          <section class="card">
+            <h2>Receiver &amp; logging</h2>
+            <div class="grid2">
             <div class="field sdr">
               <label for="freq">Centre frequency (MHz)</label>
               <input id="freq" type="number" inputmode="decimal" step="0.001" min="0.5" max="6000" value="433.92" list="freqPresets" />
@@ -421,99 +758,50 @@
             <label class="check sdr"><input id="dcRemove" type="checkbox" checked /> Hide DC spike</label>
             <label class="check sdr"><input id="peakHold" type="checkbox" checked /> Peak hold</label>
             <label class="check sdr"><input id="biasTee" type="checkbox" /> Antenna power / bias-T</label>
-          </div>
-          <p class="hint" id="sourceHint"></p>
-          <div class="btns desktop-only" style="margin-top:10px">
-            <button class="btn primary" id="btnConnect">Connect</button>
-            <button class="btn go" id="btnStart">▶ Start</button>
-            <button class="btn stop" id="btnStop">■ Stop</button>
-          </div>
-          <div class="recbox" aria-live="polite">
-            <div class="rechead">
-              <span class="recdot" id="recDot" aria-hidden="true"></span>
-              <b id="recName">No recording yet</b>
-              <span class="spacer"></span>
-              <span class="lbl" id="recSaved"></span>
             </div>
-            <div class="lbl" id="recMeta">Press Start to record</div>
-            <div class="calline">
-              <span class="lbl" id="calStatus">Not calibrated</span>
-              <span class="spacer"></span>
-              <button class="btn ghost small" id="btnCalibrate" title="Pre-drive noise-floor calibration">🎚 Calibrate</button>
+          </section>
+          <section class="card">
+            <h2>App</h2>
+            <div class="linklist">
+              <button class="btn ghost" id="btnInstall" type="button" hidden><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Install app</button>
+              <button class="btn ghost" id="btnOpenConn" type="button"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg>Signal source &amp; connection</button>
             </div>
-            <div class="lbl" id="recHint"></div>
-            <label class="check" id="needFixRow"><input id="needFix" type="checkbox" /> Only log when GPS has a fix</label>
-            <div class="btns">
-              <button class="btn primary" id="btnOpenMap" title="Open this recording in the MMN map">🗺 Open in Map</button>
-              <button class="btn ghost" id="btnCSV" title="Save this recording as a CSV file">⬇ CSV</button>
-              <button class="btn ghost" id="btnShare" title="Send the CSV to another app (email, Drive, WhatsApp…)" hidden>↗ Share</button>
-              <button class="btn ghost" id="btnClear" title="Keep this recording and start a new one">＋ New recording</button>
-              <button class="btn ghost" id="btnSnap" title="Save the spectrum and waterfall as a picture">📷 Snapshot</button>
-            </div>
-            <p class="hint">Recordings save on this device as you measure, survive a reload or a sleeping phone, and are listed in the map.</p>
-          </div>
-        </section>
-
-        <section class="card">
-          <h2>GPS location <span class="spacer"></span><span id="gpsBadge" class="lbl">—</span></h2>
-          <div class="inline" style="margin-bottom:8px">
-            <select id="gpsSource" style="flex:1">
-              <option value="phone">Phone / device GPS</option>
-              <option value="gmouse">G-MOUSE USB (NMEA)</option>
-              <option value="off">Off</option>
-            </select>
-            <button class="btn primary" id="btnGPS" style="min-height:38px">📡 Connect</button>
-          </div>
-          <div class="compassrow">
-            <div class="rose" id="compassRose" aria-hidden="true"><div class="needle" id="compassNeedle"></div></div>
-            <div style="flex:1; min-width:0">
-              <small>Compass (phone)</small>
-              <div class="val" id="gpsCompass">—</div>
-            </div>
-            <button class="btn ghost" id="btnCompass" style="min-height:38px; flex:none">🧭 Compass</button>
-          </div>
-          <table>
-            <tr><td>Latitude</td><td id="gpsLat">—</td></tr>
-            <tr><td>Longitude</td><td id="gpsLon">—</td></tr>
-            <tr><td>Altitude</td><td id="gpsAlt">—</td></tr>
-            <tr><td>Speed</td><td id="gpsSpeed">—</td></tr>
-            <tr><td>Course (GPS)</td><td id="gpsHeading">—</td></tr>
-            <tr><td>Satellites</td><td id="gpsSats">—</td></tr>
-            <tr><td>Fix quality</td><td id="gpsFix">—</td></tr>
-            <tr><td>Accuracy</td><td id="gpsAcc">—</td></tr>
-            <tr><td>Last fix</td><td id="gpsTime">—</td></tr>
-          </table>
-          <div class="nmea" id="gpsNMEA"></div>
-        </section>
-
-        <section class="card">
-          <h2>Network signal detail <span class="spacer"></span><span class="lbl">estimated</span></h2>
-          <table>
-            <tr><td>Connection type</td><td id="nType">—</td></tr>
-            <tr><td>Effective type</td><td id="nEffType">—</td></tr>
-            <tr><td>Downlink</td><td id="nDownlink">—</td></tr>
-            <tr><td>Max downlink</td><td id="nDownMax">—</td></tr>
-            <tr><td>RTT</td><td id="nRTT">—</td></tr>
-            <tr><td>Est. quality</td><td id="nQuality">—</td></tr>
-            <tr><td>Signal est.</td><td id="nRSSI">—</td></tr>
-            <tr><td>Data saver</td><td id="nSave">—</td></tr>
-          </table>
-          <div class="bar"><div id="signalBar"></div></div>
-          <p class="hint">Browsers can't read raw Wi-Fi/cellular RSSI; these values are estimated from the Network Information API (Chrome/Edge).</p>
-        </section>
-
-        <section class="card">
-          <h2>System log <span class="spacer"></span><span class="lbl" id="measState">Idle</span></h2>
-          <div class="log" id="logBox"></div>
-        </section>
-      </div>
+            <p class="hint">Settings are saved on this device. The receiver and the monitor can't use the same SDR at the same time.</p>
+          </section>
+        </div>
+      </section>
     </main>
 
-    <div class="actionbar">
-      <button class="btn primary" id="mBtnConnect">Connect</button>
-      <button class="btn go" id="mBtnStart">▶ Start</button>
-      <button class="btn stop" id="mBtnStop">■ Stop</button>
-    </div>
+    <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source">
+      <svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="bdot" id="bubbleDot"></span>
+    </button>
+
+    <dialog id="connSheet" class="sheet" aria-labelledby="connTitle">
+      <div class="grab" aria-hidden="true"></div>
+      <div class="calhead">
+        <b id="connTitle">Connection</b>
+        <span class="spacer"></span>
+        <button class="btn ghost icon" id="connClose" type="button" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button>
+      </div>
+      <div class="connstat"><span class="dot" id="sheetDot"></span><b id="sheetTxt">No source</b></div>
+      <div class="field">
+              <label for="sourceSelect">Source</label>
+              <select id="sourceSelect">
+                <optgroup label="Radio SDR">
+                  <option value="auto">Auto — RTL-SDR or HackRF (WebUSB)</option>
+                  <option value="rtlsdr">RTL-SDR (WebUSB)</option>
+                  <option value="hackrf">HackRF Pro / HackRF One (WebUSB)</option>
+                </optgroup>
+                <optgroup label="Device network">
+                  <option value="wifi">Wi-Fi signal monitor (Network Info API)</option>
+                  <option value="cellular">Cellular / mobile network monitor</option>
+                </optgroup>
+              </select>
+      </div>
+      <p class="hint" id="sourceHint"></p>
+      <button class="btn primary wide" id="btnConnect" type="button">Connect</button>
+      <div class="sheet-chips" id="sheetChips"></div>
+    </dialog>
 
     <dialog id="calDlg" class="caldlg" aria-labelledby="calTitle">
       <div class="calhead">
@@ -587,11 +875,113 @@
         <div class="calres" id="calRes3"></div>
         <div class="inline">
           <button class="btn primary" id="calSave" disabled>Save calibration</button>
-          <button class="btn ghost" id="calCsv" disabled>⬇ Calibration CSV</button>
+          <button class="btn ghost" id="calCsv" disabled><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Calibration CSV</button>
         </div>
       </section>
     </dialog>
 
     <script src="monitor.js"></script>
+    <script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const TABS = ["receiver", "map", "monitor", "remote", "settings"];
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  let current = null;
+
+  function show(name, opts = {}) {
+    if (!TABS.includes(name)) name = "receiver";
+    if (name === current) { if (opts.hash !== false && location.hash !== "#" + name) history.replaceState(null, "", "#" + name); return; }
+    for (const t of TABS) {
+      const tab = $("tab-" + t), pane = $("pane-" + t), on = t === name;
+      tab.setAttribute("aria-selected", String(on));
+      tab.tabIndex = on ? 0 : -1;
+      pane.hidden = !on;
+      if (on && current !== null && !reduce.matches) {
+        pane.classList.remove("enter"); void pane.offsetWidth; pane.classList.add("enter");
+      }
+    }
+    current = name;
+    try { localStorage.setItem("monitor.tab", name); } catch (_) {}
+    if (opts.hash !== false && location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+    if (opts.focus) $("tab-" + name).focus();
+    if (opts.scrollTop !== false) window.scrollTo({ top: 0 });
+    // Let canvases and Leaflet re-measure now that the pane is visible.
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent("webrx:tab", { detail: name }));
+      window.dispatchEvent(new Event("resize"));
+    });
+  }
+  window.webrxShowTab = (n) => show(n);
+
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => show(tab.dataset.tab));
+    tab.addEventListener("keydown", (e) => {
+      const i = TABS.indexOf(tab.dataset.tab);
+      const k = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      if (k) { e.preventDefault(); show(TABS[(i + k + TABS.length) % TABS.length], { focus: true }); }
+      else if (e.key === "Home") { e.preventDefault(); show(TABS[0], { focus: true }); }
+      else if (e.key === "End") { e.preventDefault(); show(TABS[TABS.length - 1], { focus: true }); }
+    });
+  });
+  let start = location.hash.slice(1);
+  if (!TABS.includes(start)) { try { start = localStorage.getItem("monitor.tab") || "receiver"; } catch (_) { start = "receiver"; } }
+  show(start, { hash: false, scrollTop: false });
+  window.addEventListener("hashchange", () => show(location.hash.slice(1), { hash: false }));
+
+  // ── connection sheet ──
+  const sheet = $("connSheet");
+  const openSheet = () => { if (!sheet.open) sheet.showModal(); };
+  for (const id of ["connBubble", "connChip", "btnOpenConn"]) $(id).addEventListener("click", openSheet);
+  $("connClose").addEventListener("click", () => sheet.close());
+  sheet.addEventListener("click", (e) => { if (e.target === sheet) { const r = sheet.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) sheet.close(); } });
+
+  // ── mirrors of live state (the monitor keeps writing to the original elements) ──
+  const observe = (el, fn, attrs) => { if (!el) return; fn(); new MutationObserver(fn).observe(el, attrs ? { attributes: true, attributeFilter: attrs } : { childList: true, characterData: true, subtree: true }); };
+  const dotState = (cls) => (cls.match(/\b(ok|live|warn|err)\b/) || [""])[0];
+  const syncConn = () => {
+    const st = dotState($("dotSource").className), txt = $("txtSource").textContent;
+    $("bubbleDot").className = "bdot " + st; $("sheetDot").className = "dot " + st; $("sheetTxt").textContent = txt;
+    $("connBubble").classList.toggle("live", st === "live");
+    $("connBubble").setAttribute("aria-label", "Connection: " + txt);
+  };
+  observe($("dotSource"), syncConn, ["class"]); observe($("txtSource"), syncConn);
+
+  const chips = $("sheetChips");
+  for (const k of ["Gps", "Net", "Dsp"]) {
+    const c = document.createElement(k === "Gps" ? "button" : "span");
+    c.className = "chip"; if (k === "Gps") { c.type = "button"; c.title = "Show GPS on the map tab"; }
+    c.innerHTML = '<span class="dot"></span><span></span>';
+    chips.appendChild(c);
+    const sync = () => { c.firstChild.className = $("dot" + k).className; c.lastChild.textContent = $("txt" + k).textContent; };
+    observe($("dot" + k), sync, ["class"]); observe($("txt" + k), sync);
+    if (k === "Gps") c.addEventListener("click", () => { sheet.close(); show("map"); });
+  }
+
+  const stop = $("btnStop");
+  observe(stop, () => { $("recPill").hidden = stop.disabled; }, ["disabled"]);
+  observe($("measState"), () => { $("remoteState").textContent = $("measState").textContent; });
+  const lvl = () => { const n = $("levelNum").textContent; $("remoteLevel").textContent = n === "—" ? "—" : `${n} ${$("levelUnits").textContent}`; };
+  observe($("levelNum"), lvl);
+  observe($("roCenter"), () => { $("remoteFreq").textContent = $("roCenter").textContent; });
+
+  // ── tuner ──
+  const freq = $("freq");
+  const setFreq = (mhz) => {
+    const max = parseFloat(freq.max) || 6000, min = parseFloat(freq.min) || 0.5;
+    mhz = Math.min(max, Math.max(min, Math.round(mhz * 1000) / 1000));
+    freq.value = String(mhz);
+    freq.dispatchEvent(new Event("change", { bubbles: true }));
+    markPreset();
+  };
+  const markPreset = () => document.querySelectorAll(".preset").forEach((b) =>
+    b.setAttribute("aria-pressed", String(Math.abs(parseFloat(b.dataset.freq) - parseFloat(freq.value)) < 1e-6)));
+  document.querySelectorAll(".step").forEach((b) => b.addEventListener("click", () => setFreq(parseFloat(freq.value) + parseFloat(b.dataset.step) / 1000)));
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => setFreq(parseFloat(b.dataset.freq))));
+  freq.addEventListener("change", markPreset);
+  setTimeout(markPreset, 0);
+})();
+    </script>
   </body>
 </html>
