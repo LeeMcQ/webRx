@@ -12,7 +12,7 @@
 //        · [quality: power i16 cdB, noise i16 cdB] · Opus packet.   "PCM4" magic = lossless PCM (IQ modes, ignored here)
 //   GET /api/description, /api/bookmarks, /api/bands  (CORS enabled)
 // Opus is decoded with WebCodecs AudioDecoder where the browser has it.
-import { normaliseUrl, Pcm, type Label, type OwrxMode, type OwrxState } from "./owrx.js";
+import { MAX_BINS, safeJson, normaliseUrl, Pcm, type Label, type OwrxMode, type OwrxState } from "./owrx.js";
 
 const POP = new Uint8Array(256);
 for (let i = 0; i < 256; i++) POP[i] = POP[i >> 1] + (i & 1);
@@ -102,8 +102,12 @@ export class UberClient {
     return this.state === "open";
   }
 
+  /** Bumped by every connect/disconnect: async steps of an older attempt see a stale value and stop. */
+  private gen = 0;
+
   async connect(input: string) {
     this.disconnect(true);
+    const g = ++this.gen;
     this.url = normaliseUrl(input);
     // the UberSDR UI lives at /v2/; the API is at the host root
     const root = this.url.page.replace(/\/v2\/$/, "/");
@@ -134,17 +138,21 @@ export class UberClient {
     } catch (_) {
       this.name = new URL(root).host;
     }
+    if (g !== this.gen) return;
     try {
       const r = await fetch(root + "connection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_session_id: this.sid }) });
       const j = await r.json().catch(() => ({}));
+      if (g !== this.gen) return;
       if (!r.ok || !j.allowed) throw new Error(j.reason || `server refused (${r.status})`);
     } catch (e: any) {
+      if (g !== this.gen) return;
       this.state = "error";
       this.error = `UberSDR refused the connection: ${e?.message ?? e}`;
       this.onLog?.(this.error, "er");
       this.onChange?.();
       return;
     }
+    if (g !== this.gen) return;
     const ws = new WebSocket(`${this.url.ws}ws/user-spectrum?user_session_id=${encodeURIComponent(this.sid)}&mode=binary8&version=2`);
     ws.binaryType = "arraybuffer";
     this.spec = ws;
@@ -158,7 +166,11 @@ export class UberClient {
     }, 10000);
     ws.onmessage = async (e) => {
       if (this.spec !== ws) return;
-      if (typeof e.data === "string") return this.json(JSON.parse(e.data));
+      if (typeof e.data === "string") {
+        const j = safeJson(e.data);
+        if (j) this.json(j);
+        return;
+      }
       const buf = e.data as ArrayBuffer;
       this.bytes += buf.byteLength;
       const u8 = new Uint8Array(buf);
@@ -166,7 +178,8 @@ export class UberClient {
       else if (u8[0] === 0x1f && u8[1] === 0x8b) {
         try {
           const txt = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
-          this.json(JSON.parse(txt));
+          const j = safeJson(txt);
+          if (this.spec === ws && j) this.json(j);
         } catch (_) {}
       }
       if (this.state === "connecting" && this.centreHz && this.fftFrames) {
@@ -186,15 +199,18 @@ export class UberClient {
       this.onLog?.(this.state === "error" ? `UberSDR: ${this.error}` : "UberSDR server disconnected", this.state === "error" ? "er" : "wn");
       this.onChange?.();
     };
+    clearInterval(this.ping);
     this.ping = window.setInterval(() => {
       for (const w of [this.spec, this.aud]) if (w?.readyState === 1) w.send(JSON.stringify({ type: "ping" }));
     }, 30000);
     // labels (best effort)
     fetch(root + "api/bookmarks").then((r) => r.json()).then((b) => {
+      if (g !== this.gen) return;
       this.bookmarks = (Array.isArray(b) ? b : []).slice(0, 3000).map((x: any) => ({ hz: x.frequency, text: String(x.name || ""), kind: "bookmark" as const }));
       this.onChange?.();
     }).catch(() => {});
     fetch(root + "api/bands").then((r) => r.json()).then((b) => {
+      if (g !== this.gen) return;
       this.bands = (Array.isArray(b) ? b : []).map((x: any) => ({ hz: x.start, hi: x.end, text: String(x.label || ""), kind: "band" as const }));
     }).catch(() => {});
   }
@@ -218,6 +234,7 @@ export class UberClient {
     if (u8.length < hl) return;
     const centre = Number(v.getBigUint64((ver === 2 ? 8 : 6) + 8, true));
     const body = u8.subarray(hl);
+    if (body.length > MAX_BINS + 3) return;
     if (flags === 0x05) {
       if (body.length < 3 || !body[2]) return;
       this.scale = { ref: ((body[0] | (body[1] << 8)) << 16) >> 16, step: body[2] };
@@ -267,6 +284,7 @@ export class UberClient {
   }
 
   disconnect(silent = false) {
+    ++this.gen;
     const had = !!this.spec;
     const s = this.spec;
     this.spec = null;

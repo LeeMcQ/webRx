@@ -102,7 +102,7 @@ class Image {
   }
 
   readonly height: number;
-  private data: ImageDataArray;
+  private data: Uint8ClampedArray;
   private xOffset: number;
   private yOffset: number;
   private scrollError: number = 0;

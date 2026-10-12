@@ -19,6 +19,23 @@ const MODES: [string, string, number, number][] = [
   ["sam", "SAM", -4900, 4900],
 ];
 
+/** W/F header: "W/F" · pad u8 · x_bin u32 LE @4 · flags|zoom u32 LE @8 · seq u32 @12.
+ *  x_bin counts bins at maximum zoom, i.e. full span = fftSize · 2^zoomMax bins. */
+export function parseWf(u8: Uint8Array, fullHz: number, zoomMax: number, fftSize = 1024) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const xBin = dv.getUint32(4, true);
+  const zoom = dv.getUint32(8, true) & 0xffff;
+  const spanHz = fullHz / 2 ** zoom;
+  const startHz = (xBin / (fftSize * 2 ** zoomMax)) * fullHz;
+  return { xBin, zoom, seq: dv.getUint32(12, true), spanHz, centreHz: startHz + spanHz / 2 };
+}
+
+/** SND frame: "SND" · flags u8 · seq u32 LE · S-meter u16 BE (dBm = 0.1·v − 127) · audio. */
+export function parseSnd(u8: Uint8Array) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  return { flags: u8[3], seq: dv.getUint32(4, true), smeterDbm: 0.1 * dv.getUint16(8, false) - 127, body: u8.subarray(10), compressed: (u8[3] & 0x10) !== 0 };
+}
+
 export class KiwiClient {
   readonly kind = "kiwisdr";
   readonly label = "KiwiSDR";
@@ -52,6 +69,8 @@ export class KiwiClient {
   zoomLevel = 0;
   zoomMax = 14;
   audioRate = 12000;
+  /** Exact rate the server reports (MSG sample_rate=11998.9…); falls back to audio_rate. */
+  sampleRate = 0;
   onFft?: (spec: Float32Array) => void;
   onChange?: () => void;
   onLog?: (msg: string, kind?: string) => void;
@@ -115,7 +134,11 @@ export class KiwiClient {
       const tag = String.fromCharCode(u8[0], u8[1], u8[2]);
       if (tag === "MSG") this.msg(new TextDecoder().decode(u8.subarray(4)));
       else if (tag === "W/F" && u8.length > 16) {
-        const d = u8.subarray(16);
+        const h = parseWf(u8, this.fullHz, this.zoomMax, this.fftSize);
+        this.centreHz = h.centreHz;
+        this.rateHz = h.spanHz;
+        this.zoomLevel = h.zoom;
+        const d = u8.subarray(16, 16 + Math.min(u8.length - 16, 65536));
         const out = new Float32Array(d.length);
         for (let i = 0; i < d.length; ++i) out[i] = d[i] - 255;
         ++this.fftFrames;
@@ -176,6 +199,9 @@ export class KiwiClient {
           break;
         case "rx_chans":
           this.maxClients = +v || this.maxClients;
+          break;
+        case "sample_rate":
+          this.sampleRate = +v || 0;
           break;
         case "audio_rate":
           this.audioRate = +v || 12000;
@@ -314,10 +340,11 @@ export class KiwiClient {
       const tag = String.fromCharCode(u8[0], u8[1], u8[2]);
       if (tag === "MSG") return this.msg(new TextDecoder().decode(u8.subarray(4)));
       if (tag !== "SND" || u8.length < 10) return;
-      const flags = u8[3];
-      const sm = (u8[8] << 8) | u8[9];
-      this.smeterDb = 0.1 * sm - 127;
-      const body = u8.subarray(10);
+      const f = parseSnd(u8);
+      const flags = f.flags;
+      this.smeterDb = f.smeterDbm;
+      const body = f.body;
+      if (body.length > 65536) return; // oversize audio chunk from a hostile server
       this.audioBytes += body.length;
       let pcm: Int16Array;
       if (flags & 0x10) pcm = this.codec.decode(body);
@@ -325,7 +352,7 @@ export class KiwiClient {
         pcm = new Int16Array(body.length >> 1);
         for (let i = 0; i < pcm.length; ++i) pcm[i] = (body[i * 2] << 24) >> 16 | body[i * 2 + 1];
       }
-      this.pcm.push(pcm, this.audioRate);
+      this.pcm.push(pcm, this.sampleRate || this.audioRate);
     };
     ws.onclose = () => {
       if (this.snd === ws) {
