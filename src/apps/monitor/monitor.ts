@@ -23,6 +23,8 @@ import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "..
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
 import { shared } from "./listen.js";
+import { analyser, CMAP_NAMES, type Src } from "./analyser.js";
+import * as sess from "./sessions.js";
 import { dt, formatBearing, norm } from "./dt.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
@@ -255,7 +257,7 @@ function resetSpectrum() {
   raw = new Float32Array(cfg.fftSize);
   spec = new Float32Array(cfg.fftSize).fill(NaN);
   peak = new Float32Array(cfg.fftSize).fill(-200);
-  wfRow = null;
+  analyser.clearHolds();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -385,8 +387,21 @@ async function stop() {
   log("Measurement stopped");
 }
 
+const FE_KEY = "webrx.frontend.v1";
+let fe: { upconvHz: number; ppm: number } = { upconvHz: 0, ppm: 0 };
+try {
+  fe = { ...fe, ...JSON.parse(localStorage.getItem(FE_KEY) || "{}") };
+} catch (_) {}
+function saveFe() {
+  try {
+    localStorage.setItem(FE_KEY, JSON.stringify(fe));
+  } catch (_) {}
+}
+
 async function applyTuning(dev: RtlDevice) {
-  const hz = Math.round(cfg.freqMHz * 1e6);
+  // cfg.freqMHz is the RF frequency being measured (what the CSV records);
+  // with an upconverter the tuner sits at RF + LO.
+  const hz = Math.round(cfg.freqMHz * 1e6 + fe.upconvHz);
   if (sdr?.kind === "rtlsdr") {
     // The R820T tuner can't reach HF; use direct sampling (Q branch) below 28.8 MHz.
     await dev.setDirectSamplingMethod(hz < 28_800_000 ? DirectSampling.Q : DirectSampling.Off);
@@ -404,6 +419,7 @@ async function sdrLoop(my: number) {
     fillRates(sdr?.kind ?? "rtlsdr");
   }
   shared.setSampleRate(cfg.sampleRate);
+  if (fe.ppm) await ctl(() => dev.setFrequencyCorrection(fe.ppm)).catch(() => log("This device ignored the PPM correction", "wn"));
   await ctl(() => applyTuning(dev));
   await ctl(() => dev.setGain(cfg.gain));
   await ctl(() => dev.enableBiasTee(cfg.biasTee));
@@ -438,7 +454,7 @@ async function sdrLoop(my: number) {
     processBlock(bytes);
     // Same block, same connection: audio and any other receivers.
     try {
-      shared.feed(bytes, block.frequency || cfg.freqMHz * 1e6);
+      shared.feed(bytes, block.frequency ? block.frequency - fe.upconvHz : cfg.freqMHz * 1e6);
     } catch (e: any) {
       if (!listenErr) log(`Audio: ${e?.message ?? e}`, "er");
       listenErr = true;
@@ -470,7 +486,8 @@ function processBlock(bytes: Uint8Array) {
   ++frames;
   lastStats = computeStats();
   if (isSdrMode()) dt.push(levelAt(dtFreqHz(), dt.st.bwHz), gps.fix?.headingDeg);
-  pushWaterfall();
+  analyser.ingest(spec);
+  if (recorder.active) recorder.offer(captureFrame);
   const now = performance.now();
   if (now - lastTimelineAt > 500) {
     lastTimelineAt = now;
@@ -984,7 +1001,7 @@ function snapshot() {
   ctx.font = `${Math.round(13 * devicePixelRatio)}px system-ui, sans-serif`;
   const f = gps.fix;
   ctx.fillText(
-    `${new Date().toLocaleString()} · ${cfg.freqMHz.toFixed(3)} MHz · span ${formatRate(cfg.sampleRate)} · ${sdr?.name ?? cfg.mode}` +
+    `${new Date().toLocaleString()} · ${(srcCentre() / 1e6).toFixed(3)} MHz · span ${formatRate(srcRate())} · ${sdr?.name ?? cfg.mode}` +
       (f ? ` · ${formatLatLon(f)}` : ""),
     10,
     pad * 0.65
@@ -1400,7 +1417,7 @@ function pushNetworkSample() {
   if (timeline.length > 240) timeline.shift();
   pinAvg.addLevels({ rssi: info.rssi });
   if (cfg.logMode === "time") addRecord();
-  pushWaterfall();
+  analyser.ingest(spec);
   dirty = true;
 }
 
@@ -1423,211 +1440,6 @@ function freqLabel(hz: number): string {
   return hz >= 1e9 ? `${(hz / 1e9).toFixed(4)} GHz` : `${(hz / 1e6).toFixed(3)} MHz`;
 }
 
-function updateAutoRange() {
-  if (!frames) return;
-  const sorted = Float32Array.from(spec).sort();
-  const floor = sorted[Math.floor(sorted.length * 0.1)];
-  const top = sorted[sorted.length - 1];
-  const lo = Math.floor((floor - 12) / 5) * 5;
-  const hi = Math.max(lo + 40, Math.ceil((top + 8) / 5) * 5);
-  yLo = yLo * 0.85 + lo * 0.15;
-  yHi = yHi * 0.85 + hi * 0.15;
-}
-
-function drawSpectrum() {
-  const c = $<HTMLCanvasElement>("spectrum");
-  const ctx = fitCanvas(c);
-  const W = c.width;
-  const H = c.height;
-  const dpr = W / Math.max(1, c.clientWidth);
-  ctx.clearRect(0, 0, W, H);
-  const left = 38 * dpr;
-  const bottom = 18 * dpr;
-  const pw = W - left;
-  const ph = H - bottom;
-  const y = (db: number) => ph - ((db - yLo) / (yHi - yLo)) * ph;
-
-  // grid
-  ctx.font = `${10 * dpr}px ui-monospace, monospace`;
-  ctx.fillStyle = "#64748b";
-  ctx.strokeStyle = "rgba(100,116,139,0.18)";
-  ctx.lineWidth = 1;
-  const step = yHi - yLo > 60 ? 20 : 10;
-  for (let d = Math.ceil(yLo / step) * step; d <= yHi; d += step) {
-    const yy = Math.round(y(d)) + 0.5;
-    ctx.beginPath();
-    ctx.moveTo(left, yy);
-    ctx.lineTo(W, yy);
-    ctx.stroke();
-    ctx.fillText(String(d), 2 * dpr, yy + 3 * dpr);
-  }
-  const span = isSdrMode() ? cfg.sampleRate : 0;
-  // Show 5 frequency labels when they fit, otherwise edges + centre.
-  const sample = ctx.measureText(freqLabel(cfg.freqMHz * 1e6)).width;
-  const labelEvery = sample * 5 + 40 * dpr < pw ? 1 : 2;
-  for (let i = 0; i <= 4; ++i) {
-    const xx = Math.round(left + (pw * i) / 4) + 0.5;
-    ctx.beginPath();
-    ctx.moveTo(xx, 0);
-    ctx.lineTo(xx, ph);
-    ctx.stroke();
-    if (span && i % labelEvery === 0) {
-      const label = freqLabel(cfg.freqMHz * 1e6 + ((i - 2) * span) / 4);
-      const tw = ctx.measureText(label).width;
-      ctx.fillText(label, Math.min(W - tw - 2, Math.max(left, xx - tw / 2)), H - 4 * dpr);
-    }
-  }
-  if (!isSdrMode()) {
-    ctx.fillText("noise floor", left + 4 * dpr, H - 4 * dpr);
-    ctx.fillText("estimated level (not RF power)", left + pw / 2 - 70 * dpr, H - 4 * dpr);
-  }
-  // measurement band shading (bandwidth setting, or centre 50%)
-  {
-    const nb = spec.length || cfg.fftSize;
-    const [b0, b1] = bandBins(nb, cfg.sampleRate, bwHz());
-    ctx.fillStyle = "rgba(59,130,246,0.08)";
-    ctx.fillRect(left + (b0 / nb) * pw, 0, ((b1 - b0) / nb) * pw, ph);
-  }
-  // tuned frequency (listening) and DT target
-  if (isSdrMode()) {
-    const xOf = (hz: number) => left + ((hz - cfg.freqMHz * 1e6) / cfg.sampleRate + 0.5) * pw;
-    const dtx0 = xOf(dtFreqHz() - dt.st.bwHz / 2), dtx1 = xOf(dtFreqHz() + dt.st.bwHz / 2);
-    if (dtx1 > left && dtx0 < W) {
-      ctx.fillStyle = "rgba(34,197,94,0.10)";
-      ctx.fillRect(Math.max(left, dtx0), 0, Math.max(1, Math.min(W, dtx1) - Math.max(left, dtx0)), ph);
-    }
-    const tx = Math.round(xOf(tunedHz())) + 0.5;
-    if (tx >= left && tx <= W) {
-      ctx.strokeStyle = shared.audioOn ? "rgba(248,113,113,0.95)" : "rgba(248,113,113,0.5)";
-      ctx.lineWidth = 1.5 * dpr;
-      ctx.beginPath();
-      ctx.moveTo(tx, 0);
-      ctx.lineTo(tx, ph);
-      ctx.stroke();
-    }
-  }
-  // calibrated threshold line
-  {
-    const c = activeCalibration();
-    if (c && isSdrMode()) {
-      ctx.save();
-      ctx.setLineDash([6 * dpr, 4 * dpr]);
-      ctx.strokeStyle = "rgba(248,113,113,0.85)";
-      ctx.lineWidth = 1 * dpr;
-      ctx.beginPath();
-      ctx.moveTo(left, y(c.thresholdDb));
-      ctx.lineTo(left + pw, y(c.thresholdDb));
-      ctx.stroke();
-      ctx.fillStyle = "rgba(248,113,113,0.95)";
-      ctx.fillText(`threshold ${c.thresholdDb.toFixed(1)}`, left + 4 * dpr, y(c.thresholdDb) - 3 * dpr);
-      ctx.restore();
-    }
-  }
-  if (!frames) return;
-
-  const n = spec.length;
-  const xs = (k: number) => left + ((k + 0.5) / n) * pw;
-  // peak hold first, so the live trace stays on top
-  if (cfg.peakHold && isSdrMode()) {
-    ctx.beginPath();
-    for (let k = 0; k < n; ++k) (k ? ctx.lineTo : ctx.moveTo).call(ctx, xs(k), y(peak[k]));
-    ctx.strokeStyle = "rgba(245,158,11,0.55)";
-    ctx.lineWidth = 1 * dpr;
-    ctx.stroke();
-  }
-  // filled trace
-  const grad = ctx.createLinearGradient(0, 0, 0, ph);
-  grad.addColorStop(0, "rgba(34,211,238,0.35)");
-  grad.addColorStop(1, "rgba(59,130,246,0.02)");
-  ctx.beginPath();
-  ctx.moveTo(left, ph);
-  for (let k = 0; k < n; ++k) ctx.lineTo(xs(k), y(spec[k]));
-  ctx.lineTo(W, ph);
-  ctx.closePath();
-  ctx.fillStyle = grad;
-  ctx.fill();
-  ctx.beginPath();
-  for (let k = 0; k < n; ++k) (k ? ctx.lineTo : ctx.moveTo).call(ctx, xs(k), y(spec[k]));
-  ctx.strokeStyle = "#22d3ee";
-  ctx.lineWidth = 1.2 * dpr;
-  ctx.stroke();
-  // peak marker
-  if (lastStats && isSdrMode()) {
-    const k = Math.round(((lastStats.peakHz - cfg.freqMHz * 1e6) / cfg.sampleRate) * n + n / 2);
-    const px = xs(Math.max(0, Math.min(n - 1, k)));
-    const py = y(lastStats.peak);
-    ctx.fillStyle = "#fbbf24";
-    ctx.beginPath();
-    ctx.moveTo(px, py - 2 * dpr);
-    ctx.lineTo(px - 5 * dpr, py - 10 * dpr);
-    ctx.lineTo(px + 5 * dpr, py - 10 * dpr);
-    ctx.fill();
-    const label = `${lastStats.peak.toFixed(1)} dB @ ${freqLabel(lastStats.peakHz)}`;
-    const tw = ctx.measureText(label).width;
-    ctx.fillStyle = "#e2e8f0";
-    ctx.fillText(label, Math.min(W - tw - 4, Math.max(left + 2, px - tw / 2)), Math.max(12 * dpr, py - 14 * dpr));
-  }
-}
-
-// waterfall: turbo-ish colour map
-const LUT = (() => {
-  const stops = [
-    [0.0, [7, 13, 24]],
-    [0.2, [30, 58, 138]],
-    [0.45, [8, 145, 178]],
-    [0.65, [74, 222, 128]],
-    [0.82, [250, 204, 21]],
-    [1.0, [239, 68, 68]],
-  ] as [number, number[]][];
-  const lut = new Uint8ClampedArray(256 * 4);
-  for (let i = 0; i < 256; ++i) {
-    const t = i / 255;
-    let j = 0;
-    while (j < stops.length - 2 && t > stops[j + 1][0]) ++j;
-    const [t0, c0] = stops[j];
-    const [t1, c1] = stops[j + 1];
-    const u = (t - t0) / (t1 - t0);
-    for (let ch = 0; ch < 3; ++ch) lut[i * 4 + ch] = c0[ch] + (c1[ch] - c0[ch]) * u;
-    lut[i * 4 + 3] = 255;
-  }
-  return lut;
-})();
-
-let wfRow: ImageData | null = null;
-let wfPending = 0;
-
-function pushWaterfall() {
-  wfPending++;
-}
-
-function drawWaterfall() {
-  const c = $<HTMLCanvasElement>("waterfall");
-  const ctx = fitCanvas(c);
-  const W = c.width;
-  const H = c.height;
-  if (!frames || wfPending === 0) return;
-  const rows = Math.min(wfPending, 4);
-  wfPending = 0;
-  if (!wfRow || wfRow.width !== W) wfRow = ctx.createImageData(W, 1);
-  // Map spectrum bins to pixels (max-pool when there are more bins than pixels).
-  const n = spec.length;
-  const data = wfRow.data;
-  for (let x = 0; x < W; ++x) {
-    const k0 = Math.floor((x * n) / W);
-    const k1 = Math.max(k0 + 1, Math.floor(((x + 1) * n) / W));
-    let v = -Infinity;
-    for (let k = k0; k < k1; ++k) v = Math.max(v, spec[k]);
-    const t = Math.max(0, Math.min(1, (v - yLo) / (yHi - yLo)));
-    const li = Math.round(t * 255) * 4;
-    data[x * 4] = LUT[li];
-    data[x * 4 + 1] = LUT[li + 1];
-    data[x * 4 + 2] = LUT[li + 2];
-    data[x * 4 + 3] = 255;
-  }
-  ctx.drawImage(c, 0, 0, W, H - rows, 0, rows, W, H - rows);
-  for (let r = 0; r < rows; ++r) ctx.putImageData(wfRow, 0, r);
-}
-
 function drawBand() {
   const c = $<HTMLCanvasElement>("band");
   const ctx = fitCanvas(c);
@@ -1641,7 +1453,7 @@ function drawBand() {
     return;
   }
   const n = spec.length;
-  const [s, e] = bandBins(n, cfg.sampleRate, bwHz());
+  const [s, e] = bandBins(n, srcRate(), bwHz());
   const cols = Math.max(1, Math.min(e - s, Math.floor(W / 2)));
   const bw = W / cols;
   for (let i = 0; i < cols; ++i) {
@@ -1735,12 +1547,16 @@ function frame() {
   if (dirty) {
     dirty = false;
     renderDt();
-    updateAutoRange();
-    drawSpectrum();
-    drawWaterfall();
+    const sc = src();
+    analyser.updateRange(sc);
+    yLo = analyser.yLo;
+    yHi = analyser.yHi;
+    analyser.drawSpectrum($<HTMLCanvasElement>("spectrum"), sc);
+    analyser.drawWaterfall($<HTMLCanvasElement>("waterfall"), sc);
     drawBand();
     drawTimeline();
     updateStatsUi();
+    renderStatusSoon();
   }
   requestAnimationFrame(frame);
 }
@@ -2135,6 +1951,9 @@ function bind() {
   $("btnStart").addEventListener("click", () => start());
   $("mBtnStart")?.addEventListener("click", () => start());
   $("btnStop").addEventListener("click", () => stop());
+  bindSa();
+  bindSessions();
+  bindStatus();
   $("mBtnStop")?.addEventListener("click", () => stop());
   bindListen();
   bindDt();
@@ -2289,16 +2108,22 @@ function bindListen() {
   document.querySelectorAll<HTMLButtonElement>("[data-tune-step]").forEach((b) =>
     b.addEventListener("click", () => tuneTo(tunedHz() + Number(b.dataset.tuneStep) * 1000))
   );
-  // Tap the spectrum to tune there.
+  // Tap the spectrum: tune there, or place marker 1 / marker 2 (SA tap mode).
   const sp = $<HTMLCanvasElement>("spectrum");
   sp.addEventListener("click", (e) => {
-    if (!isSdrMode()) return;
+    if (!isSdrMode() && !pb) return;
     const r = sp.getBoundingClientRect();
-    const left = 38;
-    const x = (e.clientX - r.left - left) / Math.max(1, r.width - left);
-    if (x < 0 || x > 1) return;
-    const step = Math.max(1000, cfg.sampleRate / 2048);
-    tuneTo(Math.round((cfg.freqMHz * 1e6 + (x - 0.5) * cfg.sampleRate) / step) * step);
+    const hz = analyser.xToHz(src(), e.clientX - r.left, r.width);
+    if (hz === null) return;
+    const mode = analyser.cfg.tap;
+    if (mode === "m1") analyser.set({ m1Hz: hz });
+    else if (mode === "m2") analyser.set({ m2Hz: hz });
+    else if (!pb) {
+      const step = Math.max(1000, cfg.sampleRate / 2048);
+      tuneTo(Math.round(hz / step) * step);
+    }
+    renderSa();
+    dirty = true;
   });
   $("freq").addEventListener("change", () => setTimeout(renderListen, 0));
   shared.onChange = renderListen;
@@ -2403,6 +2228,589 @@ function bindDt() {
       dirty = true;
     }
   }, 250);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SA display source (live or playback), analyser controls
+// ═══════════════════════════════════════════════════════════════════
+
+/** Playback state: when set, displays show the recorded frame instead of the live stream. */
+let pb: { centreHz: number; rateHz: number; stash: (number | null)[]; hdg?: number; cur?: [number, number]; route?: () => void } | null = null;
+
+function srcCentre() {
+  return pb ? pb.centreHz : cfg.freqMHz * 1e6;
+}
+function srcRate() {
+  return pb ? pb.rateHz : cfg.sampleRate;
+}
+
+function src(): Src {
+  const n = spec.length || cfg.fftSize;
+  const sdrish = isSdrMode() || !!pb;
+  return {
+    sdr: sdrish,
+    centreHz: srcCentre(),
+    rateHz: srcRate(),
+    spec,
+    raw,
+    cal: pb ? 0 : cfg.cal,
+    peak,
+    peakHold: cfg.peakHold,
+    frames,
+    band: bandBins(n, srcRate(), bwHz()),
+    tunedHz: tunedHz(),
+    audioOn: shared.audioOn,
+    dtLo: dtFreqHz() - dt.st.bwHz / 2,
+    dtHi: dtFreqHz() + dt.st.bwHz / 2,
+    thresholdDb: activeCalibration()?.thresholdDb ?? null,
+    peakStat: lastStats && Number.isFinite(lastStats.peak) ? { peak: lastStats.peak, peakHz: lastStats.peakHz } : null,
+  };
+}
+
+const fmtDb = (v: number | undefined | null) => (v === undefined || v === null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}`);
+const hzShort = (hz: number) => (hz >= 1e6 ? `${+(hz / 1e6).toFixed(3)} MHz` : hz >= 1e3 ? `${+(hz / 1e3).toFixed(2)} kHz` : `${Math.round(hz)} Hz`);
+const setText = (id: string, t: string) => {
+  const el = document.getElementById(id);
+  if (el && el.textContent !== t) el.textContent = t;
+};
+const setVal = (id: string, v: string) => {
+  const el = document.getElementById(id) as HTMLInputElement | null;
+  if (el && document.activeElement !== el && el.value !== v) el.value = v;
+};
+
+function renderSa() {
+  if (!document.getElementById("saZoom")) return;
+  const s = src();
+  const c = analyser.cfg;
+  const [f0, f1] = analyser.viewHz(s);
+  setVal("saCentre", String(+(((f0 + f1) / 2) / 1e6).toFixed(6)));
+  setVal("saStart", String(+(f0 / 1e6).toFixed(6)));
+  setVal("saStop", String(+(f1 / 1e6).toFixed(6)));
+  setText("saSpanRo", hzShort(f1 - f0));
+  setVal("saZoom", String(c.zoom));
+  setVal("saPan", String(Math.round(c.pan * 1000)));
+  setText("saRbw", hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * 1.5));
+  ($("saAuto") as HTMLInputElement).checked = c.autoRange;
+  ($("saRef") as HTMLInputElement).disabled = c.autoRange;
+  ($("saRange") as HTMLSelectElement).disabled = c.autoRange;
+  setVal("saRef", String(Math.round(c.autoRange ? analyser.yHi : c.ref)));
+  setVal("saRange", String(c.range));
+  setVal("saCmap", c.cmap);
+  ($("saLegend") as HTMLElement).style.background = analyser.gradientCss();
+  setVal("saTrace", c.trace);
+  ($("saMax") as HTMLInputElement).checked = c.showMax;
+  ($("saMin") as HTMLInputElement).checked = c.showMin;
+  setVal("saWf", String(c.wfSpeed));
+  setVal("saTap", c.tap);
+  setVal("saChBw", String(c.chBwHz / 1000));
+  const fz = $("btnSaFreeze");
+  fz.setAttribute("aria-pressed", String(analyser.frozen));
+  fz.textContent = analyser.frozen ? "Resume display" : "Freeze display";
+  const lv = (hz: number | null) => (hz === null ? "—" : `${freqLabel(hz)} · ${fmtDb(analyser.levelAtHz(s, hz))} dB`);
+  setText("saM1", lv(c.m1Hz));
+  setText("saM2", lv(c.m2Hz));
+  if (c.m1Hz !== null && c.m2Hz !== null) {
+    const d = analyser.levelAtHz(s, c.m2Hz) - analyser.levelAtHz(s, c.m1Hz);
+    setText("saDelta", `Δ ${hzShort(Math.abs(c.m2Hz - c.m1Hz))} · ${d >= 0 ? "+" : ""}${fmtDb(d)} dB`);
+  } else setText("saDelta", "—");
+  const m = analyser.metrics(s);
+  setText("saFloor", m ? `${fmtDb(m.floor)} dB` : "—");
+  setText("saChPow", m ? `${fmtDb(m.chPower)} dB @ ${freqLabel(m.chCentre)}` : "—");
+  setText("saObw", m ? hzShort(m.obw) : "—");
+  setVal("feUpconv", String(fe.upconvHz / 1e6));
+  setVal("fePpm", String(fe.ppm));
+  setVal("feDeemph", String(shared.cfg.deemph));
+}
+
+function bindSa() {
+  if (!document.getElementById("saZoom")) return;
+  const cm = $<HTMLSelectElement>("saCmap");
+  for (const n of CMAP_NAMES) cm.add(new Option(n[0].toUpperCase() + n.slice(1), n));
+  const num = (id: string) => parseFloat(($(id) as HTMLInputElement).value);
+  const apply = (p: Parameters<typeof analyser.set>[0]) => {
+    analyser.set(p);
+    renderSa();
+    dirty = true;
+  };
+  const retuneCentre = (mhz: number) => {
+    if (pb || !Number.isFinite(mhz) || mhz <= 0) return;
+    const f = $<HTMLInputElement>("freq");
+    f.value = String(+mhz.toFixed(6));
+    f.dispatchEvent(new Event("change"));
+  };
+  // Centre / span / start / stop. The span you can see is the sample rate ÷ zoom.
+  $("saCentre").addEventListener("change", () => {
+    const want = num("saCentre") * 1e6;
+    const s = src();
+    const half = s.rateHz / 2;
+    if (Math.abs(want - s.centreHz) <= half - s.rateHz / (2 * analyser.cfg.zoom)) apply({ pan: 0.5 + (want - s.centreHz) / s.rateHz });
+    else {
+      apply({ pan: 0.5 });
+      retuneCentre(want / 1e6);
+    }
+  });
+  const startStop = () => {
+    const a = num("saStart") * 1e6, b = num("saStop") * 1e6;
+    if (!(b > a)) return renderSa();
+    const span = b - a, mid = (a + b) / 2, rate = srcRate();
+    if (span > rate) log(`Requested span ${hzShort(span)} is wider than the sample rate (${hzShort(rate)}); showing the full span`, "wn");
+    const zoom = Math.max(1, Math.min(64, rate / span));
+    if (Math.abs(mid - srcCentre()) + span / 2 > rate / 2) {
+      retuneCentre(mid / 1e6);
+      apply({ zoom, pan: 0.5 });
+    } else apply({ zoom, pan: 0.5 + (mid - srcCentre()) / rate });
+  };
+  $("saStart").addEventListener("change", startStop);
+  $("saStop").addEventListener("change", startStop);
+  $("saZoom").addEventListener("change", () => apply({ zoom: Number(($("saZoom") as HTMLSelectElement).value) }));
+  $("btnSaZoomIn").addEventListener("click", () => apply({ zoom: analyser.cfg.zoom * 2 }));
+  $("btnSaZoomOut").addEventListener("click", () => apply({ zoom: analyser.cfg.zoom / 2 }));
+  $("btnSaZoomM1").addEventListener("click", () => {
+    const hz = analyser.cfg.m1Hz ?? tunedHz();
+    apply({ pan: 0.5 + (hz - srcCentre()) / srcRate(), zoom: Math.max(4, analyser.cfg.zoom) });
+  });
+  $("saPan").addEventListener("input", () => apply({ pan: num("saPan") / 1000 }));
+  // amplitude
+  $("saAuto").addEventListener("change", () => apply({ autoRange: ($("saAuto") as HTMLInputElement).checked, ref: Math.round(analyser.yHi), range: analyser.cfg.range }));
+  $("saRef").addEventListener("change", () => Number.isFinite(num("saRef")) && apply({ ref: num("saRef") }));
+  $("saRange").addEventListener("change", () => apply({ range: num("saRange") }));
+  // FFT / averaging / peak hold delegate to the existing (measurement) settings, so they stay one source of truth.
+  const mirror = (saId: string, id: string, ev = "change") => {
+    const a = $(saId) as HTMLInputElement, b = $(id) as HTMLInputElement;
+    const sync = () => {
+      if (a.type === "checkbox") a.checked = b.checked;
+      else a.value = b.value;
+    };
+    sync();
+    a.addEventListener(ev, () => {
+      if (a.type === "checkbox") b.checked = a.checked;
+      else b.value = a.value;
+      b.dispatchEvent(new Event(ev));
+      setTimeout(renderSa, 0);
+    });
+    b.addEventListener(ev, sync);
+  };
+  mirror("saFft", "fftSize");
+  mirror("saAvg", "avg", "input");
+  mirror("saPeak", "peakHold");
+  // display
+  cm.addEventListener("change", () => apply({ cmap: cm.value }));
+  $("saTrace").addEventListener("change", () => apply({ trace: ($("saTrace") as HTMLSelectElement).value as any }));
+  $("saMax").addEventListener("change", () => apply({ showMax: ($("saMax") as HTMLInputElement).checked }));
+  $("saMin").addEventListener("change", () => apply({ showMin: ($("saMin") as HTMLInputElement).checked }));
+  $("btnSaClear").addEventListener("click", () => {
+    analyser.clearHolds();
+    peak.fill(-200);
+    dirty = true;
+  });
+  $("saWf").addEventListener("change", () => apply({ wfSpeed: num("saWf") }));
+  $("btnSaFreeze").addEventListener("click", () => {
+    analyser.setFrozen(!analyser.frozen, src());
+    renderSa();
+    dirty = true;
+  });
+  $("btnSaSnap").addEventListener("click", snapshot);
+  // markers
+  $("saTap").addEventListener("change", () => apply({ tap: ($("saTap") as HTMLSelectElement).value as any }));
+  $("btnM1Peak").addEventListener("click", () => apply({ m1Hz: analyser.findPeak(src()) }));
+  $("btnM1Next").addEventListener("click", () => {
+    const s = src();
+    const cur = analyser.cfg.m1Hz === null ? undefined : analyser.levelAtHz(s, analyser.cfg.m1Hz);
+    const hz = analyser.findPeak(s, cur);
+    if (hz === null) log("No lower peak in view", "wn");
+    else apply({ m1Hz: hz });
+  });
+  $("btnM2Delta").addEventListener("click", () => {
+    const s = src();
+    const m1 = analyser.cfg.m1Hz ?? analyser.findPeak(s);
+    if (m1 === null) return;
+    const m2 = analyser.findPeak(s, analyser.levelAtHz(s, m1));
+    apply({ m1Hz: m1, m2Hz: analyser.cfg.m2Hz === null ? m2 ?? m1 : null });
+  });
+  $("btnMTune").addEventListener("click", () => analyser.cfg.m1Hz !== null && !pb && tuneTo(analyser.cfg.m1Hz));
+  $("btnMClear").addEventListener("click", () => apply({ m1Hz: null, m2Hz: null }));
+  $("saChBw").addEventListener("change", () => num("saChBw") > 0 && apply({ chBwHz: num("saChBw") * 1000 }));
+  // front end
+  $("feUpconv").addEventListener("change", () => {
+    const v = num("feUpconv");
+    fe.upconvHz = Number.isFinite(v) ? Math.round(v * 1e6) : 0;
+    saveFe();
+    log(fe.upconvHz ? `Upconverter LO ${hzShort(fe.upconvHz)}: the tuner sits at RF + LO` : "Upconverter off");
+    if (device && running) ctl(() => applyTuning(device!)).catch(() => {});
+  });
+  $("fePpm").addEventListener("change", () => {
+    const v = num("fePpm");
+    fe.ppm = Number.isFinite(v) ? Math.round(v) : 0;
+    saveFe();
+    if (device) ctl(() => device!.setFrequencyCorrection(fe.ppm)).catch(() => log("This device ignored the PPM correction", "wn"));
+  });
+  $("feDeemph").addEventListener("change", () => shared.set({ deemph: num("feDeemph") }));
+  // wheel zoom on desktop
+  $("spectrum").addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey && !e.altKey) return;
+      e.preventDefault();
+      apply({ zoom: analyser.cfg.zoom * (e.deltaY < 0 ? 1.25 : 0.8) });
+    },
+    { passive: false }
+  );
+  setInterval(() => document.getElementById("pane-sa")?.hidden === false && renderSa(), 500);
+  renderSa();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Sessions: record spectrum + GPS + heading, list, export, playback
+// ═══════════════════════════════════════════════════════════════════
+
+const recorder = new sess.SessionRecorder();
+const player = new sess.Player();
+const LIM_KEY = "webrx.sessions.limits";
+try {
+  recorder.limits = { ...recorder.limits, ...JSON.parse(localStorage.getItem(LIM_KEY) || "{}") };
+} catch (_) {}
+
+function captureFrame(): sess.Frame {
+  const q = sess.quantise(spec);
+  const f = gps.fix;
+  return {
+    t: Date.now(),
+    c: cfg.freqMHz * 1e6,
+    r: cfg.sampleRate,
+    b: q.b,
+    s: q.s,
+    lat: f?.lat,
+    lon: f?.lon,
+    acc: f?.accuracyM,
+    spd: f?.speedKmh,
+    crs: f?.headingDeg,
+    hdg: dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined),
+    peak: lastStats?.peak,
+    peakHz: lastStats?.peakHz,
+    band: lastStats?.band,
+    spec: lastStats?.spec,
+    dt: dt.level,
+  };
+}
+
+const fmtDur = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`;
+};
+const fmtMB = (b: number) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} kB`);
+
+async function toggleRecord() {
+  if (recorder.active) {
+    const m = await recorder.stop();
+    if (m) log(`Session “${m.name}” saved — ${m.frames} frames, ${fmtDur(m.endedAt - m.startedAt)}, ${fmtMB(m.bytes)}`, "ok");
+    renderSessions();
+    return;
+  }
+  if (pb) stopPlayback();
+  if (!isSdrMode()) return log("Session recording needs an SDR source (spectrum frames)", "wn");
+  if (!running) await start();
+  if (!running) return;
+  const d = new Date();
+  recorder.start(`${freqLabel(cfg.freqMHz * 1e6)} · ${d.toLocaleDateString()} ${d.toLocaleTimeString().slice(0, 5)}`, sdr?.name ?? cfg.mode, cfg.cal ? "dBm" : "dBFS", cfg.freqMHz * 1e6, cfg.sampleRate);
+  log(`Recording session (spectrum ${recorder.limits.fps}/s, GPS, heading, levels) — limit ${recorder.limits.maxMB} MB / ${recorder.limits.maxMinutes} min`, "ok");
+}
+
+function renderRecButton() {
+  const b = document.getElementById("btnRec");
+  if (!b) return;
+  const on = recorder.active;
+  b.setAttribute("aria-pressed", String(on));
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-label", on ? "Stop recording session" : "Record session");
+  b.title = on ? "Stop recording session" : "Record session (spectrum, GPS, heading, levels)";
+  const m = recorder.meta;
+  setText("recTimer", on && m ? `${fmtDur(m.endedAt - m.startedAt)} · ${fmtMB(m.bytes)}` : "Rec");
+}
+
+async function renderSessions() {
+  const box = document.getElementById("sessList");
+  if (!box) return;
+  let list: sess.SessionMeta[] = [];
+  try {
+    list = await sess.listSessions();
+  } catch (e: any) {
+    box.textContent = `Sessions unavailable: ${e?.message ?? e}`;
+    return;
+  }
+  const total = list.reduce((a, m) => a + m.bytes, 0);
+  setText("sessUsage", list.length ? `${list.length} session${list.length > 1 ? "s" : ""} · ${fmtMB(total)}` : "No sessions yet");
+  box.innerHTML = "";
+  for (const m of list) {
+    const row = document.createElement("div");
+    row.className = "sessrow";
+    row.dataset.id = m.id;
+    const live = recorder.meta?.id === m.id;
+    row.innerHTML = `<div class="sessinfo"><input class="sessname" aria-label="Session name" value="${m.name.replace(/"/g, "&quot;")}" ${live ? "disabled" : ""}/>
+      <small>${new Date(m.startedAt).toLocaleString()} · ${fmtDur(m.endedAt - m.startedAt)} · ${m.frames} frames · ${fmtMB(m.bytes)}${live ? " · recording" : ""}</small></div>
+      <div class="sessbtns">
+        <button class="btn primary small" data-act="play" type="button" ${live ? "disabled" : ""}>Play</button>
+        <button class="btn ghost small" data-act="json" type="button">JSON</button>
+        <button class="btn ghost small" data-act="csv" type="button">CSV</button>
+        <button class="btn ghost small" data-act="del" type="button" aria-label="Delete ${m.name.replace(/"/g, "&quot;")}" ${live ? "disabled" : ""}>Delete</button>
+      </div>`;
+    box.appendChild(row);
+  }
+}
+
+async function onSessionAction(act: string, id: string) {
+  const list = await sess.listSessions();
+  const m = list.find((x) => x.id === id);
+  if (!m) return;
+  const stamp = new Date(m.startedAt).toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  if (act === "play") return startPlayback(m);
+  if (act === "json") return download(new Blob([await sess.exportJson(m)], { type: "application/json" }), `webrx-session_${stamp}.json`);
+  if (act === "csv") return download(new Blob([await sess.exportCsv(m)], { type: "text/csv" }), `webrx-session_${stamp}.csv`);
+  if (act === "del") {
+    if (!confirm(`Delete session “${m.name}”? This can't be undone.`)) return;
+    if (player.meta?.id === id) stopPlayback();
+    await sess.deleteSession(id);
+    log(`Session “${m.name}” deleted`);
+    renderSessions();
+  }
+}
+
+async function startPlayback(m: sess.SessionMeta) {
+  if (recorder.active) await toggleRecord();
+  if (running) await stop();
+  const frames = await sess.loadFrames(m.id);
+  if (!frames.length) return log("This session has no frames", "wn");
+  if (!pb) pb = { centreHz: frames[0].c, rateHz: frames[0].r, stash: dt.st.bins.slice() };
+  dt.st.bins = new Array(360).fill(null);
+  analyser.clearHolds();
+  timeline.length = 0;
+  const pts = frames.filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon)).map((f) => ({ lat: f.lat!, lon: f.lon!, level: f.band }));
+  const lv = frames.map((f) => f.band).filter((x): x is number => Number.isFinite(x));
+  pb.route = () => {
+    liveMap?.setPlayback(pts, lv.length ? Math.min(...lv) : -100, lv.length ? Math.max(...lv) : -20);
+    if (pb?.cur) liveMap?.setPlaybackCursor(pb.cur[0], pb.cur[1]);
+  };
+  pb.route();
+  renderSessions();
+  player.load(m, frames);
+  $("player").hidden = false;
+  document.body.classList.add("playing");
+  setText("pbName", m.name);
+  setChip("dotSource", "txtSource", "Playback", "warn");
+  log(`Playing “${m.name}” — ${frames.length} frames. Live measuring is paused; nothing is added to the thesis recording.`, "ok");
+  player.play();
+}
+
+function stopPlayback() {
+  if (!pb) return;
+  player.stop();
+  dt.st.bins = pb.stash;
+  dt.save(true);
+  pb = null;
+  liveMap?.setPlayback(null);
+  $("player").hidden = true;
+  document.body.classList.remove("playing");
+  resetSpectrum();
+  frames = 0;
+  lastStats = null;
+  timeline.length = 0;
+  setChip("dotSource", "txtSource", device ? `${sdr?.name ?? "SDR"} ready` : "No source", device ? "ok" : "");
+  updateReadout();
+  dirty = true;
+  log("Playback closed");
+}
+
+/** Show one recorded frame everywhere, as if it were live. */
+function showFrame(f: sess.Frame) {
+  if (!pb) return;
+  pb.centreHz = f.c;
+  pb.rateHz = f.r;
+  const d = sess.dequantise(f);
+  if (spec.length !== d.length) {
+    spec = new Float32Array(d.length);
+    raw = new Float32Array(d.length);
+    peak = new Float32Array(d.length).fill(-200);
+  }
+  spec.set(d);
+  raw.set(d);
+  for (let k = 0; k < d.length; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, d[k]) : d[k];
+  ++frames;
+  lastStats = { peak: f.peak ?? NaN, peakHz: f.peakHz ?? NaN, band: f.band ?? NaN, spec: f.spec ?? NaN };
+  timeline.push({ peak: lastStats.peak, band: lastStats.band });
+  if (timeline.length > 240) timeline.shift();
+  analyser.ingest(spec);
+  // DT: feed the recorded heading with the level at the DT target (or the recorded DT level).
+  const lvl = Number.isFinite(f.dt as number) ? (f.dt as number) : levelAt(dtFreqHz(), dt.st.bwHz);
+  if (f.hdg !== undefined && Number.isFinite(lvl)) {
+    const src0 = dt.st.source, man = dt.st.manual;
+    dt.st.source = "manual";
+    dt.st.manual = f.hdg - dt.st.northOffset;
+    dt.push(lvl);
+    dt.st.source = src0;
+    dt.st.manual = man;
+  }
+  pb.hdg = f.hdg;
+  if (Number.isFinite(f.lat) && Number.isFinite(f.lon)) {
+    pb.cur = [f.lat!, f.lon!];
+    liveMap?.setPlaybackCursor(f.lat!, f.lon!);
+  }
+  setText("roCenter", freqLabel(f.c));
+  setText("roSpan", formatRate(f.r).replace("sps", "Hz"));
+  dirty = true;
+}
+
+function renderPlayer() {
+  if (!player.meta) return;
+  setText("pbTime", `${fmtDur(player.position)} / ${fmtDur(player.duration)}`);
+  const seek = $<HTMLInputElement>("pbSeek");
+  if (document.activeElement !== seek) seek.value = String(Math.round((player.position / Math.max(1, player.duration)) * 1000));
+  const b = $("pbPlay");
+  b.setAttribute("aria-label", player.playing ? "Pause" : "Play");
+  b.innerHTML = `<svg class="i" aria-hidden="true"><use href="#${player.playing ? "i-pause" : "i-play"}"/></svg>`;
+}
+
+function bindSessions() {
+  recorder.onChange = () => {
+    renderRecButton();
+    renderSessions();
+  };
+  recorder.onLimit = (why) => {
+    log(`Session recording stopped: ${why} reached`, "wn");
+    renderSessions();
+  };
+  player.onFrame = (f) => showFrame(f);
+  player.onState = renderPlayer;
+  const rb = document.getElementById("btnRec");
+  rb?.addEventListener("click", toggleRecord);
+  setInterval(renderRecButton, 1000);
+  document.getElementById("sessList")?.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("button[data-act]") as HTMLButtonElement | null;
+    const row = (e.target as HTMLElement).closest(".sessrow") as HTMLElement | null;
+    if (b && row) onSessionAction(b.dataset.act!, row.dataset.id!);
+  });
+  document.getElementById("sessList")?.addEventListener("change", async (e) => {
+    const inp = e.target as HTMLInputElement;
+    const row = inp.closest(".sessrow") as HTMLElement | null;
+    if (inp.classList.contains("sessname") && row) {
+      await sess.renameSession(row.dataset.id!, inp.value.trim() || "Untitled session");
+      log("Session renamed");
+    }
+  });
+  const file = document.getElementById("sessFile") as HTMLInputElement | null;
+  document.getElementById("btnSessImport")?.addEventListener("click", () => file?.click());
+  file?.addEventListener("change", async () => {
+    for (const f of Array.from(file.files ?? [])) {
+      try {
+        const m = await sess.importJson(await f.text());
+        log(`Imported “${m.name}” (${m.frames} frames)`, "ok");
+      } catch (e: any) {
+        log(`Import failed (${f.name}): ${e?.message ?? e}`, "er");
+      }
+    }
+    file.value = "";
+    renderSessions();
+  });
+  $("pbPlay")?.addEventListener("click", () => (player.playing ? player.pause() : player.play()));
+  $("pbPrev")?.addEventListener("click", () => {
+    player.pause();
+    player.step(-1);
+  });
+  $("pbNext")?.addEventListener("click", () => {
+    player.pause();
+    player.step(1);
+  });
+  $("pbSeek")?.addEventListener("input", () => player.seek(Number(($("pbSeek") as HTMLInputElement).value) / 1000));
+  $("pbSpeed")?.addEventListener("change", () => player.setSpeed(Number(($("pbSpeed") as HTMLSelectElement).value)));
+  $("pbClose")?.addEventListener("click", stopPlayback);
+  // limits
+  for (const [id, key] of [["limMB", "maxMB"], ["limMin", "maxMinutes"], ["limFps", "fps"]] as const) {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (!el) continue;
+    el.value = String(recorder.limits[key]);
+    el.addEventListener("change", () => {
+      const v = Number(el.value);
+      if (Number.isFinite(v) && v > 0) (recorder.limits as any)[key] = v;
+      try {
+        localStorage.setItem(LIM_KEY, JSON.stringify(recorder.limits));
+      } catch (_) {}
+    });
+  }
+  // Starting live measuring closes playback; stopping it finishes a session.
+  $("btnStart").addEventListener("click", () => pb && stopPlayback(), { capture: true });
+  const stopBtn = $("btnStop");
+  new MutationObserver(() => {
+    if (stopBtn.hasAttribute("disabled") && recorder.active) toggleRecord();
+  }).observe(stopBtn, { attributes: true, attributeFilter: ["disabled"] });
+  window.addEventListener("pagehide", () => recorder.flush());
+  renderRecButton();
+  renderSessions();
+  window.addEventListener("webrx:tab", (e) => {
+    const t = (e as CustomEvent).detail;
+    if (t === "mt") renderSessions();
+    if (pb?.route && (t === "mt" || t === "dt")) setTimeout(() => pb?.route?.(), 350);
+  });
+  // test hook for headless checks (no hardware): inject frames as if they came from the SDR
+  (window as any).__webrxTest = { recorder, player, sess, captureFrame, showFrame, startPlayback, stopPlayback, analyser };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Status panel (all tabs)
+// ═══════════════════════════════════════════════════════════════════
+
+let statusAt = 0;
+function renderStatusSoon() {
+  const now = performance.now();
+  if (now - statusAt < 250) return;
+  statusAt = now;
+  renderStatus();
+}
+
+function renderStatus() {
+  if (!document.getElementById("statusPanel")) return;
+  const sdrMode = isSdrMode() || !!pb;
+  const s = src();
+  const [f0, f1] = analyser.viewHz(s);
+  setText("spCentre", sdrMode ? freqLabel(srcCentre()) : "—");
+  setText("spTuned", sdrMode && !pb ? freqLabel(tunedHz()) : "—");
+  setText("spSpan", sdrMode ? `${hzShort(f1 - f0)}${analyser.cfg.zoom > 1 ? ` (×${+analyser.cfg.zoom.toFixed(2)})` : ""}` : "—");
+  setText("spRbw", sdrMode ? `${hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * 1.5)} · FFT ${spec.length || cfg.fftSize}` : "—");
+  setText("spRate", sdrMode ? formatRate(srcRate()) : "—");
+  setText("spGain", isSdrMode() ? `${cfg.gain === null ? "auto" : `${cfg.gain} dB`}${effectiveKind() === "hackrf" ? ` · amp ${cfg.amp ? "on" : "off"}` : ""}` : "—");
+  setText("spMode", shared.audioOn ? `${shared.cfg.scheme} · audio on` : `${shared.cfg.scheme} · audio off`);
+  const u = cfg.cal ? "dBm" : "dBFS";
+  setText("spLevel", lastStats ? `${fmtDb(lastStats.band)} ${u}` : "—");
+  setText("spPeak", lastStats && Number.isFinite(lastStats.peak) ? `${fmtDb(lastStats.peak)} @ ${sdrMode ? freqLabel(lastStats.peakHz) : "—"}` : "—");
+  const m = sdrMode ? analyser.metrics(s) : null;
+  setText("spFloor", m ? `${fmtDb(m.floor)} ${u}` : "—");
+  const f = gps.fix;
+  setText("spGps", f ? `${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}${f.accuracyM ? ` ±${Math.round(f.accuracyM)} m` : ""}` : gps.status.state);
+  const h = pb ? pb.hdg : dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined);
+  setText("spHeading", h !== undefined ? formatBearing(h) : "—");
+  setText("spRec", pb ? `playback ${fmtDur(player.position)}` : recorder.active && recorder.meta ? `● session ${fmtDur(recorder.meta.endedAt - recorder.meta.startedAt)}` : running ? "measuring" : "idle");
+  setText("spDevice", pb ? `${player.meta?.device ?? "recording"} (recorded)` : sdr ? `${sdr.name}${fe.upconvHz ? ` · LO ${hzShort(fe.upconvHz)}` : ""}${fe.ppm ? ` · ${fe.ppm} ppm` : ""}` : isSdrMode() ? "not connected" : cfg.mode);
+}
+
+function bindStatus() {
+  const panel = document.getElementById("statusPanel");
+  if (!panel) return;
+  const btn = $("spToggle");
+  const KEY = "webrx.status.open";
+  const set = (open: boolean) => {
+    panel.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", String(open));
+    btn.setAttribute("aria-label", open ? "Hide live status" : "Show live status");
+    try {
+      localStorage.setItem(KEY, open ? "1" : "0");
+    } catch (_) {}
+  };
+  let open = false;
+  try {
+    open = localStorage.getItem(KEY) === "1";
+  } catch (_) {}
+  set(open);
+  btn.addEventListener("click", () => set(!panel.classList.contains("open")));
+  setInterval(renderStatus, 1000);
+  renderStatus();
 }
 
 // ═══════════════════════════════════════════════════════════════════
