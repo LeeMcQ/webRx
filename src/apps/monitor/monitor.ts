@@ -4028,7 +4028,53 @@ function bindDtLater() {
   });
   bindDtLaterFeatures();
 }
-function bindDtLaterFeatures() {}
+function bindDtLaterFeatures() {
+  const heat = $<HTMLInputElement>("dtHeat");
+  heat.addEventListener("change", () => { dtHeatOn = heat.checked; dtRenderHeat(); });
+  $("btnDtClearTrack").addEventListener("click", () => { dtTrack.length = 0; dtRenderHeat(); });
+  // Shared session link: fixes travel in the URL (?dts=…), nothing is uploaded anywhere.
+  $("btnDtShare").addEventListener("click", async () => {
+    if (!dt.st.fixes.length) return log("No fixes to share yet", "wn");
+    const url = `${location.origin}${location.pathname}?dts=${encodeSession({ v: 1, name: dt.st.session, fixes: dt.st.fixes })}#dt`;
+    try {
+      if (navigator.share) await navigator.share({ title: `webRx DF: ${dt.st.session}`, url });
+      else { await navigator.clipboard.writeText(url); log("Share link copied — teammates open it to merge your fixes", "ok"); }
+    } catch (_) { prompt("Copy this link", url); }
+  });
+  const merge = (fixes: FixRecord[], from: string) => {
+    const key = (f: FixRecord) => `${f.t}|${f.lat.toFixed(5)}|${f.lon.toFixed(5)}|${f.bearing}`;
+    const have = new Set(dt.st.fixes.map(key));
+    const add = fixes.filter((f) => !have.has(key(f)));
+    dt.st.fixes.push(...add);
+    dt.save(true);
+    renderDtFixes();
+    dtRenderSessions();
+    log(`Imported ${add.length} fix(es) from ${from}${fixes.length - add.length ? ` (${fixes.length - add.length} duplicates skipped)` : ""}`, "ok");
+  };
+  const q = new URLSearchParams(location.search).get("dts");
+  if (q) {
+    const ss = decodeSession(q);
+    if (ss && confirm(`Merge ${ss.fixes.length} shared fixes from “${ss.name}” into “${dt.st.session}”?`)) merge(ss.fixes, `link “${ss.name}”`);
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
+  const file = $<HTMLInputElement>("dtImportFile");
+  $("btnDtImport").addEventListener("click", () => file.click());
+  file.addEventListener("change", async () => {
+    const f = file.files?.[0];
+    file.value = "";
+    if (!f) return;
+    const text = await f.text();
+    try {
+      const ss = text.trim().startsWith("{") ? decodeSession(btoa(unescape(encodeURIComponent(text))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")) : null;
+      const fixes = ss ? ss.fixes : importKraken(text, dtFreqHz());
+      if (!fixes.length) return log("No bearings found in that file (expected webRx JSON, KrakenSDR XML/CSV or DF Aggregator JSON)", "wn");
+      merge(fixes, f.name);
+    } catch (e: any) {
+      log(`Import failed: ${e?.message ?? e}`, "er");
+    }
+  });
+  $("btnDtExpJSON").addEventListener("click", () => download(new Blob([JSON.stringify({ v: 1, name: dt.st.session, fixes: dt.st.fixes }, null, 1)], { type: "application/json" }), `${dt.st.session.replace(/[^\w.-]+/g, "_")}.json`));
+}
 
 // ── Hardware controls (SA tab): RTL AGC, HackRF LNA/VGA/baseband, wideband sweep ──
 function hwUi() {
@@ -4148,4 +4194,22 @@ function bindHardware() {
 
 /** RSSI-vs-position track for the DT heatmap and GPX export. */
 var dtTrack: { lat: number; lon: number; db: number; t: number }[] = [];
-function dtTrackSample() {}
+let dtHeatOn = false;
+function dtTrackSample() {
+  const f = gps.fix, lv = dt.level;
+  if (!f || lv === undefined || !running) return;
+  const last = dtTrack[dtTrack.length - 1];
+  const now = Date.now();
+  if (last && now - last.t < 1000 && haversineM(last.lat, last.lon, f.lat, f.lon) < 3) {
+    if (lv > last.db) last.db = lv; // keep the strongest level per spot (antenna pointed at the target)
+    return;
+  }
+  dtTrack.push({ lat: f.lat, lon: f.lon, db: lv, t: now });
+  if (dtTrack.length > 5000) dtTrack.shift();
+  if (dtHeatOn && dtTrack.length % 5 === 0) dtRenderHeat();
+}
+function dtRenderHeat() {
+  if (!dtHeatOn || !dtTrack.length) return liveMap?.setHeat(null);
+  const lv = dtTrack.map((p) => p.db), lo = Math.min(...lv), hi = Math.max(...lv);
+  liveMap?.setHeat(dtTrack.map((p) => [p.lat, p.lon, Math.max(0.05, (p.db - lo) / Math.max(1, hi - lo))]));
+}
