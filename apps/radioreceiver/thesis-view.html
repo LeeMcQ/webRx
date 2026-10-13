@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-09hajv2zExo8HSimRq4dBiYFsoeErStJiqB4CmQGlTo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-On2aHoWJFHZLZg7JxBOZgURrGek/L0qagrFSCcRq67M='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
@@ -747,6 +747,16 @@
       }
       @media (max-height: 500px) and (orientation: landscape) and (max-width: 999px) { .sadrawer { bottom: 0; left: calc(var(--rail-w) + var(--sal)); max-height: 80dvh; } }
       @media (min-width: 1000px) { .sdhead #saDrawerClose { display: none; } .sadrawer { position: sticky; top: calc(56px + var(--sat) + var(--s4)); max-height: calc(100dvh - 56px - var(--sat) - 2 * var(--s4)); overflow: auto; } }
+
+      /* presets + first run */
+      .pchips { display: flex; flex-wrap: wrap; gap: var(--s2); margin-bottom: var(--s2); }
+      .pchip small { color: var(--muted); font-size: 10px; } .pchip[aria-disabled="true"] { opacity: .5; cursor: not-allowed; border-style: dashed; }
+      .pdel { margin-left: 4px; color: var(--muted); } .presetbox h3 { font-size: var(--t12); margin: var(--s2) 0; color: var(--muted); }
+      .frdlg { max-height: 92dvh; overflow: auto; }
+      .frsrc, .frgrid { display: grid; gap: var(--s2); grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); margin: var(--s3) 0; }
+      .frtask { display: flex; flex-direction: column; gap: 4px; text-align: left; min-height: 72px; padding: var(--s3); border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); color: var(--text); font: inherit; cursor: pointer; }
+      .frtask b { font-size: var(--t15); } .frtask small { color: var(--muted); font-size: var(--t12); }
+      .frtask:hover { border-color: var(--accent); } .frtask[aria-disabled="true"] { opacity: .45; cursor: not-allowed; border-style: dashed; }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -1029,6 +1039,7 @@
             <p class="hint">Gain, amp, bias-T, sample rate and DC removal are in Settings. With an upconverter the tuner sits at RF + LO; all readouts and recordings show the RF frequency.</p>
           </div>
         </details>
+          <section class="card" id="presetCard"><h2>Presets <span class="spacer"></span><span class="lbl">12 built-in · recent · mine</span></h2><div id="presetBox" class="presetbox"></div></section>
           <section class="card sdr" id="tunerCard">
             <h2>Centre frequency <span class="spacer"></span><span class="lbl">steps · presets</span></h2>
             <div class="tuner-steps">
@@ -1551,6 +1562,7 @@
               </div>
               <div class="field">
                 <label for="setStartTab">Open on</label>
+                <button class="btn ghost small" id="btnRunSetup" type="button" style="margin-bottom:8px">Run setup again</button>
                 <select id="setStartTab"><option value="last">Last tab used</option><option value="sa">SA · Spectrum</option><option value="mt">MT · Tracking</option><option value="dt">DT · Direction</option><option value="cm">CM · Connect reMote</option><option value="rm">RM · Survey</option><option value="wf">WF · Wi-Fi</option><option value="bands">Bands · RF Tech</option></select>
               </div>
               <label class="check"><input id="setMotion" type="checkbox" /> Reduce motion</label>
@@ -1637,6 +1649,23 @@
         <svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="bdot" id="bubbleDot"></span>
       </button>
     </div>
+
+    <dialog id="firstRun" class="sheet frdlg" aria-labelledby="frTitle">
+      <div class="calhead"><b id="frTitle">Welcome to webRx</b><span class="spacer"></span><button class="btn ghost small" id="frSkip" type="button">Skip</button></div>
+      <div id="frStep1">
+        <p class="hint">How do you want to start? You can change this any time (Settings → Run setup again).</p>
+        <div class="frsrc">
+          <button type="button" class="frtask" data-path="radio"><b>Connect radio</b><small>RTL-SDR or HackRF over USB</small></button>
+          <button type="button" class="frtask" data-path="remote"><b>No radio? Try Remote</b><small>Public KiwiSDR / UberSDR / OpenWebRX</small></button>
+          <button type="button" class="frtask" data-path="demo"><b>Demo</b><small>Look around without a receiver</small></button>
+        </div>
+      </div>
+      <div id="frStep2" hidden>
+        <p class="hint" id="frPathNote"></p>
+        <div class="frgrid" id="frTasks"></div>
+        <button class="btn ghost small" id="frBack" type="button">← Back</button>
+      </div>
+    </dialog>
 
     <dialog id="moreSheet" class="sheet" aria-labelledby="moreTitle">
       <div class="grab" aria-hidden="true"></div>
@@ -1804,6 +1833,7 @@
     });
   }
   window.webrxShowTab = (n) => show(n);
+  window.webrxOpenSoftKey = (k) => { const b = document.querySelector(`.sk[data-sk="${k}"]`); if (b && b.getAttribute("aria-pressed") !== "true") b.click(); };
 
   document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
     tab.addEventListener("click", () => show(tab.dataset.tab));
@@ -1925,7 +1955,7 @@
 
   // ── SA soft keys: each key owns existing cards (moved, not copied — ids and listeners keep working) ──
   const SK = {
-    preset: { t: "PRESET · presets & quick tune", cards: ["tunerCard"] },
+    preset: { t: "PRESET · presets & quick tune", cards: ["presetCard", "tunerCard"] },
     freq: { t: "FREQ · frequency, span & sweep", cards: ["saFreqCard", "sweepCard"] },
     ampl: { t: "AMPL · amplitude, gain & front end", cards: ["saResCard", "hwCard", "saRfCard"] },
     bw: { t: "BW · bandwidth & listen", cards: ["listenCard"] },

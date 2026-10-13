@@ -1,4 +1,5 @@
 // Layout model: hash aliases, storage migration, shared tuning state, unit badges.
+import { PRESETS, TASKS, pushRecent, supportFor } from "../src/apps/monitor/presets.js";
 import { TuningState, loadTuning, TUNING_KEY, migrateStorage, paneIdFor, resolveTab, unitFor, LAYOUT_VERSION_KEY } from "../src/apps/monitor/layout.js";
 
 declare const process: { exit(code: number): never };
@@ -88,6 +89,22 @@ check("CM pane id", paneIdFor("cm") === "pane-cm");
   t2.setStartup(433.92e6, "last");
   check("start-up 'last' opens on last tuned", t2.openingHz() === 145.5e6);
   check("no legacy DT target → follow", loadTuning(new Mem(), { freqHz: 1e8, dtTargetHz: null }).s.dt.mode === "follow");
+}
+
+// ── presets ──
+{
+  check("12 presets", PRESETS.length === 12, PRESETS.length);
+  const by = (id: string) => PRESETS.find((p) => p.id === id)!;
+  check("RTL: wideband sweep needs HackRF", /HackRF/.test(supportFor(by("sweep"), "radio", "rtlsdr") || ""));
+  check("RTL: cellular needs HackRF", supportFor(by("cell"), "radio", "rtlsdr") !== null);
+  check("HackRF: cellular OK", supportFor(by("cell"), "radio", "hackrf") === null);
+  check("RTL: FM OK", supportFor(by("fm"), "radio", "rtlsdr") === null);
+  check("local radio: HF via Kiwi needs remote", supportFor(by("hf"), "radio", "rtlsdr") !== null);
+  check("remote path: HF OK, FM greyed", supportFor(by("hf"), "remote", "none") === null && supportFor(by("fm"), "remote", "none") !== null);
+  check("Wi-Fi survey always available (WF)", supportFor(by("wifi"), "radio", "rtlsdr") === null && by("wifi").home === "wf");
+  check("fox-hunt opens DT with lock", by("fox").home === "dt" && by("fox").dtLock === true);
+  check("9 first-run tasks map to presets", TASKS.length === 9 && TASKS.every((t) => by(t.preset)));
+  check("recent list de-dupes and caps", JSON.stringify(pushRecent(["a", "b", "c", "d", "e"], "c")) === '["c","a","b","d","e"]' && pushRecent(["a","b","c","d","e"], "z").length === 5);
 }
 
 // ── unit badges ──

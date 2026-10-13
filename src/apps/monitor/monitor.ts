@@ -12,6 +12,7 @@ import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices
 import { SweepGrid, type SweepSlice } from "../../devices/sweep.js";
 import { initSurvey, type SurveyHost } from "../../survey/ui.js";
 import { TUNING_KEY, loadTuning, type TuningState } from "./layout.js";
+import { initPresets } from "./presets.js";
 import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
@@ -4132,6 +4133,15 @@ export function initMonitor() {
   bind();
   bindStartupFreq();
   initSurvey(surveyHost);
+  const pr = initPresets({
+    show: (t) => (window as any).webrxShowTab?.(t),
+    deviceKind: () => surveyHost.deviceKind(),
+    openConnect: () => document.getElementById("connChip")?.click(),
+    openSoftKey: (k) => (window as any).webrxOpenSoftKey?.(k),
+    log: (m, k) => log(m, k === "ok" ? "ok" : ""),
+    dtLock: (hz) => tuning.dtLock(hz),
+  });
+  document.getElementById("btnRunSetup")?.addEventListener("click", () => pr.openFirstRun(true));
   fillRates(effectiveKind());
   resetSpectrum();
   updateSourceUi();
