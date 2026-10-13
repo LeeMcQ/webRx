@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-5Rw654X6RokWfyf1ODuywydoslhxdkskz6F/6lB/VRU='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-zYn4owyUyBKNY73EevNCNYB7cSjOo8jL/8ut4mh73ao='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
@@ -666,6 +666,70 @@
       /* slim edge handle so the peek tab never covers content (24 px wide, 88 px tall) */
       @media (max-width: 899px) { main { padding-right: 28px; } .statuspanel .sp-toggle { left: -24px; width: 24px; padding: 0; } .statuspanel .sp-toggle span { display: none; } }
       .hint a { line-height: 1.8; }
+
+      /* ═══ PROPOSAL shell: 6-item bar + More, FAB stack, grouped quick view, RM survey ═══ */
+      .tabbar { grid-template-columns: repeat(6, 1fr); }
+      .tab.moretab { display: none; }
+      @media (max-width: 999px) and (min-height: 501px), (max-width: 999px) and (orientation: portrait) {
+        .tab.more-item { display: none; } .tab.moretab { display: flex; }
+        .tab.moretab[aria-expanded="true"], body.in-more .tab.moretab { color: #fff; }
+      }
+      @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) {
+        .tab.more-item:first-of-type, #tab-wf { margin-top: var(--s3); border-top: 1px solid var(--line); padding-top: var(--s2); }
+      }
+      @media (max-height: 500px) and (orientation: landscape) and (max-width: 999px) { .tab { min-height: 36px; } #tab-wf { margin-top: 0; } }
+      header.appbar { max-height: calc(96px + var(--sat)); }
+      .fabstack { position: fixed; z-index: 45; right: calc(var(--s4) + var(--sar)); bottom: calc(var(--nav-h) + var(--sab) + var(--s4));
+        display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); pointer-events: none; }
+      .fabstack > * { pointer-events: auto; }
+      .fabstack .bubble { position: static; }
+      .fabmini { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); transition: opacity .2s; }
+      .fabmini .btn.mini { min-height: 44px; min-width: 44px; height: 44px; border-radius: 22px; padding: 0 var(--s3); box-shadow: 0 6px 16px rgba(0,0,0,.4); font-size: var(--t13); }
+      .fabmini .btn.mini[hidden] { display: none; }
+      .fabmini .btn.mini .i { width: 18px; height: 18px; }
+      body.scrolling .fabmini { opacity: 0; pointer-events: none; }
+      .fabstack .recpill { order: -1; }
+      @media (min-width: 1000px) {
+        .fabstack { bottom: var(--s5); right: calc(var(--s5) + 280px); }
+        .fabstack .bubble { display: grid; }
+        main { padding-bottom: 220px; }
+      }
+      @media (max-height: 500px) and (orientation: landscape) and (max-width: 999px) {
+        .fabstack { bottom: calc(var(--s3) + var(--sab)); right: calc(var(--s3) + var(--sar) + 24px); flex-direction: row; align-items: flex-end; }
+        .fabmini { flex-direction: row; }
+      }
+      main { padding-bottom: calc(var(--nav-h) + var(--sab) + 200px); }
+      #pane-rf, #pane-wf, #pane-dt, #pane-rm, #pane-cm { padding-bottom: 0; }
+      body.playing .fabstack { bottom: calc(var(--nav-h) + var(--sab) + 120px); }
+      /* quick view: groups + tap-to-jump; docked from 1000 px */
+      .sp-body h3 { margin: var(--s3) 0 var(--s1); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #93c5fd; }
+      .sp-body dd[data-jump] { cursor: pointer; } .sp-body dd[data-jump]:hover { color: #93c5fd; }
+      .sp-hint { margin: 0; font-size: 11px; color: var(--muted); }
+      @media (min-width: 1000px) {
+        .statuspanel { top: calc(56px + var(--sat)); bottom: 0; transform: none; }
+        .statuspanel .sp-toggle { display: none; }
+        .sp-body { width: 280px; height: 100%; max-height: none; border-radius: 0; border-top: 0; box-shadow: none; background: rgba(10,16,28,.7); }
+        main { margin-right: 280px; }
+        body.qv-collapsed .statuspanel { display: none; } body.qv-collapsed main { margin-right: 0; } body.qv-collapsed .fabstack { right: var(--s5); }
+      }
+      .linkbtn { background: none; border: 0; color: #93c5fd; font: inherit; cursor: pointer; padding: 0; text-align: left; text-decoration: underline dotted; }
+      .badge-unit { display: inline-block; font: 600 11px var(--mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); color: #93c5fd; margin-left: 4px; }
+      /* RM survey */
+      .rmsteps { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); padding: 0; margin: 0 0 var(--s3); }
+      .rmstep { width: 100%; min-height: var(--tap); border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--muted); font: 600 var(--t12) inherit; cursor: pointer; }
+      .rmstep[aria-selected="true"] { color: #fff; border-color: var(--accent); background: rgba(59,130,246,.18); }
+      .rmcard h3 { font-size: var(--t13); margin: var(--s3) 0 var(--s2); }
+      .rmrange { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); } .rmrange input { width: 110px; }
+      .rmparams { margin-top: var(--s3); }
+      .rmest { margin: var(--s3) 0; padding: var(--s2) var(--s3); border-radius: 10px; background: var(--panel-2); font-size: var(--t13); }
+      .rmerr { color: #fca5a5; font-size: var(--t13); padding-left: 1.2em; } .rmerr:empty { display: none; }
+      .rmmap { width: 100%; height: 280px; display: block; border-radius: 12px; background: #0b1220; border: 1px solid var(--line); margin-top: var(--s3); }
+      .rmlegend { display: flex; align-items: center; gap: 6px; margin: 4px 0 var(--s3); } .rmlegend i { width: 120px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, hsl(240 85% 55%), hsl(120 85% 55%), hsl(0 85% 55%)); }
+      .rmstats { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: var(--s2); }
+      .rmstats div { padding: var(--s2); border-radius: 10px; background: var(--panel-2); } .rmstats small { display: block; color: var(--muted); font-size: 11px; } .rmstats b { font: 600 var(--t13) var(--mono); }
+      .rmbar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; margin-top: var(--s3); } .rmbar i { display: block; height: 100%; width: 0; background: var(--ok); } .rmbar i.warn { background: var(--warn); }
+      #pane-rm .card + .card { margin-top: var(--s4); }
+      @media (max-width: 999px) { .bandtable { max-height: none; overflow: visible; } }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -716,12 +780,6 @@
         <button class="chip connchip" id="connChip" type="button" aria-haspopup="dialog" aria-controls="connSheet" title="Signal source and connection"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="dot" id="dotSource"></span><span id="txtSource">No source</span></button>
         <button class="chip" id="chipGps" type="button" title="GPS"><span class="dot" id="dotGps"></span><span id="txtGps">GPS: detecting…</span></button>
       </div>
-      <div class="transport">
-        <span class="recpill" id="recPill" hidden><span class="dot live"></span>LIVE</span>
-        <button class="btn rec" id="btnRec" type="button" aria-pressed="false" aria-label="Record session" title="Record session (spectrum, GPS, heading, levels)"><span class="recdot2" aria-hidden="true"></span><span id="recTimer">Rec</span></button>
-        <button class="btn go" id="btnStart" type="button" aria-label="Start measuring" title="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start</span></button>
-        <button class="btn stop" id="btnStop" type="button" aria-label="Stop measuring" title="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop</span></button>
-      </div>
     </header>
 
     <nav class="tabbar" aria-label="Sections">
@@ -729,10 +787,12 @@
       <button class="tab" role="tab" type="button" id="tab-sa" data-tab="sa" aria-controls="pane-sa" aria-selected="false" tabindex="-1" title="SA · Spectrum Analyser" aria-label="SA · Spectrum Analyser"><svg class="i" aria-hidden="true"><use href="#i-radio"/></svg><b>SA</b><span>Spectrum</span></button>
       <button class="tab" role="tab" type="button" id="tab-mt" data-tab="mt" aria-controls="pane-mt" aria-selected="false" tabindex="-1" title="MT · Mobile Tracking" aria-label="MT · Mobile Tracking"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg><b>MT</b><span>Tracking</span></button>
       <button class="tab" role="tab" type="button" id="tab-dt" data-tab="dt" aria-controls="pane-dt" aria-selected="false" tabindex="-1" title="DT · Directional Tracking" aria-label="DT · Directional Tracking"><svg class="i" aria-hidden="true"><use href="#i-compass"/></svg><b>DT</b><span>Direction</span></button>
-      <button class="tab" role="tab" type="button" id="tab-rf" data-tab="rf" aria-controls="pane-rf" aria-selected="false" tabindex="-1" title="RF Tech · Wi-Fi, cellular &amp; band tables" aria-label="RF Tech · Wi-Fi, cellular and band tables"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><b>RF</b><span>RF Tech</span></button>
-      <button class="tab" role="tab" type="button" id="tab-wf" data-tab="wf" aria-controls="pane-wf" aria-selected="false" tabindex="-1" title="Wi-Fi Analyser" aria-label="Wi-Fi Analyser"><svg class="i" aria-hidden="true"><use href="#i-wifi"/></svg><b>WF</b><span>Wi-Fi</span></button>
-      <button class="tab" role="tab" type="button" id="tab-rm" data-tab="rm" aria-controls="pane-rm" aria-selected="false" tabindex="-1" title="RM · Remote Monitoring" aria-label="RM · Remote Monitoring"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><b>RM</b><span>Remote</span></button>
-      <button class="tab" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><b class="gear" aria-hidden="true">⚙</b><span>Settings</span></button>
+      <button class="tab" role="tab" type="button" id="tab-cm" data-tab="cm" aria-controls="pane-cm" aria-selected="false" tabindex="-1" title="CM · Connect reMote (OpenWebRX, UberSDR, KiwiSDR)" aria-label="CM · Connect reMote (OpenWebRX, UberSDR, KiwiSDR)"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><b>CM</b><span>Remote</span></button>
+      <button class="tab" role="tab" type="button" id="tab-rm" data-tab="rm" aria-controls="pane-rm" aria-selected="false" tabindex="-1" title="RM · Recording/Monitoring survey" aria-label="RM · Recording/Monitoring survey"><svg class="i" aria-hidden="true"><use href="#i-gps"/></svg><b>RM</b><span>Survey</span></button>
+      <button class="tab more-item" role="tab" type="button" id="tab-wf" data-tab="wf" aria-controls="pane-wf" aria-selected="false" tabindex="-1" title="WF · Wi-Fi Analyser" aria-label="WF · Wi-Fi Analyser"><svg class="i" aria-hidden="true"><use href="#i-wifi"/></svg><b>WF</b><span>Wi-Fi</span></button>
+      <button class="tab more-item" role="tab" type="button" id="tab-bands" data-tab="bands" aria-controls="pane-rf" aria-selected="false" tabindex="-1" title="Bands · RF Tech: Wi-Fi, cellular and band tables" aria-label="Bands · RF Tech: Wi-Fi, cellular and band tables"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><b>Bands</b><span>RF Tech</span></button>
+      <button class="tab more-item" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><b class="gear" aria-hidden="true">⚙</b><span>Settings</span></button>
+      <button class="tab moretab" type="button" id="tabMore" aria-haspopup="dialog" aria-controls="moreSheet" aria-expanded="false" title="More: Wi-Fi, Bands, Settings, Help" aria-label="More: Wi-Fi, Bands, Settings, Help"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><b>⋯</b><span>More</span></button>
       </div>
     </nav>
 
@@ -766,6 +826,8 @@
           <div class="pbctl" id="pbCtl" role="group" aria-label="Passband" hidden>
             <div class="field"><label for="pbLoIn">Passband low edge <output id="pbLoVal"></output></label><input id="pbLoIn" type="range" min="-15000" max="15000" step="50" /></div>
             <div class="field"><label for="pbHiIn">Passband high edge <output id="pbHiVal"></output></label><input id="pbHiIn" type="range" min="-15000" max="15000" step="50" /></div>
+            <div class="field"><label for="pbLoNum">Low edge (kHz)</label><input id="pbLoNum" type="number" step="0.05" min="-15" max="15" inputmode="decimal" /></div>
+            <div class="field"><label for="pbHiNum">High edge (kHz)</label><input id="pbHiNum" type="number" step="0.05" min="-15" max="15" inputmode="decimal" /></div>
           </div>
           <div class="scope">
             <canvas id="spectrum"></canvas>
@@ -1190,7 +1252,7 @@
         </div>
       </section>
 
-      <section class="pane" id="pane-rf" role="tabpanel" aria-labelledby="tab-rf" hidden>
+      <section class="pane" id="pane-rf" role="tabpanel" aria-labelledby="tab-bands" hidden>
         <h2 class="pane-title">RF Tech</h2>
         <div class="grid g-split">
           <div class="col">
@@ -1278,8 +1340,8 @@
         </section>
       </section>
 
-      <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden>
-        <h2 class="pane-title">RM · Remote Monitoring</h2>
+      <section class="pane" id="pane-cm" role="tabpanel" aria-labelledby="tab-cm" hidden>
+        <h2 class="pane-title">CM · Connect reMote</h2>
         <div class="grid g-split">
           <div class="col">
           <section class="card" id="rxCard">
@@ -1343,10 +1405,22 @@
         </div>
       </section>
 
+      <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden><p class="hint">Loading survey…</p></section>
+
       <section class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
         <h2 class="pane-title">Settings</h2>
         <div class="grid g-split">
           <div class="col">
+          <section class="card" id="rxSummary">
+            <h2>Receiver summary <span class="spacer"></span><span class="lbl">read-only · tap to change</span></h2>
+            <table class="ro-table">
+              <tr><td>Source</td><td><button class="linkbtn" type="button" data-goto="conn" id="sumSource">—</button></td></tr>
+              <tr><td>Tuned</td><td><button class="linkbtn" type="button" data-goto="sa" id="sumTuned">—</button></td></tr>
+              <tr><td>Gain / amp</td><td><button class="linkbtn" type="button" data-goto="sa" id="sumGain">—</button></td></tr>
+              <tr><td>Level unit</td><td><button class="linkbtn" type="button" data-goto="sa" id="sumUnit">—</button></td></tr>
+              <tr><td>Survey upload</td><td><button class="linkbtn" type="button" data-goto="rm" id="sumUpload">—</button></td></tr>
+            </table>
+          </section>
           <section class="card">
             <h2>Receiver &amp; logging</h2>
             <div class="grid2">
@@ -1446,7 +1520,7 @@
               </div>
               <div class="field">
                 <label for="setStartTab">Open on</label>
-                <select id="setStartTab"><option value="last">Last tab used</option><option value="sa">SA · Spectrum</option><option value="mt">MT · Tracking</option><option value="dt">DT · Direction</option><option value="rf">RF Tech</option></select>
+                <select id="setStartTab"><option value="last">Last tab used</option><option value="sa">SA · Spectrum</option><option value="mt">MT · Tracking</option><option value="dt">DT · Direction</option><option value="cm">CM · Connect reMote</option><option value="rm">RM · Survey</option><option value="wf">WF · Wi-Fi</option><option value="bands">Bands · RF Tech</option></select>
               </div>
               <label class="check"><input id="setMotion" type="checkbox" /> Reduce motion</label>
             </div>
@@ -1472,22 +1546,34 @@
       <button class="sp-toggle" id="spToggle" type="button" aria-controls="spBody" aria-expanded="false" aria-label="Show live status"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><span>Live</span></button>
       <div class="sp-body" id="spBody" tabindex="0">
         <h2>Live status</h2>
+        <p class="sp-hint">Tap a value to open its tab · swipe from the right edge to open</p>
+        <h3>Source</h3>
         <dl>
-          <dt>Centre</dt><dd id="spCentre">—</dd>
-          <dt>Tuned</dt><dd id="spTuned">—</dd>
-          <dt>Span (BW)</dt><dd id="spSpan">—</dd>
-          <dt>RBW / FFT</dt><dd id="spRbw">—</dd>
-          <dt>Sample rate</dt><dd id="spRate">—</dd>
-          <dt>Gain / amp</dt><dd id="spGain">—</dd>
-          <dt>Modulation</dt><dd id="spMode">—</dd>
-          <dt>Level</dt><dd id="spLevel">—</dd>
-          <dt>Peak</dt><dd id="spPeak">—</dd>
-          <dt>Noise floor</dt><dd id="spFloor">—</dd>
-          <dt>GPS</dt><dd id="spGps">—</dd>
-          <dt>Heading</dt><dd id="spHeading">—</dd>
-          <dt>Recording</dt><dd id="spRec">—</dd>
-          <dt>Device</dt><dd id="spDevice">—</dd>
+          <dt>Device</dt><dd id="spDevice" data-jump="sa">—</dd>
+          <dt>Modulation</dt><dd id="spMode" data-jump="sa">—</dd>
+          <dt>Gain / amp</dt><dd id="spGain" data-jump="sa">—</dd>
         </dl>
+        <h3>Measurement</h3>
+        <dl>
+          <dt>Centre</dt><dd id="spCentre" data-jump="sa">—</dd>
+          <dt>Tuned</dt><dd id="spTuned" data-jump="sa">—</dd>
+          <dt>Span (BW)</dt><dd id="spSpan" data-jump="sa">—</dd>
+          <dt>RBW / FFT</dt><dd id="spRbw" data-jump="sa">—</dd>
+          <dt>Sample rate</dt><dd id="spRate" data-jump="sa">—</dd>
+          <dt>Level</dt><dd id="spLevel" data-jump="sa">—</dd>
+          <dt>Peak</dt><dd id="spPeak" data-jump="sa">—</dd>
+          <dt>Noise floor</dt><dd id="spFloor" data-jump="sa">—</dd>
+        </dl>
+        <h3>Position</h3>
+        <dl>
+          <dt>GPS</dt><dd id="spGps" data-jump="mt">—</dd>
+          <dt>Heading</dt><dd id="spHeading" data-jump="dt">—</dd>
+        </dl>
+        <h3>Session</h3>
+        <dl>
+          <dt>Recording</dt><dd id="spRec" data-jump="mt">—</dd>
+        </dl>
+        <h3>Health</h3>
         <div class="sp-chips">
           <span class="chip" id="chipNet"><span class="dot" id="dotNet"></span><span id="txtNet">Network: —</span></span>
           <span class="chip" id="chipDsp"><span class="dot" id="dotDsp"></span><span id="txtDsp">DSP: —</span></span>
@@ -1509,9 +1595,28 @@
     </div>
 
 
-    <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source">
-      <svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="bdot" id="bubbleDot"></span>
-    </button>
+    <div class="fabstack" id="fabStack">
+      <span class="recpill" id="recPill" hidden><span class="dot live"></span>LIVE</span>
+      <div class="fabmini" id="fabMini">
+        <button class="btn rec mini" id="btnRec" type="button" aria-pressed="false" aria-label="Record session" title="Record session (spectrum, GPS, heading, levels)"><span class="recdot2" aria-hidden="true"></span><span id="recTimer">Rec</span></button>
+        <button class="btn go mini" id="btnStart" type="button" aria-label="Start measuring" title="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start</span></button>
+        <button class="btn stop mini" id="btnStop" type="button" aria-label="Stop measuring" title="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop</span></button>
+      </div>
+      <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source" title="Connection (long-press: reconnect last source)">
+        <svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="bdot" id="bubbleDot"></span>
+      </button>
+    </div>
+
+    <dialog id="moreSheet" class="sheet" aria-labelledby="moreTitle">
+      <div class="grab" aria-hidden="true"></div>
+      <div class="calhead"><b id="moreTitle">More</b><span class="spacer"></span><button class="btn ghost icon" id="moreClose" type="button" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+      <div class="linklist">
+        <button class="btn ghost" type="button" data-more="wf"><svg class="i" aria-hidden="true"><use href="#i-wifi"/></svg>WF · Wi-Fi analyser</button>
+        <button class="btn ghost" type="button" data-more="bands"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg>Bands · RF Tech (Wi-Fi, cellular, band tables)</button>
+        <button class="btn ghost" type="button" data-more="settings"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg>Settings</button>
+        <a class="btn ghost" href="help.html"><svg class="i" aria-hidden="true"><use href="#i-external"/></svg>Help</a>
+      </div>
+    </dialog>
 
     <dialog id="connSheet" class="sheet" aria-labelledby="connTitle">
       <div class="grab" aria-hidden="true"></div>
@@ -1622,20 +1727,25 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const TABS = ["sa", "mt", "dt", "rf", "wf", "rm", "settings"];
-  const LEGACY_WIFI = { wifi: "wf" };
-  const LEGACY = { receiver: "sa", map: "mt", monitor: "mt", remote: "rm" };
-  const fix = (n) => LEGACY[n] || LEGACY_WIFI[n] || n;
+  // Routing table shared with monitor.js (src/apps/monitor/layout.ts): #cm, #remote→cm, #rm = survey, #rf→bands, #wifi→wf …
+  const L = window.webrxLayout || { TABS: ["sa", "mt", "dt", "cm", "rm", "wf", "bands", "settings"], MORE_TABS: ["wf", "bands", "settings"], resolveTab: (n) => n, paneIdFor: (t) => "pane-" + (t === "bands" ? "rf" : t) };
+  const TABS = L.TABS.filter((t) => t !== "help");
+  const MORE = L.MORE_TABS;
+  const fix = (n) => L.resolveTab(n) || n;
+  const paneOf = (t) => $(L.paneIdFor(t));
   const sysReduce = matchMedia("(prefers-reduced-motion: reduce)");
   const reduce = { get matches() { return sysReduce.matches || document.documentElement.dataset.motion === "reduce"; } };
   let current = null;
+  const observe = (el, fn, attrs) => { if (!el) return; fn(); new MutationObserver(fn).observe(el, attrs ? { attributes: true, attributeFilter: attrs } : { childList: true, characterData: true, subtree: true }); };
+  const dotState = (cls) => (cls.match(/\b(ok|live|warn|err)\b/) || [""])[0];
 
   function show(name, opts = {}) {
     name = fix(name);
+    if (name === "help") { location.href = "help.html"; return; }
     if (!TABS.includes(name)) name = "sa";
     if (name === current) { if (opts.hash !== false && location.hash !== "#" + name) history.replaceState(null, "", "#" + name); return; }
     for (const t of TABS) {
-      const tab = $("tab-" + t), pane = $("pane-" + t), on = t === name;
+      const tab = $("tab-" + t), pane = paneOf(t), on = t === name;
       tab.setAttribute("aria-selected", String(on));
       tab.tabIndex = on ? 0 : -1;
       pane.hidden = !on;
@@ -1645,15 +1755,16 @@
     }
     current = name;
     document.body.dataset.tab = name;
+    document.body.classList.toggle("in-more", MORE.includes(name));
     // One spectrum and one map, moved into whichever tab is showing them.
-    const pane = $("pane-" + name);
+    const pane = paneOf(name);
     document.querySelectorAll("[data-move]").forEach((el) => {
       const slot = pane.querySelector(`[data-slot="${el.dataset.move}"]`);
       if (slot && el.parentElement !== slot) slot.appendChild(el);
     });
     try { localStorage.setItem("monitor.tab", name); } catch (_) {}
     if (opts.hash !== false && location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
-    if (opts.focus) $("tab-" + name).focus();
+    if (opts.focus) (MORE.includes(name) && getComputedStyle($("tab-" + name)).display === "none" ? $("tabMore") : $("tab-" + name)).focus();
     if (opts.scrollTop !== false) window.scrollTo({ top: 0 });
     // Let canvases and Leaflet re-measure now that the pane is visible.
     requestAnimationFrame(() => {
@@ -1663,14 +1774,15 @@
   }
   window.webrxShowTab = (n) => show(n);
 
-  document.querySelectorAll(".tab").forEach((tab) => {
+  document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
     tab.addEventListener("click", () => show(tab.dataset.tab));
     tab.addEventListener("keydown", (e) => {
-      const i = TABS.indexOf(tab.dataset.tab);
+      const vis = TABS.filter((t) => getComputedStyle($("tab-" + t)).display !== "none");
+      const i = vis.indexOf(tab.dataset.tab);
       const k = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-      if (k) { e.preventDefault(); show(TABS[(i + k + TABS.length) % TABS.length], { focus: true }); }
-      else if (e.key === "Home") { e.preventDefault(); show(TABS[0], { focus: true }); }
-      else if (e.key === "End") { e.preventDefault(); show(TABS[TABS.length - 1], { focus: true }); }
+      if (k) { e.preventDefault(); show(vis[(i + k + vis.length) % vis.length], { focus: true }); }
+      else if (e.key === "Home") { e.preventDefault(); show(vis[0], { focus: true }); }
+      else if (e.key === "End") { e.preventDefault(); show(vis[vis.length - 1], { focus: true }); }
     });
   });
   // ── RF Tech: band tables ──
@@ -1734,7 +1846,7 @@
     show("sa");
   });
   setTimeout(renderBands, 0);
-  window.addEventListener("webrx:tab", (e) => { if (e.detail === "rf") renderBands(); });
+  window.addEventListener("webrx:tab", (e) => { if (e.detail === "bands") renderBands(); });
   const hasSource = (v) => !!$("sourceSelect").querySelector(`option[value="${v}"]:not([disabled])`);
   const pickSource = (v, label) => {
     const hint = $("rfMonHint");
@@ -1771,7 +1883,7 @@
   sysLight.addEventListener("change", applyUi);
   applyUi();
 
-  let start = fix(location.hash.slice(1));
+  let start = location.hash.length > 1 ? fix(location.hash.slice(1)) : "";
   if (!TABS.includes(start)) {
     if (ui.startTab !== "last") start = ui.startTab;
     else { try { start = fix(localStorage.getItem("monitor.tab") || "sa"); } catch (_) { start = "sa"; } }
@@ -1779,17 +1891,72 @@
   show(start, { hash: false, scrollTop: false });
   window.addEventListener("hashchange", () => show(location.hash.slice(1), { hash: false }));
 
+  // ── More sheet (mobile) ──
+  const more = $("moreSheet");
+  const moreBtn = $("tabMore");
+  moreBtn.addEventListener("click", () => { more.showModal(); moreBtn.setAttribute("aria-expanded", "true"); });
+  more.addEventListener("close", () => moreBtn.setAttribute("aria-expanded", "false"));
+  $("moreClose").addEventListener("click", () => more.close());
+  more.querySelectorAll("[data-more]").forEach((b) => b.addEventListener("click", () => { more.close(); show(b.dataset.more); }));
+  more.addEventListener("click", (e) => { if (e.target === more) more.close(); });
+
   // ── connection sheet ──
   const sheet = $("connSheet");
   const openSheet = () => { if (!sheet.open) sheet.showModal(); };
-  for (const id of ["connBubble", "connChip", "btnOpenConn"]) $(id).addEventListener("click", openSheet);
+  for (const id of ["connChip", "btnOpenConn"]) $(id).addEventListener("click", openSheet);
+  // FAB: tap opens the Connection sheet (as before); long-press reconnects the last source.
+  const bubble = $("connBubble");
+  let lpTimer = 0, lpFired = false;
+  bubble.addEventListener("pointerdown", () => { lpFired = false; lpTimer = setTimeout(() => {
+    lpFired = true;
+    const st = dotState($("dotSource").className);
+    if (st !== "ok" && st !== "live") { $("btnConnect").click(); navigator.vibrate?.(20); }
+  }, 600); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) bubble.addEventListener(ev, () => clearTimeout(lpTimer));
+  bubble.addEventListener("click", (e) => { if (lpFired) { e.preventDefault(); lpFired = false; return; } openSheet(); });
+  bubble.addEventListener("contextmenu", (e) => e.preventDefault());
+  // Start toggles Stop in the stack; minis fade while scrolling on touch screens.
+  const syncRun = () => { const on = !$("btnStop").disabled; $("btnStart").hidden = on; $("btnStop").hidden = !on; };
+  new MutationObserver(syncRun).observe($("btnStop"), { attributes: true, attributeFilter: ["disabled"] }); syncRun();
+  let scrollT = 0;
+  addEventListener("scroll", () => { if (!matchMedia("(pointer: coarse)").matches) return; document.body.classList.add("scrolling"); clearTimeout(scrollT); scrollT = setTimeout(() => document.body.classList.remove("scrolling"), 350); }, { passive: true });
+
+  // ── quick view: tap-to-jump, edge swipe ──
+  const panel = $("statusPanel");
+  panel.addEventListener("click", (e) => { const d = e.target.closest("[data-jump]"); if (d) show(d.dataset.jump); });
+  let sx = null, sy = 0;
+  addEventListener("touchstart", (e) => { const t = e.touches[0]; sx = (t.clientX > innerWidth - 24 || panel.classList.contains("open")) ? t.clientX : null; sy = t.clientY; }, { passive: true });
+  addEventListener("touchend", (e) => {
+    if (sx === null) return; const t = e.changedTouches[0], dx = t.clientX - sx, dy = Math.abs(t.clientY - sy); sx = null;
+    if (dy > 60 || Math.abs(dx) < 50) return;
+    const open = panel.classList.contains("open");
+    if ((dx < 0 && !open) || (dx > 0 && open)) $("spToggle").click();
+  }, { passive: true });
+
+  // ── typed passband edges (kHz) mirror the range sliders ──
+  for (const [num, rng] of [["pbLoNum", "pbLoIn"], ["pbHiNum", "pbHiIn"]]) {
+    const n = $(num), r = $(rng);
+    const pull = () => { if (document.activeElement !== n) n.value = String(+(Number(r.value) / 1000).toFixed(2)); };
+    observe($(rng === "pbLoIn" ? "pbLoVal" : "pbHiVal"), pull); pull();
+    n.addEventListener("change", () => { r.value = String(Math.round(Number(n.value) * 1000)); r.dispatchEvent(new Event("input", { bubbles: true })); });
+  }
+
+  // ── Settings: read-only receiver summary ──
+  const sum = () => {
+    const t = (id) => ($(id) ? $(id).textContent : "—");
+    $("sumSource").textContent = t("txtSource"); $("sumTuned").textContent = t("spTuned");
+    $("sumGain").textContent = t("spGain"); $("sumUnit").textContent = /dBm/.test(t("spLevel")) ? "dBm (calibrated)" : /dBFS/.test(t("spLevel")) ? "dBFS (uncalibrated)" : "—";
+    let up = "not set"; try { const v = JSON.parse(localStorage.getItem("webrx.survey.settings.v1") || "{}"); if (v.serverUrl) up = new URL(v.serverUrl).host; } catch (_) {}
+    $("sumUpload").textContent = up;
+  };
+  $("rxSummary").addEventListener("click", (e) => { const b = e.target.closest("[data-goto]"); if (!b) return; if (b.dataset.goto === "conn") openSheet(); else show(b.dataset.goto); });
+  window.addEventListener("webrx:tab", (e) => { if (e.detail === "settings") sum(); });
+  setInterval(() => { if (current === "settings") sum(); }, 2000);
   $("connClose").addEventListener("click", () => sheet.close());
   sheet.addEventListener("click", (e) => { if (e.target === sheet) { const r = sheet.getBoundingClientRect();
     if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) sheet.close(); } });
 
   // ── mirrors of live state (the monitor keeps writing to the original elements) ──
-  const observe = (el, fn, attrs) => { if (!el) return; fn(); new MutationObserver(fn).observe(el, attrs ? { attributes: true, attributeFilter: attrs } : { childList: true, characterData: true, subtree: true }); };
-  const dotState = (cls) => (cls.match(/\b(ok|live|warn|err)\b/) || [""])[0];
   const syncConn = () => {
     const st = dotState($("dotSource").className), txt = $("txtSource").textContent;
     $("bubbleDot").className = "bdot " + st; $("sheetDot").className = "dot " + st; $("sheetTxt").textContent = txt;

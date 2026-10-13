@@ -9,7 +9,8 @@
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
 import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices/hackrf.js";
-import { SweepGrid } from "../../devices/sweep.js";
+import { SweepGrid, type SweepSlice } from "../../devices/sweep.js";
+import { initSurvey, type SurveyHost } from "../../survey/ui.js";
 import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
@@ -549,6 +550,7 @@ function processBlock(bytes: Uint8Array) {
   const a = Math.min(0.95, Math.max(0, cfg.avg));
   if (specDb.length !== n) specDb = new Float32Array(n).fill(NaN);
   avgStep(spec, specDb, raw, a, avgMode, cfg.cal);
+  if (surveyFrameHook) surveyFrameHook(raw, n);
   for (let k = 0; k < n; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   lastStats = computeStats();
@@ -3451,7 +3453,7 @@ function onRemoteChange() {
       if (!rc.wasFocused) {
         rc.wasFocused = true;
         const d = document.getElementById("btnRxDisconnect");
-        if (d && document.getElementById("pane-rm")?.hidden === false) d.focus({ preventScroll: true });
+        if (d && document.getElementById("pane-cm")?.hidden === false) d.focus({ preventScroll: true });
       }
       setChip("dotSource", "txtSource", `${remote.label}: ${remote.name || "remote"}`, "ok");
       rememberServer(remote.url.page, remote.name || remote.url.page, remote.kind);
@@ -3529,8 +3531,8 @@ function bindRemote() {
   $("rxOnlyOk").addEventListener("change", renderDir);
   $("rxKind").addEventListener("change", renderDir);
   $("rxSort").addEventListener("change", renderDir);
-  window.addEventListener("webrx:tab", (e) => (e as CustomEvent).detail === "rm" && loadDir());
-  if (document.getElementById("pane-rm")?.hidden === false) loadDir();
+  window.addEventListener("webrx:tab", (e) => (e as CustomEvent).detail === "cm" && loadDir());
+  if (document.getElementById("pane-cm")?.hidden === false) loadDir();
   setInterval(() => remote.connected && renderRemote(), 1000);
   renderSaved();
   renderRemote();
@@ -4039,6 +4041,7 @@ function bindVfo() {
 
 export function initMonitor() {
   bind();
+  initSurvey(surveyHost);
   fillRates(effectiveKind());
   resetSpectrum();
   updateSourceUi();
@@ -4396,6 +4399,90 @@ async function toggleSweep() {
     log(`Sweep failed: ${e?.message ?? e} — firmware may be too old`, "er");
   }
 }
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  RM survey host: what the survey module may use from the receiver
+// ═══════════════════════════════════════════════════════════════════
+
+/** Raw dBFS frame tap for RTL hopping (set only while an RM survey runs on an RTL-SDR). */
+let surveyFrameHook: ((raw: Float32Array, n: number) => void) | null = null;
+let rtlHop: { stop: boolean } | null = null;
+
+const surveyHost: SurveyHost = {
+  deviceKind: () => (remote.connected ? "remote" : !device || !sdr ? "none" : sdr.kind === "hackrf" ? "hackrf" : "rtlsdr"),
+  deviceLabel: () => (sdr ? `${sdr.name}${sdr.serial ? ` · S/N ${sdr.serial}` : ""}` : remote.connected ? remote.label : "No receiver"),
+  serial: () => sdr?.serial,
+  biasTee: () => !!(cfg as any).biasTee,
+  connect: async () => {
+    if (!isSdrMode()) {
+      log("Pick a Radio SDR source (RTL-SDR / HackRF) for surveys", "wn");
+      return false;
+    }
+    return connect();
+  },
+  calOffsetDb: () => cfg.cal,
+  ppm: () => fe.ppm,
+  levelDbfs: () => (lastStats && Number.isFinite(lastStats.band) ? lastStats.band - cfg.cal : null),
+  tunedHz: () => cfg.freqMHz * 1e6,
+  openNoiseCal: () => openCalibration(),
+  noiseFloorDbm: () => loadCalibration()?.noiseFloorDb ?? null,
+  async applyGains(p) {
+    const d = device;
+    if (d instanceof HackRF) {
+      await ctl(() => d.setAmpEnabled(p.amp)).catch(() => {});
+      await ctl(() => d.setLnaVga({ lna: p.lnaDb, vga: p.vgaDb })).catch(() => {});
+    }
+  },
+  async startSweep(ranges, onSlice, fftSize) {
+    if (device instanceof HackRF) {
+      if (running) await stop();
+      if (device.sweeping) await device.stopSweep();
+      await device.startSweep(ranges, onSlice, fftSize);
+      return;
+    }
+    if (!device || sdr?.kind !== "rtlsdr") throw new Error("No receiver connected");
+    // RTL-SDR hopping: retune across the ranges, keep the centre 80 % of each frame.
+    if (!running) await start();
+    const hop = (rtlHop = { stop: false });
+    const rate = cfg.sampleRate, useW = 0.8 * rate;
+    let want = 0, got: Float32Array | null = null;
+    surveyFrameHook = (raw) => {
+      if (want > 0) want--;
+      else if (!got) got = raw.slice();
+    };
+    (async () => {
+      const saved = cfg.freqMHz;
+      while (!hop.stop) {
+        for (const [lo, hi] of ranges) {
+          for (let c = lo * 1e6 + useW / 2; c - useW / 2 < hi * 1e6 && !hop.stop; c += useW) {
+            cfg.freqMHz = c / 1e6;
+            await ctl(() => applyTuning(device!)).catch(() => {});
+            got = null;
+            want = 1; // discard the frame that straddles the retune
+            const t0 = performance.now();
+            while (!got && !hop.stop && performance.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 10));
+            const f = got as Float32Array | null;
+            if (!f) continue;
+            const n = f.length, a = Math.floor(n * 0.1), b = Math.ceil(n * 0.9);
+            onSlice({ startHz: c - rate / 2 + (a * rate) / n, binHz: rate / n, db: f.slice(a, b) });
+          }
+        }
+      }
+      cfg.freqMHz = saved;
+      if (device) await ctl(() => applyTuning(device!)).catch(() => {});
+    })();
+  },
+  async stopSweep() {
+    if (device instanceof HackRF && device.sweeping) await device.stopSweep();
+    if (rtlHop) rtlHop.stop = true;
+    rtlHop = null;
+    surveyFrameHook = null;
+  },
+  fix: () => (gps.fix ? { t: Date.now(), lat: gps.fix.lat, lon: gps.fix.lon, accM: gps.fix.accuracyM ?? undefined, speed: (gps.fix as any).speed ?? null } : null),
+  heading: () => dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined) ?? null,
+  log: (m, k) => log(m, k === "ok" ? "ok" : k === "warn" ? "wn" : k === "err" ? "er" : ""),
+};
 
 function bindHardware() {
   const ra = document.getElementById("rtlAgc") as HTMLInputElement | null;
