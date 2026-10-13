@@ -22,6 +22,8 @@
     "test:coverage": "node bench/run.mjs coverage.test",
     "test:wifi": "node bench/run.mjs wifi.test",
     "test:df": "node bench/run.mjs df.test",
+    "test:layout": "node bench/run.mjs layout.test",
+    "test:survey": "node bench/run.mjs survey.test",
     "test:remote": "node bench/run.mjs remote.test"
   },
   "devDependencies": {
