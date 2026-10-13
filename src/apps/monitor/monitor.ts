@@ -8,7 +8,8 @@
 
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
-import { HackRF } from "../../devices/hackrf.js";
+import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices/hackrf.js";
+import { SweepGrid } from "../../devices/sweep.js";
 import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
@@ -80,6 +81,11 @@ type Settings = {
   biasTee: boolean;
   /** RTL2832U digital AGC (separate from the tuner AGC). */
   rtlAgc: boolean;
+  /** HackRF LNA/VGA (dB); null = use the combined gain slider. */
+  hrfLna: number | null;
+  hrfVga: number | null;
+  /** HackRF manual baseband filter (Hz); null = automatic (≈0.75 × sample rate). */
+  hrfBaseband: number | null;
   needFix: boolean;
   /** "distance": a pin every spacingM metres (thesis §3.5); "time": every logEvery seconds. */
   logMode: "distance" | "time";
@@ -105,6 +111,9 @@ const DEFAULTS: Settings = {
   peakHold: true,
   biasTee: false,
   rtlAgc: false,
+  hrfLna: null,
+  hrfVga: null,
+  hrfBaseband: null,
   needFix: false,
   logMode: "distance",
   spacingM: 5,
@@ -322,7 +331,10 @@ async function connect(): Promise<boolean> {
     document.body.dataset.rxName = sdr?.name ?? "SDR";
     window.dispatchEvent(new CustomEvent("webrx:rxrange"));
     setChip("dotSource", "txtSource", `${sdr?.name ?? "SDR"} ready`, "ok");
-    log(`${sdr?.name ?? "SDR"} connected${sdr?.detail ? ` (${sdr.detail})` : ""}`, "ok");
+    log(`${sdr?.name ?? "SDR"} connected${sdr?.detail ? ` (${sdr.detail})` : ""}${sdr?.serial ? ` · S/N ${sdr.serial}` : ""}${sdr?.isRtlBlogV4 ? " · RTL-SDR Blog V4 (HF via built-in upconverter)" : ""}`, "ok");
+    if (sdr?.firmwareWarning) log(sdr.firmwareWarning, "wn");
+    loadFeForDevice();
+    hwUi();
     updateSourceUi();
     return true;
   } catch (e: any) {
@@ -405,14 +417,34 @@ async function stop() {
 }
 
 const FE_KEY = "webrx.frontend.v1";
-let fe: { upconvHz: number; ppm: number } = { upconvHz: 0, ppm: 0 };
+/** Per-device front-end calibration, keyed by USB serial number ("kind:serial"). */
+const FE_DEV_KEY = "webrx.frontend.devices.v1";
+let fe: { upconvHz: number; ppm: number; cal?: number } = { upconvHz: 0, ppm: 0 };
 try {
   fe = { ...fe, ...JSON.parse(localStorage.getItem(FE_KEY) || "{}") };
 } catch (_) {}
+function feDevices(): Record<string, typeof fe> {
+  try { return JSON.parse(localStorage.getItem(FE_DEV_KEY) || "{}"); } catch (_) { return {}; }
+}
 function saveFe() {
   try {
     localStorage.setItem(FE_KEY, JSON.stringify(fe));
+    if (sdr) {
+      const m = feDevices();
+      m[deviceKey(sdr)] = { ...fe, cal: cfg.cal };
+      localStorage.setItem(FE_DEV_KEY, JSON.stringify(m));
+    }
   } catch (_) {}
+}
+/** On connect: load this dongle's own ppm / upconverter / calibration offset if we have them. */
+function loadFeForDevice() {
+  if (!sdr) return;
+  const m = feDevices()[deviceKey(sdr)];
+  if (m) {
+    fe = { upconvHz: m.upconvHz ?? 0, ppm: m.ppm ?? 0 };
+    if (typeof m.cal === "number") cfg.cal = m.cal;
+    log(`Loaded calibration for ${sdr.name}${sdr.serial ? ` (S/N ${sdr.serial})` : ""}: ${fe.ppm} ppm, offset ${cfg.cal} dB`, "ok");
+  } else saveFe();
 }
 
 async function applyTuning(dev: RtlDevice) {
@@ -441,7 +473,11 @@ async function sdrLoop(my: number) {
   await ctl(() => applyTuning(dev));
   await ctl(() => dev.setGain(cfg.gain));
   await ctl(() => dev.enableBiasTee(cfg.biasTee));
-  if (dev instanceof HackRF) await ctl(() => dev.setAmpEnabled(cfg.amp));
+  if (dev instanceof HackRF) {
+    await ctl(() => dev.setAmpEnabled(cfg.amp));
+    await ctl(() => dev.setLnaVga(cfg.hrfLna === null || cfg.hrfVga === null ? null : { lna: cfg.hrfLna, vga: cfg.hrfVga }));
+    if (cfg.hrfBaseband) await ctl(() => dev.setBasebandFilter(cfg.hrfBaseband));
+  } else if (sdr?.kind === "rtlsdr") await ctl(() => setRtlAgc(dev, cfg.rtlAgc));
   await ctl(() => dev.resetBuffer());
   resetSpectrum();
   updateReadout();
@@ -1983,6 +2019,10 @@ function bind() {
   });
   bindCheck("dcRemove", "dcRemove");
   bindCheck("peakHold", "peakHold", () => peak.fill(-200));
+  $<HTMLInputElement>("biasTee").addEventListener("click", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.checked && !confirm("Antenna power puts DC (RTL-SDR ≈4.5 V / HackRF 3.3 V, ~50 mA) on the antenna connector. Only enable it for a powered LNA or active antenna — it can damage a DC-shorted antenna, filter or test equipment. Continue?")) { e.preventDefault(); }
+  });
   bindCheck("biasTee", "biasTee", () => {
     const dev = device;
     if (dev) ctl(() => dev.enableBiasTee(cfg.biasTee)).then(() => log(`Antenna power ${cfg.biasTee ? "on" : "off"}`, "wn"));
@@ -2007,6 +2047,7 @@ function bind() {
   $("mBtnStop")?.addEventListener("click", () => stop());
   bindListen();
   bindDt();
+  bindHardware();
   $("btnSnap").addEventListener("click", snapshot);
   $("btnCSV").addEventListener("click", () => exportCsv("download"));
   $("btnShare").hidden = !canShareFiles();
@@ -3978,7 +4019,132 @@ function bindDtField() {
   };
   bindDtLater();
 }
-function bindDtLater() {}
+function bindDtLater() {
+  // DT keeps only a shortcut to the SA-tab HackRF sweep ("find signal").
+  $("btnDtFind").addEventListener("click", () => {
+    $("tab-sa").click();
+    const c = document.getElementById("sweepCard") as HTMLDetailsElement | null;
+    if (c) { c.open = true; c.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  });
+  bindDtLaterFeatures();
+}
+function bindDtLaterFeatures() {}
+
+// ── Hardware controls (SA tab): RTL AGC, HackRF LNA/VGA/baseband, wideband sweep ──
+function hwUi() {
+  const hk = (sdr?.kind ?? effectiveKind()) === "hackrf";
+  document.querySelectorAll<HTMLElement>(".hw-hackrf").forEach((el) => (el.hidden = !hk));
+  document.querySelectorAll<HTMLElement>(".hw-rtl").forEach((el) => (el.hidden = hk));
+  const lbl = document.getElementById("gainAutoLbl");
+  if (lbl) lbl.textContent = hk ? "Default (LNA 16 / VGA 20, HackRF has no AGC)" : "Tuner AGC";
+  const fw = document.getElementById("hwInfo");
+  if (fw) fw.textContent = sdr ? `${sdr.name}${sdr.detail ? ` · ${sdr.detail}` : ""}${sdr.serial ? ` · S/N ${sdr.serial}` : ""}${sdr.isRtlBlogV4 ? " · Blog V4" : ""}${sdr.firmwareWarning ? " · ⚠ old firmware" : ""}` : "Not connected";
+}
+
+let sweepGrid: SweepGrid | null = null;
+function drawSweep() {
+  const c = document.getElementById("sweepCanvas") as HTMLCanvasElement | null;
+  if (!c || !sweepGrid) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.max(200, c.clientWidth) * dpr, H = 160 * dpr;
+  if (c.width !== W) { c.width = W; c.height = H; }
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+  const d = sweepGrid.db, fin = Array.from(d).filter(Number.isFinite);
+  if (!fin.length) return;
+  const hi = Math.max(...fin), lo = Math.min(...fin);
+  ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = dpr;
+  ctx.beginPath();
+  for (let i = 0; i < d.length; ++i) {
+    if (!Number.isFinite(d[i])) continue;
+    const x = (i / d.length) * W, y = H - ((d[i] - lo) / Math.max(1, hi - lo)) * (H - 10 * dpr) - 5 * dpr;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = "#93a4bf"; ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+  ctx.fillText(`${(sweepGrid.loHz / 1e6).toFixed(0)} MHz`, 4 * dpr, H - 2 * dpr);
+  ctx.textAlign = "right"; ctx.fillText(`${(sweepGrid.hiHz / 1e6).toFixed(0)} MHz · ${sweepGrid.sweeps} sweeps`, W - 4 * dpr, H - 2 * dpr); ctx.textAlign = "left";
+  const list = document.getElementById("sweepPeaks")!;
+  list.innerHTML = "";
+  for (const p of sweepGrid.peaks(6, Math.max(200e3, sweepGrid.binHz * 4))) {
+    const b = document.createElement("button");
+    b.className = "btn ghost"; b.type = "button";
+    b.textContent = `${(p.hz / 1e6).toFixed(3)} MHz · ${p.db.toFixed(0)} dB`;
+    b.title = "Tune here and make it the DT target";
+    b.addEventListener("click", async () => {
+      await stopSweep();
+      dt.st.freqHz = Math.round(p.hz);
+      dt.reset();
+      ($("dtFreq") as HTMLInputElement).value = String(p.hz / 1e6);
+      const sc = $<HTMLInputElement>("saCentre");
+      sc.value = String(+(p.hz / 1e6).toFixed(6));
+      sc.dispatchEvent(new Event("change"));
+      log(`Tuned to sweep peak ${(p.hz / 1e6).toFixed(3)} MHz (also the DT target)`, "ok");
+    });
+    list.appendChild(b);
+  }
+}
+async function stopSweep() {
+  if (device instanceof HackRF && device.sweeping) await device.stopSweep();
+  $("btnSweep").textContent = "Start sweep";
+}
+async function toggleSweep() {
+  if (device instanceof HackRF && device.sweeping) return stopSweep();
+  if (!device) { if (!(await connect())) return; }
+  if (!(device instanceof HackRF)) return log("Wideband sweep needs a HackRF", "wn");
+  if (running) await stop();
+  const nv = (id: string) => parseFloat($<HTMLInputElement>(id).value);
+  const lo = Math.max(1, Math.round(nv("sweepLo"))), hi = Math.min(6000, Math.round(nv("sweepHi")));
+  if (!(hi > lo)) return log("Sweep: stop must be above start", "wn");
+  sweepGrid = new SweepGrid(lo * 1e6, hi * 1e6, 2048);
+  let pending = false;
+  try {
+    await device.startSweep([[lo, hi]], (sl) => {
+      sweepGrid!.add(sl);
+      if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; drawSweep(); }); }
+    });
+    $("btnSweep").textContent = "Stop sweep";
+    log(`HackRF sweep ${lo}–${hi} MHz (receive only, 20 MS/s, 5 MHz slices)`, "ok");
+  } catch (e: any) {
+    log(`Sweep failed: ${e?.message ?? e} — firmware may be too old`, "er");
+  }
+}
+
+function bindHardware() {
+  const ra = document.getElementById("rtlAgc") as HTMLInputElement | null;
+  if (ra) {
+    ra.checked = cfg.rtlAgc;
+    ra.addEventListener("change", () => {
+      cfg.rtlAgc = ra.checked; saveSettings();
+      if (device && sdr?.kind === "rtlsdr") setRtlAgc(device, cfg.rtlAgc).then((ok) => log(ok ? `RTL2832U AGC ${cfg.rtlAgc ? "on" : "off"}` : "This driver can't switch the RTL AGC", ok ? "ok" : "wn"));
+    });
+  }
+  const lna = $<HTMLSelectElement>("hrfLna"), vga = $<HTMLSelectElement>("hrfVga"), bb = $<HTMLSelectElement>("hrfBaseband");
+  lna.innerHTML = `<option value="">slider</option>` + HACKRF_LNA_STEPS.map((v) => `<option value="${v}">${v} dB</option>`).join("");
+  vga.innerHTML = `<option value="">slider</option>` + Array.from({ length: 32 }, (_, i) => i * 2).map((v) => `<option value="${v}">${v} dB</option>`).join("");
+  bb.innerHTML = `<option value="">Auto (0.75 × rate)</option>` + HACKRF_BASEBAND_FILTERS.map((v) => `<option value="${v}">${v / 1e6} MHz</option>`).join("");
+  lna.value = cfg.hrfLna === null ? "" : String(cfg.hrfLna);
+  vga.value = cfg.hrfVga === null ? "" : String(cfg.hrfVga);
+  bb.value = cfg.hrfBaseband === null ? "" : String(cfg.hrfBaseband);
+  const applyLv = () => {
+    cfg.hrfLna = lna.value === "" ? null : Number(lna.value);
+    cfg.hrfVga = vga.value === "" ? null : Number(vga.value);
+    if ((cfg.hrfLna === null) !== (cfg.hrfVga === null)) { if (cfg.hrfLna === null) cfg.hrfLna = 16; else cfg.hrfVga = 20; lna.value = String(cfg.hrfLna); vga.value = String(cfg.hrfVga); }
+    saveSettings();
+    const d = device;
+    if (d instanceof HackRF) ctl(() => d.setLnaVga(cfg.hrfLna === null ? null : { lna: cfg.hrfLna!, vga: cfg.hrfVga! })).then((g) => log(`HackRF LNA ${g.lna} dB · VGA ${g.vga} dB`, "ok"));
+  };
+  lna.addEventListener("change", applyLv);
+  vga.addEventListener("change", applyLv);
+  bb.addEventListener("change", () => {
+    cfg.hrfBaseband = bb.value === "" ? null : Number(bb.value);
+    saveSettings();
+    const d = device;
+    if (d instanceof HackRF) ctl(() => d.setBasebandFilter(cfg.hrfBaseband)).then((bw) => log(`HackRF baseband filter ${bw / 1e6} MHz`, "ok"));
+  });
+  $("btnSweep").addEventListener("click", () => toggleSweep());
+  hwUi();
+}
 
 /** RSSI-vs-position track for the DT heatmap and GPX export. */
 var dtTrack: { lat: number; lon: number; db: number; t: number }[] = [];

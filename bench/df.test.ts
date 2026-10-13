@@ -119,6 +119,52 @@ import { fixesToCsv, fixesToKml, fixesToGpx, encodeSession, decodeSession, impor
   check("Kraken CSV", kc.length === 1 && kc[0].bearing === 200 && kc[0].lat === -26.2, kc);
 }
 
+// ── HackRF sweep protocol ──
+import { initSweepPayload, parseSweepTransfer, blockToSlices, SweepGrid, firmwareOlderThan, SWEEP_BLOCK_BYTES } from "../src/devices/sweep.js";
+import { clampLnaVga } from "../src/devices/hackrf.js";
+import { isBlogV4, deviceKey, RTL_MAX_FREQUENCY } from "../src/devices/provider.js";
+{
+  const p = initSweepPayload([[2400, 2490]], SWEEP_BLOCK_BYTES * 16);
+  const dv = new DataView(p.data.buffer);
+  check("INIT_SWEEP len 9+4", p.data.length === 13);
+  check("step 20 MHz, offset 7.5 MHz, interleaved", dv.getUint32(0, true) === 20e6 && dv.getUint32(4, true) === 7.5e6 && p.data[8] === 1);
+  check("range rounded up to 20 MHz steps (2400–2500)", dv.getUint16(9, true) === 2400 && dv.getUint16(11, true) === 2500);
+  check("num_bytes split into value/index", p.value === (262144 & 0xffff) && p.index === 4);
+  let threw = false; try { initSweepPayload([[1, 2]], 1000); } catch (_) { threw = true; }
+  check("num_bytes must be 16384-multiple", threw);
+  // synthetic transfer: 2 blocks, tone at f0 + 12.5 MHz → lands in slice 2 ([f+10, f+15))
+  const buf = new Uint8Array(SWEEP_BLOCK_BYTES * 3);
+  const f0 = 2_400_000_000;
+  for (const blk of [0, 2]) {
+    const o = blk * SWEEP_BLOCK_BYTES;
+    buf[o] = 0x7f; buf[o + 1] = 0x7f;
+    const d = new DataView(buf.buffer, o + 2, 8);
+    d.setUint32(0, f0 % 2 ** 32, true); d.setUint32(4, Math.floor(f0 / 2 ** 32), true);
+    // LO = f0 + 7.5 MHz; tone at +5 MHz baseband → RF f0 + 12.5 MHz
+    for (let i = 0; i < (SWEEP_BLOCK_BYTES - 10) / 2; ++i) {
+      const ph = 2 * Math.PI * (5e6 / 20e6) * i;
+      buf[o + 10 + 2 * i] = (Math.round(100 * Math.cos(ph)) + 256) & 0xff;
+      buf[o + 11 + 2 * i] = (Math.round(100 * Math.sin(ph)) + 256) & 0xff;
+    }
+  }
+  const blocks = parseSweepTransfer(buf);
+  check("parse: header blocks only (2 of 3)", blocks.length === 2, blocks.length);
+  check("parse: uint64 LE freq", blocks[0].freqHz === f0, blocks[0]?.freqHz);
+  const sl = blockToSlices(blocks[0]);
+  check("2 slices of 64 bins @78.125 kHz", sl.length === 2 && sl[0].db.length === 64 && sl[0].binHz === 78125);
+  check("slice starts f, f+10 MHz", sl[0].startHz === f0 && sl[1].startHz === f0 + 10e6);
+  const g = new SweepGrid(2400e6, 2420e6, 256);
+  for (const x of sl) g.add(x);
+  near("sweep peak at f0+12.5 MHz", g.peaks(1)[0].hz, f0 + 12.5e6, 120e3);
+  check("firmware 2021.03.1 older than 2023.01.1", firmwareOlderThan("2021.03.1") === true);
+  check("firmware 2024.02.1 ok", firmwareOlderThan("2024.02.1") === false);
+  check("git firmware unknown", firmwareOlderThan("git-1a2b3c") === null);
+  check("LNA/VGA snap to 8/2 dB steps", JSON.stringify(clampLnaVga(13, 63)) === JSON.stringify({ lna: 16, vga: 62 }));
+  check("Blog V4 detection from EEPROM strings", isBlogV4({ manufacturerName: "RTLSDRBlog", productName: "Blog V4" }) && !isBlogV4({ manufacturerName: "Realtek", productName: "RTL2838UHIDIR" }));
+  check("device key uses serial", deviceKey({ kind: "rtlsdr", serial: "00000001", name: "x" }) === "rtlsdr:00000001");
+  check("RTL max 1766 MHz", RTL_MAX_FREQUENCY === 1_766_000_000);
+}
+
 export function done(label: string) {
   if (failures) { console.log(`\n${failures} failure(s)`); process.exit(1); }
   console.log(`\nAll ${label} tests passed.`);

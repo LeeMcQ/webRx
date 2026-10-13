@@ -800,6 +800,30 @@
             <p class="hint">The widest span is the sample rate (Settings). Start/stop zooms the view; outside the span it re-centres the SDR. Wheel or pinch on the spectrum zooms at the pointer; drag pans. On UberSDR and KiwiSDR the server zooms its own FFT for full resolution.</p>
           </div>
         </details>
+        <details class="card fold" id="hwCard">
+          <summary><h2>Front end <span class="spacer"></span><span class="lbl" id="hwInfo">—</span></h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field hw-hackrf"><label for="hrfLna">HackRF LNA (IF, 0–40 dB / 8)</label><select id="hrfLna"></select></div>
+              <div class="field hw-hackrf"><label for="hrfVga">HackRF VGA (baseband, 0–62 dB / 2)</label><select id="hrfVga"></select></div>
+              <div class="field hw-hackrf full"><label for="hrfBaseband">HackRF baseband filter</label><select id="hrfBaseband"></select></div>
+            </div>
+            <p class="hint">HackRF has no AGC: "slider" splits the Settings gain between LNA and VGA; pick both here for exact values. The RF amp (+14 dB) and antenna power are in Settings. A narrower baseband filter rejects strong neighbours (useful for DF near other transmitters) but must stay wider than the span you look at. RTL-SDR: tuner AGC and RTL digital AGC are separate; both should be off for DF.</p>
+          </div>
+        </details>
+        <details class="card fold hw-hackrf" id="sweepCard">
+          <summary><h2>HackRF wideband sweep</h2></summary>
+          <div class="foldbody">
+            <div class="grid2">
+              <div class="field"><label for="sweepLo">Start (MHz)</label><input id="sweepLo" type="number" min="1" max="5980" step="1" value="100" inputmode="numeric" /></div>
+              <div class="field"><label for="sweepHi">Stop (MHz)</label><input id="sweepHi" type="number" min="21" max="6000" step="1" value="1000" inputmode="numeric" /></div>
+            </div>
+            <canvas id="sweepCanvas" style="width:100%;height:160px" aria-label="Wideband sweep, peak hold"></canvas>
+            <div class="btns"><button class="btn primary" id="btnSweep" type="button">Start sweep</button></div>
+            <div class="btns" id="sweepPeaks" aria-label="Strongest signals"></div>
+            <p class="hint">hackrf_sweep-style firmware sweep (receive only): 20 MS/s in 20 MHz steps, ~78 kHz bins, light peak hold. It stops normal measuring. Tap a peak to tune there and make it the DT target. Needs HackRF firmware 2018.01.1 or newer (2023+ recommended).</p>
+          </div>
+        </details>
         <details class="card fold">
           <summary><h2>Resolution &amp; amplitude</h2></summary>
           <div class="foldbody">
@@ -1051,6 +1075,7 @@
           <div class="btns">
             <button class="btn primary big" id="btnDtCapture" type="button" title="Locks gain, starts measuring, and saves the fix by itself once the circle and a back-sweep are done">Sweep capture</button>
             <button class="btn primary" id="btnDtFix" type="button"><svg class="i" aria-hidden="true"><use href="#i-gps"/></svg>Save fix</button>
+            <button class="btn ghost" id="btnDtFind" type="button" title="Open the HackRF wideband sweep on the SA tab">Find signal (sweep)</button>
             <button class="btn ghost" id="btnDtReset" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear plot</button>
             <button class="btn ghost" id="btnDtClearFixes" type="button">Clear fixes</button>
           </div>
@@ -1327,7 +1352,7 @@
               <label for="gain">Gain <span id="gainVal"></span></label>
               <div class="inline">
                 <input id="gain" type="range" min="0" max="50" step="1" value="30" />
-                <label class="check"><input id="gainAuto" type="checkbox" checked /> Auto</label>
+                <label class="check"><input id="gainAuto" type="checkbox" checked /> <span id="gainAutoLbl">Tuner AGC</span></label>
               </div>
             </div>
             <div class="field sdr">
@@ -1360,7 +1385,8 @@
             <label class="check sdr" id="ampRow"><input id="amp" type="checkbox" /> HackRF RF amp (+14 dB)</label>
             <label class="check sdr"><input id="dcRemove" type="checkbox" checked /> Hide DC spike</label>
             <label class="check sdr"><input id="peakHold" type="checkbox" checked /> Peak hold</label>
-            <label class="check sdr"><input id="biasTee" type="checkbox" /> Antenna power / bias-T</label>
+            <label class="check sdr"><input id="biasTee" type="checkbox" /> Antenna power / bias-T <small>(DC on the antenna port)</small></label>
+            <label class="check sdr hw-rtl"><input id="rtlAgc" type="checkbox" /> RTL2832U digital AGC <small>(keep off for DF / calibrated levels)</small></label>
             </div>
           </section>
           </div>
