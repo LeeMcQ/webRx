@@ -26,9 +26,10 @@ import { initWifiAnalyser } from "./wifi-ui.js";
 import { shared } from "./listen.js";
 import { analyser, CMAP_NAMES, type Src } from "./analyser.js";
 import * as sess from "./sessions.js";
-import { owrx, normaliseUrl, type Label } from "./owrx.js";
+import { owrx, normaliseUrl, safeHttp, safeKind, type Label } from "./owrx.js";
 import { uber, looksLikeUber } from "./ubersdr.js";
 import { kiwi } from "./kiwi.js";
+import { avgStep, enbwBins, sUnits, cleanDirEntry, NO_RETRY, backoffMs, type DirEntry } from "./util.js";
 type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
 type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
 let remote: RemoteClient = owrx;
@@ -125,7 +126,12 @@ let wakeLock: any = null;
 
 let psd: PsdEngine | null = null;
 let raw = new Float32Array(0); // latest PSD (dB)
-let spec = new Float32Array(0); // smoothed (dB)
+let spec = new Float32Array(0); // smoothed for display / SA / DT (dB; averaged in linear power by default)
+/** Legacy dB-domain EMA, kept bit-for-bit for the thesis log (CSV rows, pins, timeline). */
+let specDb = new Float32Array(0);
+/** Averaging domain for the displayed spectrum. "lin" = power average (correct for noise and
+ *  channel power); "log" = dB average (video averaging, reads ~2.5 dB low on noise). */
+let avgMode: "lin" | "log" = localStorage.getItem("webrx.avgMode") === "log" ? "log" : "lin";
 let peak = new Float32Array(0); // peak hold (dB)
 let frames = 0;
 let lastLogAt = 0;
@@ -184,8 +190,15 @@ function ctl<T>(fn: () => Promise<T>): Promise<T> {
 //  Spectrum estimation (Rust/WASM, JS fallback)
 // ═══════════════════════════════════════════════════════════════════
 
+/** Remote servers don't say which window they use; Hann (1.5 bins) is the common default. */
+const REMOTE_ENBW = 1.5;
+function srcEnbw() {
+  return remote.connected && !pb ? REMOTE_ENBW : psd?.enbw ?? 1.5;
+}
+
 class PsdEngine {
   readonly n: number;
+  enbw = 1.5;
   private window: Float32Array;
   private wsum: number;
   private ex: DspExports | null;
@@ -201,6 +214,7 @@ class PsdEngine {
     this.window = new Float32Array(n);
     for (let i = 0; i < n; ++i) this.window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / n);
     this.wsum = this.window.reduce((a, b) => a + b, 0);
+    this.enbw = enbwBins(this.window);
     this.acc = new Float64Array(n);
     this.I = new Float32Array(n);
     this.Q = new Float32Array(n);
@@ -263,6 +277,7 @@ function resetSpectrum() {
   psd = new PsdEngine(cfg.fftSize);
   raw = new Float32Array(cfg.fftSize);
   spec = new Float32Array(cfg.fftSize).fill(NaN);
+  specDb = new Float32Array(cfg.fftSize).fill(NaN);
   peak = new Float32Array(cfg.fftSize).fill(-200);
   analyser.clearHolds();
 }
@@ -489,11 +504,9 @@ function processBlock(bytes: Uint8Array) {
     for (let k = c - 1; k <= c + 1; ++k) raw[k] = fill;
   }
   const a = Math.min(0.95, Math.max(0, cfg.avg));
-  for (let k = 0; k < n; ++k) {
-    const v = raw[k] + cfg.cal;
-    spec[k] = Number.isNaN(spec[k]) ? v : a * spec[k] + (1 - a) * v;
-    peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
-  }
+  if (specDb.length !== n) specDb = new Float32Array(n).fill(NaN);
+  avgStep(spec, specDb, raw, a, avgMode, cfg.cal);
+  for (let k = 0; k < n; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   lastStats = computeStats();
   if (isSdrMode()) dt.push(levelAt(dtFreqHz(), dt.st.bwHz), gps.fix?.headingDeg);
@@ -521,7 +534,8 @@ function processBlock(bytes: Uint8Array) {
 
 /** Live levels from the smoothed trace: peak and mean inside the measurement bandwidth, mean over the span. */
 function computeStats() {
-  const l = spectrumLevels(spec, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
+  // thesis log path: unchanged dB-domain average
+  const l = spectrumLevels(specDb.length === spec.length ? specDb : spec, cfg.freqMHz * 1e6, cfg.sampleRate, bwHz());
   return { peak: l.peak, peakHz: l.peakHz, band: l.band, spec: l.spec };
 }
 
@@ -1551,7 +1565,7 @@ function updateReadout() {
     $("levelUnits").textContent = "dB (server)";
     $("roCenter").textContent = freqLabel(remote.centreHz);
     $("roSpan").textContent = hzShort(remote.rateHz);
-    $("roRbw").textContent = hzShort(((remote.rateHz / Math.max(1, remote.fftSize || spec.length)) * 1.5));
+    $("roRbw").textContent = hzShort((remote.rateHz / Math.max(1, remote.fftSize || spec.length)) * REMOTE_ENBW);
     $("stRate").textContent = formatRate(remote.rateHz);
     return;
   }
@@ -1561,7 +1575,7 @@ function updateReadout() {
   if (isSdrMode()) {
     $("roCenter").textContent = freqLabel(cfg.freqMHz * 1e6);
     $("roSpan").textContent = formatRate(cfg.sampleRate).replace("sps", "Hz");
-    $("roRbw").textContent = `${((cfg.sampleRate / cfg.fftSize) * 1.5 / 1000).toFixed(2)} kHz`;
+    $("roRbw").textContent = `${((cfg.sampleRate / cfg.fftSize) * srcEnbw() / 1000).toFixed(2)} kHz`;
     $("stRate").textContent = formatRate(cfg.sampleRate);
   } else {
     for (const id of ["roCenter", "roSpan", "roRbw", "stRate"]) $(id).textContent = "—";
@@ -2293,6 +2307,7 @@ function src(): Src {
     dtHi: dtFreqHz() + dt.st.bwHz / 2,
     thresholdDb: activeCalibration()?.thresholdDb ?? null,
     peakStat: lastStats && Number.isFinite(lastStats.peak) ? { peak: lastStats.peak, peakHz: lastStats.peakHz } : null,
+    enbw: srcEnbw(),
     pbLo: passband()?.[0] ?? null,
     pbHi: passband()?.[1] ?? null,
     labels: labelsNow(),
@@ -2321,9 +2336,20 @@ function renderSa() {
   setVal("saStart", String(+(f0 / 1e6).toFixed(6)));
   setVal("saStop", String(+(f1 / 1e6).toFixed(6)));
   setText("saSpanRo", hzShort(f1 - f0));
-  setVal("saZoom", String(c.zoom));
+  {
+    const z = $<HTMLSelectElement>("saZoom");
+    const v = String(+c.zoom.toFixed(2));
+    let o = Array.from(z.options).find((x) => x.value === v);
+    z.querySelectorAll("option[data-dyn]").forEach((x) => x !== o && x.remove());
+    if (!o) {
+      o = new Option(`${v}×`, v);
+      o.dataset.dyn = "1";
+      z.add(o);
+    }
+    z.value = v;
+  }
   setVal("saPan", String(Math.round(c.pan * 1000)));
-  setText("saRbw", hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * 1.5));
+  setText("saRbw", hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * srcEnbw()));
   ($("saAuto") as HTMLInputElement).checked = c.autoRange;
   ($("saRef") as HTMLInputElement).disabled = c.autoRange;
   ($("saRange") as HTMLSelectElement).disabled = c.autoRange;
@@ -2349,7 +2375,7 @@ function renderSa() {
   } else setText("saDelta", "—");
   const m = analyser.metrics(s);
   setText("saFloor", m ? `${fmtDb(m.floor)} dB` : "—");
-  setText("saChPow", m ? `${fmtDb(m.chPower)} dB @ ${freqLabel(m.chCentre)}` : "—");
+  setText("saChPow", m ? `${fmtDb(m.chPower)} dB in ${hzShort(analyser.cfg.chBwHz)} @ ${freqLabel(m.chCentre)} · RBW ${hzShort((srcRate() / Math.max(1, spec.length || cfg.fftSize)) * srcEnbw())} (ENBW-corrected)` : "—");
   setText("saObw", m ? hzShort(m.obw) : "—");
   setVal("feUpconv", String(fe.upconvHz / 1e6));
   setVal("fePpm", String(fe.ppm));
@@ -2426,6 +2452,15 @@ function bindSa() {
   };
   mirror("saFft", "fftSize");
   mirror("saAvg", "avg", "input");
+  const am = $<HTMLSelectElement>("saAvgMode");
+  am.value = avgMode;
+  am.addEventListener("change", () => {
+    avgMode = am.value === "log" ? "log" : "lin";
+    try {
+      localStorage.setItem("webrx.avgMode", avgMode);
+    } catch (_) {}
+    spec.fill(NaN);
+  });
   mirror("saPeak", "peakHold");
   // display
   cm.addEventListener("change", () => apply({ cmap: cm.value }));
@@ -2603,7 +2638,7 @@ async function renderSessions() {
     row.className = "sessrow";
     row.dataset.id = m.id;
     const live = recorder.meta?.id === m.id;
-    row.innerHTML = `<div class="sessinfo"><input class="sessname" aria-label="Session name" value="${m.name.replace(/"/g, "&quot;")}" ${live ? "disabled" : ""}/>
+    row.innerHTML = `<div class="sessinfo"><input class="sessname" aria-label="Session name" value="${esc(m.name)}" ${live ? "disabled" : ""}/>
       <small>${new Date(m.startedAt).toLocaleString()} · ${fmtDur(m.endedAt - m.startedAt)} · ${m.frames} frames · ${fmtMB(m.bytes)}${live ? " · recording" : ""}</small></div>
       <div class="sessbtns">
         <button class="btn primary small" data-act="play" type="button" ${live ? "disabled" : ""}>Play</button>
@@ -2634,7 +2669,7 @@ async function onSessionAction(act: string, id: string) {
 
 async function startPlayback(m: sess.SessionMeta) {
   if (recorder.active) await toggleRecord();
-  if (remote.connected) remote.disconnect();
+  if (remote.connected) userDisconnectRemote();
   if (running) await stop();
   const frames = await sess.loadFrames(m.id);
   if (!frames.length) return log("This session has no frames", "wn");
@@ -2684,6 +2719,7 @@ function showFrame(f: sess.Frame) {
   pb.centreHz = f.c;
   pb.rateHz = f.r;
   const d = sess.dequantise(f);
+  specDb = new Float32Array(0);
   if (spec.length !== d.length) {
     spec = new Float32Array(d.length);
     raw = new Float32Array(d.length);
@@ -2798,7 +2834,7 @@ function bindSessions() {
     "click",
     () => {
       if (pb) stopPlayback();
-      if (remote.connected) remote.disconnect();
+      if (remote.connected) userDisconnectRemote();
     },
     { capture: true }
   );
@@ -2883,19 +2919,21 @@ function bindStatus() {
 //  RM: OpenWebRX remote receivers
 // ═══════════════════════════════════════════════════════════════════
 
-type DirEntry = { n: string; s: string; u: string; v: string; lat: number; lon: number; ok?: number; k?: "ubersdr" | "kiwisdr"; users?: string; feat?: string };
 const FEATURED: DirEntry[] = [
   { n: "TWR | Johannesburg", s: "Johannesburg, South Africa", u: "http://jnb.twrmon.net:8073/", v: "", lat: -26.2, lon: 28.05, k: "kiwisdr", feat: "Featured" },
 ];
 const FAV_KEY = "webrx.remote.favs";
 const favs = (): string[] => {
   try {
-    return JSON.parse(localStorage.getItem(FAV_KEY) || "[]");
+    const j = JSON.parse(localStorage.getItem(FAV_KEY) || "[]");
+    return Array.isArray(j) ? j.map(safeHttp).filter((x): x is string => !!x) : [];
   } catch (_) {
     return [];
   }
 };
-function toggleFav(u: string) {
+function toggleFav(raw: string) {
+  const u = safeHttp(raw);
+  if (!u) return;
   const f = favs();
   const i = f.indexOf(u);
   if (i >= 0) f.splice(i, 1);
@@ -2911,7 +2949,11 @@ let dir: { fetched: string; source: string; probed: boolean; servers: DirEntry[]
 const SAVED_KEY = "webrx.remote.saved";
 const savedServers = (): { u: string; n: string; k?: string }[] => {
   try {
-    return JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
+    const j = JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
+    return (Array.isArray(j) ? j : []).flatMap((x: any) => {
+      const u = safeHttp(x?.u);
+      return u ? [{ u, n: String(x.n ?? "").slice(0, 120), k: safeKind(x.k) }] : [];
+    });
   } catch (_) {
     return [];
   }
@@ -2945,11 +2987,9 @@ function feedRemote(f: Float32Array) {
   }
   raw.set(f);
   const a = Math.min(0.95, Math.max(0, cfg.avg));
-  for (let k = 0; k < f.length; ++k) {
-    const v = f[k];
-    spec[k] = Number.isNaN(spec[k]) ? v : a * spec[k] + (1 - a) * v;
-    peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
-  }
+  specDb = new Float32Array(0);
+  avgStep(spec, null, f, a, avgMode);
+  for (let k = 0; k < f.length; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   const l = spectrumLevels(spec, remote.centreHz, remote.rateHz, bwHz());
   lastStats = { peak: l.peak, peakHz: l.peakHz, band: Number.isFinite(remote.smeterDb) ? remote.smeterDb : l.band, spec: l.spec };
@@ -2973,7 +3013,7 @@ function renderRemote() {
   const msg = $("rxMsg");
   msg.className = "hint" + (remote.state === "error" ? " bad" : "");
   if (remote.state === "error" && remote.error === "mixed")
-    msg.innerHTML = `This server only offers <b>http://</b>. Browsers block insecure WebSockets from an https page (mixed content), so it can't feed SA here. <a href="${esc(remote.url.page)}" target="_blank" rel="noopener">Open it in a new tab ↗</a>`;
+    msg.innerHTML = `This server only offers <b>http://</b>. Browsers block insecure WebSockets from an https page (mixed content), so it can't feed SA here. <a href="${esc(remote.url.page)}" target="_blank" rel="noopener noreferrer">Open it in a new tab ↗</a>`;
   else if (remote.state === "error") msg.textContent = remote.error;
   else if (remote.state === "connecting") msg.textContent = `Connecting to ${remote.url.ws} …`;
   else if (on) msg.textContent = `Connected. Spectrum and waterfall on SA (and here), levels in the status panel, Rec records this stream.`;
@@ -3010,11 +3050,91 @@ function renderRemote() {
   ab.classList.toggle("primary", remote.audioOn);
   setText("rxSmeter", Number.isFinite(remote.smeterDb) ? `${remote.smeterDb.toFixed(1)} dB` : "—");
   setText("rxRate", `${(remote.bytes / 1e6).toFixed(1)} MB received · ${remote.fftFrames} FFT rows`);
-  ($("rxOpenLink") as HTMLAnchorElement).href = remote.url.page;
+  ($("rxOpenLink") as HTMLAnchorElement).href = safeHttp(remote.url.page) ?? "#";
 }
 
-async function connectRemote(u: string, kind?: RemoteKind) {
+
+/** Which client a URL needs: user pick, then the directories, then a probe (only for unknown hosts). */
+async function detectKind(page: string): Promise<RemoteKind> {
+  const pickKind = safeKind((document.getElementById("rxUrlKind") as HTMLSelectElement | null)?.value);
+  if (pickKind) return pickKind;
+  const host = new URL(page).host;
+  const has = (l?: DirEntry[] | null) => !!l?.some((e) => {
+    try {
+      return new URL(e.u).host === host;
+    } catch (_) {
+      return false;
+    }
+  });
+  if (has(uberDir)) return "ubersdr";
+  if (has(dir?.kiwi) || has(FEATURED) || /:8073\/|kiwi/i.test(page)) return "kiwisdr";
+  if (has(dir?.servers)) return "openwebrx";
+  return (await looksLikeUber(page)) ? "ubersdr" : "openwebrx";
+}
+
+// ── reconnect with backoff ──
+const RC_MAX = 8;
+const rc = { wasFocused: false, deliberate: true, tries: 0, timer: 0, wasOpen: false, restoring: false, want: null as null | { u: string; kind: RemoteKind; freq: number; mode: string; lo: number | null; hi: number | null; centre: number; span: number; zoomed: boolean; audio: boolean } };
+function rememberWant() {
+  if (!remote.connected) return;
+  rc.want = { u: remote.url.page, kind: remote.kind as RemoteKind, freq: remote.tunedHz, mode: remote.mod, lo: remote.lowCut, hi: remote.highCut, centre: remote.centreHz, span: remote.rateHz, zoomed: remote.kind !== "openwebrx" && remote.rateHz < (remote as any).fullHz * 0.99, audio: remote.audioOn };
+}
+function userDisconnectRemote() {
+  rc.deliberate = true;
+  clearTimeout(rc.timer);
+  rc.want = null;
+  remote.disconnect();
+}
+function remoteStateChanged() {
+  if (remote.connected) {
+    rc.wasOpen = true;
+    if (rc.restoring && rc.want) {
+      const w = rc.want;
+      rc.restoring = false;
+      remote.setMode(w.mode);
+      if (w.lo != null && w.hi != null) remote.setPassband(w.lo, w.hi);
+      remote.tune(w.freq);
+      if (w.zoomed) remote.zoom(w.centre, w.span);
+      if (w.audio && !remote.audioOn) remote.setAudio(true);
+      log(`Reconnected to ${remote.name || w.u}; frequency, mode and zoom restored`, "ok");
+    }
+    rc.tries = 0;
+    rememberWant();
+    return;
+  }
+  if (remote.state === "connecting" || rc.deliberate || !rc.wasOpen || !rc.want) return;
+  if (remote.state !== "closed" && remote.state !== "error") return;
+  if (NO_RETRY.test(remote.error || "")) {
+    log(`Not reconnecting: ${remote.error}`, "wn");
+    rc.want = null;
+    return;
+  }
+  if (rc.tries >= RC_MAX) {
+    log("Gave up reconnecting — press Connect to try again", "er");
+    rc.want = null;
+    return;
+  }
+  clearTimeout(rc.timer);
+  const ms = backoffMs(rc.tries++);
+  log(`Connection lost — reconnecting in ${Math.round(ms / 1000)} s (try ${rc.tries}/${RC_MAX})`, "wn");
+  const w = rc.want;
+  rc.timer = window.setTimeout(() => {
+    if (rc.deliberate || rc.want !== w) return;
+    rc.restoring = true;
+    connectRemote(w.u, w.kind, true);
+  }, ms);
+}
+
+async function connectRemote(u: string, kind?: RemoteKind, retry = false) {
   if (pb) stopPlayback();
+  clearTimeout(rc.timer);
+  rc.deliberate = false;
+  rc.wasFocused = retry;
+  if (!retry) {
+    rc.tries = 0;
+    rc.restoring = false;
+    rc.wasOpen = false;
+  }
   let page = "";
   try {
     page = normaliseUrl(u).page;
@@ -3022,12 +3142,17 @@ async function connectRemote(u: string, kind?: RemoteKind) {
     log(e?.message ?? String(e), "wn");
     return;
   }
+  // only ever hand an http(s) URL to a client (the normalised one, not the raw input)
+  const safe = safeHttp(page);
+  if (!safe) {
+    log("Only http:// and https:// server addresses are supported", "wn");
+    return;
+  }
+  page = u = safe;
   owrx.disconnect(true);
   uber.disconnect(true);
   kiwi.disconnect(true);
-  const pickKind = (document.getElementById("rxUrlKind") as HTMLSelectElement | null)?.value;
-  const k: RemoteKind =
-    kind ?? (pickKind && pickKind !== "auto" ? (pickKind as RemoteKind) : /:8073\/|kiwi/i.test(page) ? "kiwisdr" : (await looksLikeUber(page)) ? "ubersdr" : "openwebrx");
+  const k: RemoteKind = safeKind(kind) ?? (await detectKind(page));
   remote = k === "ubersdr" ? uber : k === "kiwisdr" ? kiwi : owrx;
   wireRemote();
   try {
@@ -3047,6 +3172,7 @@ async function connectRemote(u: string, kind?: RemoteKind) {
   timeline.length = 0;
   analyser.set({ zoom: 1, pan: 0.5 });
 }
+setInterval(rememberWant, 2000);
 
 function renderSaved() {
   const box = document.getElementById("rxSaved");
@@ -3077,7 +3203,7 @@ function renderDir() {
   let list = all.filter((e) => (!onlyOk || e.u.startsWith("https:") || e.feat) && (!q || `${e.n} ${e.s} ${e.u}`.toLowerCase().includes(q)));
   const sortBy = ($("rxSort") as HTMLSelectElement).value;
   list = list.slice().sort((a, b) => +!!b.feat - +!!a.feat || +fv.includes(b.u) - +fv.includes(a.u) || (sortBy === "works" ? (b.ok || 0) - (a.ok || 0) || dist(a) - dist(b) : dist(a) - dist(b)));
-  const total = list.length;
+  const total = all.length;
   list = list.slice(0, 60);
   const https = dir.servers.filter((e) => e.u.startsWith("https:")).length;
   const ub = uberDir ?? [];
@@ -3085,10 +3211,15 @@ function renderDir() {
   setText(
     "rxDirInfo",
     `OpenWebRX: ${dir.servers.length} on receiverbook.de (snapshot ${dir.fetched.slice(0, 10)}), ${https} https (${Math.round((https / dir.servers.length) * 100)} %). ` +
-      (uberDir ? `UberSDR: ${ub.length} online now (instances.ubersdr.org), ${ubHttps} https. ` : uberDirErr ? `UberSDR list unavailable (${uberDirErr}). ` : "UberSDR: loading… ") +
+      (uberDir ? `UberSDR: ${ub.length} online now (instances.ubersdr.org), ${ubHttps} https. ` : uberDirErr ? `UberSDR list unavailable${/fetch|network/i.test(uberDirErr) ? " (offline or blocked)" : ` (${uberDirErr})`}. ` : "UberSDR: loading… ") +
       `KiwiSDR: ${(dir.kiwi ?? []).length} on receiverbook.de, ${(dir.kiwi ?? []).filter((e) => e.u.startsWith("https:")).length} https. ` +
       `Showing ${list.length} of ${total}, distance from ${here ? "your GPS position" : "Johannesburg"}.`
   );
+  box.removeAttribute("aria-busy");
+  if (!list.length) {
+    box.innerHTML = `<p class="empty">${q ? `No servers match “${esc(q)}”.` : "No servers for this filter."} <button class="btn ghost small" type="button" data-clear>Clear search and filters</button></p>`;
+    return;
+  }
   box.innerHTML = list
     .map((e) => {
       const sec = e.u.startsWith("https:");
@@ -3097,8 +3228,8 @@ function renderDir() {
       const isFav = fv.includes(e.u);
       const star = `<button class="btn ghost small star" type="button" data-fav="${esc(e.u)}" aria-pressed="${isFav}" aria-label="${isFav ? "Remove from" : "Add to"} favourites: ${esc(e.n || e.s)}">${isFav ? "★" : "☆"}</button>`;
       const tag = (e.feat ? `<span class="tag feat">${esc(e.feat)}</span> ` : "") + `<span class="tag ${e.k === "ubersdr" ? "uber" : e.k === "kiwisdr" ? "kiwi" : "owrx"}">${kn}</span> ` + (sec ? (e.ok ? `<span class="tag ok">works here</span>` : `<span class="tag">https</span>`) : `<span class="tag warn">http only</span>`) + (e.users ? ` <span class="tag">${esc(e.users)}</span>` : "");
-      return `<div class="dirrow"><div class="dirinfo"><b>${esc(e.n || e.s)}</b><small>${esc(e.s && e.s !== e.n ? e.s + " · " : "")}${esc(e.v ? "v" + e.v : "")}${Number.isFinite(d) ? ` · ${Math.round(d)} km` : ""}</small>${tag}</div>
-        <div class="dirbtns">${star}${sec ? `<button class="btn primary small" type="button" data-u="${esc(e.u)}" data-k="${e.k ?? "openwebrx"}" data-n="${esc(e.n || e.s)}">Connect</button>` : ""}<a class="btn ghost small" href="${esc(e.u)}" target="_blank" rel="noopener" aria-label="Open ${esc(e.n || e.s)} in a new tab">Open ↗</a></div></div>`;
+      return `<div class="dirrow"><div class="dirinfo"><b>${esc(e.n || e.s)}</b><small>${esc([e.s && e.s !== e.n ? e.s : "", e.v ? "v" + e.v : "", Number.isFinite(d) ? `${Math.round(d)} km` : ""].filter(Boolean).join(" · "))}</small>${tag}</div>
+        <div class="dirbtns">${star}${sec ? `<button class="btn primary small" type="button" data-u="${esc(e.u)}" data-k="${safeKind(e.k) ?? "openwebrx"}" data-n="${esc(e.n || e.s)}">Connect</button>` : ""}<a class="btn ghost small" href="${esc(e.u)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(e.n || e.s)} in a new tab">Open ↗</a></div></div>`;
     })
     .join("");
 }
@@ -3125,7 +3256,9 @@ async function loadUberDir() {
         ok: x.tls && x.antenna_connected !== false ? 1 : 0,
         k: "ubersdr" as const,
         users: x.max_clients ? `${x.max_clients - (x.available_clients ?? 0)}/${x.max_clients} users` : "",
-      }));
+      }))
+      .map(cleanDirEntry)
+      .filter((x: DirEntry | null): x is DirEntry => !!x);
   } catch (e: any) {
     uberDirErr = e?.message ?? String(e);
   }
@@ -3136,10 +3269,13 @@ async function loadDir() {
   loadUberDir();
   if (dir) return;
   try {
-    dir = await (await fetch("owrx-servers.json", { cache: "no-cache" })).json();
+    const j = await (await fetch("owrx-servers.json", { cache: "no-cache" })).json();
+    const clean = (l: unknown) => (Array.isArray(l) ? l.slice(0, 5000).map(cleanDirEntry).filter((x): x is DirEntry => !!x) : []);
+    dir = { fetched: String(j?.fetched ?? ""), source: String(j?.source ?? ""), probed: !!j?.probed, servers: clean(j?.servers), kiwi: clean(j?.kiwi).map((e) => ({ ...e, k: "kiwisdr" as const })) };
     renderDir();
   } catch (e: any) {
-    setText("rxDirInfo", `Directory unavailable (${e?.message ?? e}); you can still add a server by URL.`);
+    setText("rxDirInfo", navigator.onLine === false || /fetch|network/i.test(String(e?.message ?? e)) ? "You appear to be offline, so the server directory can't load. You can still add a server by URL." : `Directory unavailable (${e?.message ?? e}); you can still add a server by URL.`);
+    document.getElementById("rxDir")?.removeAttribute("aria-busy");
   }
 }
 
@@ -3152,16 +3288,24 @@ function wireRemote() {
 }
 
 function onRemoteChange() {
+    remoteStateChanged();
     renderRemote();
     updateReadout();
     const idle = document.getElementById("specIdle");
     if (idle && remote.connected) idle.style.display = "none";
     else if (idle && !running && !pb && remote.state !== "connecting") idle.style.display = "";
+    if (remote.state === "connecting") setChip("dotSource", "txtSource", `Connecting to ${remote.name || remote.label}…`, "warn");
+    else if (remote.state === "error" && !rc.timer) setChip("dotSource", "txtSource", `${remote.label} connection failed`, "err");
     if (remote.connected) {
+      if (!rc.wasFocused) {
+        rc.wasFocused = true;
+        const d = document.getElementById("btnRxDisconnect");
+        if (d && document.getElementById("pane-rm")?.hidden === false) d.focus({ preventScroll: true });
+      }
       setChip("dotSource", "txtSource", `${remote.label}: ${remote.name || "remote"}`, "ok");
       rememberServer(remote.url.page, remote.name || remote.url.page, remote.kind);
       renderSaved();
-    } else if (remote.state !== "connecting" && !pb) {
+    } else if (remote.state !== "connecting" && remote.state !== "error" && !pb) {
       if (frames && !running) {
         resetSpectrum();
         frames = 0;
@@ -3182,12 +3326,19 @@ function bindRemote() {
   url.addEventListener("keydown", (e) => e.key === "Enter" && go());
   $("btnRxOpen").addEventListener("click", () => {
     try {
-      window.open(normaliseUrl(url.value).page, "_blank", "noopener");
+      const p = safeHttp(normaliseUrl(url.value).page);
+      if (p) window.open(p, "_blank", "noopener,noreferrer");
     } catch (e: any) {
       log(e?.message ?? String(e), "wn");
     }
   });
   const pick = (e: Event) => {
+    if ((e.target as HTMLElement).closest("button[data-clear]")) {
+      ($("rxSearch") as HTMLInputElement).value = "";
+      ($("rxKind") as HTMLSelectElement).value = "all";
+      renderDir();
+      return;
+    }
     const f = (e.target as HTMLElement).closest("button[data-fav]") as HTMLButtonElement | null;
     if (f) {
       toggleFav(f.dataset.fav!);
@@ -3196,13 +3347,15 @@ function bindRemote() {
     }
     const b = (e.target as HTMLElement).closest("button[data-u]") as HTMLButtonElement | null;
     if (!b) return;
-    url.value = b.dataset.u!;
-    connectRemote(b.dataset.u!, (b.dataset.k as any) || undefined);
+    const u = safeHttp(b.dataset.u);
+    if (!u) return;
+    url.value = u;
+    connectRemote(u, safeKind(b.dataset.k));
     document.getElementById("rxCard")?.scrollIntoView({ block: "start", behavior: "smooth" });
   };
   $("rxSaved").addEventListener("click", pick);
   $("rxDir").addEventListener("click", pick);
-  $("btnRxDisconnect").addEventListener("click", () => remote.disconnect());
+  $("btnRxDisconnect").addEventListener("click", userDisconnectRemote);
   $("btnRxAudio").addEventListener("click", () => {
     if (!remote.audioOn && shared.audioOn) shared.setAudio(false);
     remote.setAudio(!remote.audioOn);
@@ -3296,9 +3449,31 @@ function snapHz(hz: number) {
   return analyser.cfg.snap && st > 0 ? Math.round(hz / st) * st : Math.round(hz);
 }
 
+/** Tunable range of the active source (Hz). */
+function tuneRange(): [number, number] {
+  if (remote.connected) {
+    const full = (remote as any).fullHz as number | undefined;
+    if (full) return [0, full];
+    return [remote.centreHz - remote.rateHz / 2, remote.centreHz + remote.rateHz / 2];
+  }
+  const f = document.getElementById("freq") as HTMLInputElement | null;
+  const lo = parseFloat(f?.min || "") * 1e6, hi = parseFloat(f?.max || "") * 1e6;
+  return [Number.isFinite(lo) ? lo : 0, Number.isFinite(hi) ? hi : 6e9];
+}
+
+/** Digit p (10^p Hz) up/down, on the step grid and clamped to the source range. */
+function digitStep(p: number, dir: number) {
+  if (!canTune()) return;
+  const st = Math.max(1, analyser.cfg.step);
+  const inc = Math.max(10 ** p, st);
+  tuneAny(Math.round((tunedHz() + dir * inc) / st) * st);
+}
+
 /** Tune the active receiver (remote, or local listen offset / centre). */
 function tuneAny(hz: number) {
   if (!canTune() || !Number.isFinite(hz)) return;
+  const [lo, hi] = tuneRange();
+  hz = Math.min(hi, Math.max(lo, hz));
   if (remote.connected) {
     if (!remote.tune(hz)) log(remote.kind === "openwebrx" ? "Outside the server's span — pick another profile" : "Outside the receiver's range", "wn");
   } else tuneTo(hz);
@@ -3326,7 +3501,9 @@ function serverZoomed() {
 }
 
 function zoomAt(factor: number, xCss: number, wCss: number) {
+  if (!isSdrMode() && !pb && !remote.connected) return;
   const s = src();
+  if (!(s.rateHz > 0) || !Number.isFinite(factor)) return;
   const hz = analyser.xToHz(s, Math.max(analyser.LEFT, xCss), wCss);
   const z0 = analyser.cfg.zoom;
   const z1 = Math.max(1, Math.min(64, z0 * factor));
@@ -3349,23 +3526,24 @@ function bindScopeInteractions() {
   sp.setAttribute("role", "application");
   sp.setAttribute("aria-label", "Spectrum: tap to tune, drag to pan, wheel or pinch to zoom, drag the pink passband edges to change the filter. Keys: left/right tune by step, + and − zoom, Home centres on the tuned frequency.");
   const pts = new Map<number, { x: number; y: number }>();
-  let drag: null | { mode: "pan" | "edge" | "maybe"; edge?: "lo" | "hi"; x0: number; pan0: number; moved: boolean; pinch0?: number; zoom0?: number; c: HTMLCanvasElement } = null;
+  let drag: null | { mode: "pan" | "edge" | "maybe"; edge?: "lo" | "hi"; x0: number; y0?: number; pan0: number; moved: boolean; pinch0?: number; zoom0?: number; c: HTMLCanvasElement } = null;
   const rel = (c: HTMLCanvasElement, e: PointerEvent | MouseEvent) => {
     const r = c.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width };
   };
-  const edgeAt = (x: number, w: number): "lo" | "hi" | null => {
+  const edgeAt = (x: number, w: number, touch = false): "lo" | "hi" | null => {
     const pbv = passband();
     if (!pbv) return null;
     const s = src();
     const a = analyser.hzToX(s, pbv[0], w), b = analyser.hzToX(s, pbv[1], w);
-    const tol = 8;
+    const tol = touch ? 22 : 10;
     if (Math.abs(x - a) <= tol && Math.abs(x - a) <= Math.abs(x - b)) return "lo";
     if (Math.abs(x - b) <= tol) return "hi";
     return null;
   };
   for (const c of [sp, wf]) {
-    c.style.touchAction = "none";
+    // vertical swipes scroll the page; horizontal drags pan, taps tune, two fingers zoom
+    c.style.touchAction = "pan-y";
     c.addEventListener("pointerdown", (e) => {
       if (!isSdrMode() && !pb && !remote.connected) return;
       c.setPointerCapture(e.pointerId);
@@ -3376,8 +3554,8 @@ function bindScopeInteractions() {
         drag = { mode: "pan", x0: p.x, pan0: analyser.cfg.pan, moved: true, pinch0: Math.hypot(a.x - b.x, a.y - b.y), zoom0: analyser.cfg.zoom, c };
         return;
       }
-      const edge = c === sp ? edgeAt(p.x, p.w) : null;
-      drag = { mode: edge ? "edge" : "maybe", edge: edge ?? undefined, x0: p.x, pan0: analyser.cfg.pan, moved: false, c };
+      const edge = c === sp ? edgeAt(p.x, p.w, e.pointerType !== "mouse") : null;
+      drag = { mode: edge ? "edge" : "maybe", edge: edge ?? undefined, x0: p.x, y0: p.y, pan0: analyser.cfg.pan, moved: false, c };
     });
     c.addEventListener("pointermove", (e) => {
       const p = rel(c, e);
@@ -3406,7 +3584,19 @@ function bindScopeInteractions() {
         drag.moved = true;
         return;
       }
-      if (drag.mode === "maybe" && Math.abs(dx) > 5) drag.mode = "pan";
+      if (drag.mode === "maybe") {
+        const dy = p.y - (drag.y0 ?? p.y);
+        if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
+          // mostly vertical: it's a scroll, not a tune or a pan
+          drag = null;
+          pts.delete(e.pointerId);
+          try {
+            c.releasePointerCapture(e.pointerId);
+          } catch (_) {}
+          return;
+        }
+        if (Math.abs(dx) > 8) drag.mode = "pan";
+      }
       if (drag.mode === "pan") {
         drag.moved = true;
         const plotW = Math.max(1, p.w - analyser.LEFT);
@@ -3489,6 +3679,7 @@ function centreOnTuned() {
   dirty = true;
 }
 
+
 // ── VFO: big frequency, scroll over a digit to tune it, tap to type ──
 const VFO_DIGITS = 10; // up to 9.999 999 999 GHz
 function renderVfo() {
@@ -3526,13 +3717,25 @@ function renderVfo() {
     bar.style.transform = `scaleX(${u.toFixed(3)})`;
     let txt = `${lv.toFixed(1)} ${dbm ? "dBm" : "dB"}`;
     if (dbm) {
-      const s = (lv + 127) / 6;
-      txt = (s >= 9 ? `S9+${Math.round(lv + 73)}` : `S${Math.max(0, Math.floor(s))}`) + ` · ${txt}`;
+      txt = `${sUnits(lv, tunedHz())} · ${txt}`;
     }
     setText("vfoMeterTxt", txt);
   } else if (bar) {
     bar.style.transform = "scaleX(0)";
     setText("vfoMeterTxt", "—");
+  }
+  // passband edge controls (keyboard / screen-reader alternative to dragging)
+  const pbBox = document.getElementById("pbCtl");
+  if (pbBox) {
+    pbBox.hidden = !pbv;
+    if (pbv) {
+      const t = tunedHz();
+      for (const [id, v, out] of [["pbLoIn", pbv[0] - t, "pbLoVal"], ["pbHiIn", pbv[1] - t, "pbHiVal"]] as const) {
+        const el = document.getElementById(id) as HTMLInputElement;
+        if (document.activeElement !== el) el.value = String(Math.round(v));
+        setText(out, `${v > 0 ? "+" : ""}${(v / 1000).toFixed(2)} kHz`);
+      }
+    }
   }
   // waterfall tuned line
   const line = document.getElementById("wfTune");
@@ -3558,29 +3761,55 @@ function bindVfo() {
     "wheel",
     (e) => {
       const d = (e.target as HTMLElement).closest(".vd") as HTMLElement | null;
-      if (!d || !canTune()) return;
+      // only once the readout has focus: otherwise the wheel scrolls the page as usual
+      if (!d || !canTune() || document.activeElement !== box) return;
       e.preventDefault();
-      tuneAny(Math.max(0, Math.round(tunedHz()) + (e.deltaY < 0 ? 1 : -1) * 10 ** +d.dataset.p!));
+      digitStep(+d.dataset.p!, e.deltaY < 0 ? 1 : -1);
     },
     { passive: false }
   );
   // touch: swipe up/down on a digit
-  let ty: number | null = null, tp = 0;
+  // touch: press and hold a digit (250 ms), then swipe up/down; one step per 32 px
+  let ty: number | null = null, tp = 0, held = false, holdT = 0, swiped = false;
   box.addEventListener("pointerdown", (e) => {
     const d = (e.target as HTMLElement).closest(".vd") as HTMLElement | null;
     if (!d || e.pointerType === "mouse") return;
     ty = e.clientY;
     tp = +d.dataset.p!;
+    held = swiped = false;
+    clearTimeout(holdT);
+    holdT = window.setTimeout(() => {
+      held = true;
+      d.classList.add("held");
+      box.setPointerCapture(e.pointerId);
+    }, 250);
   });
   box.addEventListener("pointermove", (e) => {
     if (ty === null) return;
     const dy = ty - e.clientY;
-    if (Math.abs(dy) >= 18) {
-      tuneAny(Math.max(0, Math.round(tunedHz()) + Math.sign(dy) * 10 ** tp));
+    if (!held) {
+      if (Math.abs(dy) > 10) {
+        clearTimeout(holdT);
+        ty = null; // a scroll, not a tune
+      }
+      return;
+    }
+    e.preventDefault();
+    if (Math.abs(dy) >= 32) {
+      digitStep(tp, Math.sign(dy));
       ty = e.clientY;
+      swiped = true;
     }
   });
-  box.addEventListener("pointerup", () => (ty = null));
+  const up = () => {
+    clearTimeout(holdT);
+    ty = null;
+    held = false;
+    box.querySelectorAll(".held").forEach((x) => x.classList.remove("held"));
+  };
+  box.addEventListener("pointerup", up);
+  box.addEventListener("pointercancel", up);
+  box.addEventListener("touchmove", (e) => held && e.preventDefault(), { passive: false });
   const input = $<HTMLInputElement>("vfoInput");
   const openInput = () => {
     if (!canTune()) return;
@@ -3598,8 +3827,15 @@ function bindVfo() {
     }
     input.hidden = true;
     box.hidden = false;
+    box.focus();
   };
-  box.addEventListener("click", openInput);
+  box.addEventListener("click", () => {
+    if (swiped) {
+      swiped = false;
+      return;
+    }
+    openInput();
+  });
   box.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -3616,6 +3852,11 @@ function bindVfo() {
   input.addEventListener("blur", () => closeInput(true));
   $("btnVfoDown").addEventListener("click", () => tuneAny(snapHz(tunedHz() - analyser.cfg.step)));
   $("btnVfoUp").addEventListener("click", () => tuneAny(snapHz(tunedHz() + analyser.cfg.step)));
+  for (const [id, edge] of [["pbLoIn", "lo"], ["pbHiIn", "hi"]] as const)
+    $(id).addEventListener("input", (e) => {
+      setPassbandEdge(edge, tunedHz() + Number((e.target as HTMLInputElement).value));
+      renderVfo();
+    });
   const step = $<HTMLSelectElement>("vfoStep");
   step.value = String(analyser.cfg.step);
   step.addEventListener("change", () => analyser.set({ step: Number(step.value) }));

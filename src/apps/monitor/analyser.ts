@@ -20,6 +20,8 @@ export type Src = {
   dtHi: number;
   thresholdDb: number | null;
   peakStat: { peak: number; peakHz: number } | null;
+  /** Window equivalent noise bandwidth in bins, used to correct summed channel power. */
+  enbw?: number;
   pbLo?: number | null;
   pbHi?: number | null;
   labels?: { hz: number; hi?: number; text: string; kind?: string }[];
@@ -289,7 +291,8 @@ export class Analyser {
     const k1 = Math.min(n - 1, Math.ceil(this.hzToBin(s, cHz + this.cfg.chBwHz / 2, n)));
     let sum = 0;
     for (let k = k0; k <= k1; ++k) if (Number.isFinite(t[k])) sum += lin(t[k]);
-    const chPower = sum > 0 ? 10 * Math.log10(sum) : NaN;
+    // bins overlap by the window's ENBW: summing them over-counts noise power by that factor
+    const chPower = sum > 0 ? 10 * Math.log10(sum / Math.max(1, s.enbw ?? 1)) : NaN;
     // occupied bandwidth (99 % of the power in view)
     let tot = 0;
     const p: number[] = [];
@@ -462,7 +465,12 @@ export class Analyser {
         const hot = this.hotEdge === edge;
         ctx.fillStyle = hot ? "rgba(244,114,182,1)" : "rgba(244,114,182,0.7)";
         ctx.fillRect(Math.round(x) - (hot ? 1 : 0.5) * dpr, strip, (hot ? 2 : 1) * dpr, ph - strip);
-        ctx.fillRect(Math.round(x) - 3 * dpr, strip + (ph - strip) / 2 - 8 * dpr, 6 * dpr, 16 * dpr);
+        // grip: rounded tab with two ridges
+        const gy = strip + (ph - strip) / 2 - 14 * dpr;
+        ctx.fillRect(Math.round(x) - 5 * dpr, gy, 10 * dpr, 28 * dpr);
+        ctx.fillStyle = "rgba(15,23,42,0.85)";
+        ctx.fillRect(Math.round(x) - 2 * dpr, gy + 6 * dpr, 1 * dpr, 16 * dpr);
+        ctx.fillRect(Math.round(x) + 1 * dpr, gy + 6 * dpr, 1 * dpr, 16 * dpr);
       }
     }
     if (s.sdr) {

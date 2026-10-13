@@ -24,6 +24,35 @@ const STEP = [
 ];
 const FFT_PAD = 10;
 
+/** Returns a normalised http(s) URL string, or null for anything else (javascript:, data:, garbage). */
+export function safeHttp(u: unknown): string | null {
+  if (typeof u !== "string" || u.length > 2048) return null;
+  try {
+    const x = new URL(u.trim());
+    return x.protocol === "http:" || x.protocol === "https:" ? x.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** JSON.parse that returns null instead of throwing. */
+export function safeJson(t: string): any {
+  try {
+    return JSON.parse(t);
+  } catch (_) {
+    return null;
+  }
+}
+
+export const REMOTE_KINDS = ["openwebrx", "ubersdr", "kiwisdr"] as const;
+export type RemoteKindName = (typeof REMOTE_KINDS)[number];
+export function safeKind(k: unknown): RemoteKindName | undefined {
+  return REMOTE_KINDS.includes(k as RemoteKindName) ? (k as RemoteKindName) : undefined;
+}
+
+/** Hard cap on spectrum bins accepted from any server. */
+export const MAX_BINS = 65536;
+
 export class Adpcm {
   stepIndex = 0;
   predictor = 0;
@@ -364,7 +393,7 @@ export class OwrxClient {
     const body = d.subarray(1);
     if (type === 1) {
       ++this.fftFrames;
-      this.onFft?.(decodeFft(body, this.fftCompression, this.fftCodec));
+      if (body.length <= MAX_BINS * 4) this.onFft?.(decodeFft(body, this.fftCompression, this.fftCodec));
     } else if (type === 2 || type === 4) {
       this.audioBytes += body.byteLength;
       if (!this.audioOn) return;
