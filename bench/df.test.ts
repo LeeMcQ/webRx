@@ -96,6 +96,29 @@ import { fspl, distanceForLoss, distanceHint } from "../src/df/pathloss.js";
   near("distanceHint 30 dBm EIRP, -55 dBm rx @146 MHz n=2", distanceHint(-55, 146e6, 30, 0, 2), 10 ** ((85 - fspl(1, 146e6)) / 20), 1e-6);
 }
 
+// ── export / import ──
+import { fixesToCsv, fixesToKml, fixesToGpx, encodeSession, decodeSession, importKraken } from "../src/df/io.js";
+{
+  const fx = { lat: -26.1, lon: 28.0, gpsAccM: 4, bearing: 45.5, north: "T" as const, sigma: 3, beamwidth: 60, snrDb: 20, frontBackDb: 18, level: -60, units: "dBm", gain: "30 dB", agc: false, headingSource: "compass-absolute", mode: "peak" as const, freqHz: 146.52e6, t: Date.UTC(2026, 9, 13), label: 'a,"b"' };
+  const csv = fixesToCsv([fx]);
+  check("CSV header + quoted label", csv.startsWith("t,lat,lon") && csv.includes('"a,""b"""'), csv);
+  const kml = fixesToKml("Hunt <1>", [fx], { lat: -26, lon: 28.1, ellipse: [[-26, 28.1], [-26.01, 28.1]] });
+  check("KML escapes name, has LineString lon,lat order", kml.includes("Hunt &lt;1&gt;") && kml.includes("<coordinates>28,-26.1,0 "), kml.slice(0, 300));
+  const gpx = fixesToGpx("H", [fx], [{ lat: -26.1, lon: 28, t: fx.t, db: -61 }]);
+  check("GPX wpt + trkpt", gpx.includes('<wpt lat="-26.1" lon="28">') && gpx.includes("<trkpt"));
+  const tok = encodeSession({ v: 1, name: "Jagd ü", fixes: [fx] });
+  check("share token URL-safe", /^[A-Za-z0-9_-]+$/.test(tok));
+  check("share roundtrip", decodeSession(tok)?.fixes[0].bearing === 45.5 && decodeSession(tok)?.name === "Jagd ü");
+  check("bad token → null", decodeSession("@@@") === null);
+  const xml = `<DATA><STATION_ID>kraken1</STATION_ID><FREQUENCY>446.0</FREQUENCY><LATITUDE>-26.10</LATITUDE><LONGITUDE>28.00</LONGITUDE><DOA>123</DOA><CONF>80</CONF><TIME>1760000000000</TIME></DATA>`;
+  const k = importKraken(xml);
+  check("Kraken XML", k.length === 1 && k[0].bearing === 123 && k[0].station === "kraken1" && k[0].sigma === 10, k);
+  const kj = importKraken(JSON.stringify([{ latitude: -26, longitude: 28, bearing: -10, confidence: 99 }, { lat: "x" }]));
+  check("DF Aggregator JSON (wraps -10 → 350, drops bad rows)", kj.length === 1 && kj[0].bearing === 350, kj);
+  const kc = importKraken("1760000000000,200,50,-40,446000000,0,10,st2,-26.2,28.1,0");
+  check("Kraken CSV", kc.length === 1 && kc[0].bearing === 200 && kc[0].lat === -26.2, kc);
+}
+
 export function done(label: string) {
   if (failures) { console.log(`\n${failures} failure(s)`); process.exit(1); }
   console.log(`\nAll ${label} tests passed.`);

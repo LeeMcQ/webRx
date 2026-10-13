@@ -34,6 +34,8 @@ type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
 let remote: RemoteClient = owrx;
 import { dt, dtPlay, formatBearing, norm } from "./dt.js";
 import { triangulate, ellipsePoints } from "../../df/triangulate.js";
+import { fixesToCsv, fixesToGpx, fixesToKml, encodeSession, decodeSession, importKraken, type FixRecord } from "../../df/io.js";
+import { distanceHint } from "../../df/pathloss.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
   Calibration,
@@ -3844,7 +3846,140 @@ function bindDtExtras() {
   });
   bindDtField();
 }
-function bindDtField() {}
+// ── DT field UX: tone, haptics, sun theme, one-tap capture, export, sessions ──
+let toneCtx: AudioContext | null = null, toneOsc: OscillatorNode | null = null, toneGain: GainNode | null = null;
+function dtTone(level: number | undefined, floor: number | undefined) {
+  if (!dt.st.tone || level === undefined || floor === undefined || !running) { if (toneGain) toneGain.gain.value = 0; return; }
+  if (!toneCtx) {
+    toneCtx = new AudioContext();
+    toneOsc = toneCtx.createOscillator();
+    toneGain = toneCtx.createGain();
+    toneOsc.type = "sine";
+    toneOsc.connect(toneGain).connect(toneCtx.destination);
+    toneGain.gain.value = 0;
+    toneOsc.start();
+  }
+  const above = level - floor;
+  const open = above >= dt.st.squelchDb;
+  // 300 Hz at the squelch, +40 Hz per dB (2.3 kHz at +50 dB): pitch follows signal like a classic DF receiver.
+  toneOsc!.frequency.setTargetAtTime(300 + Math.max(0, Math.min(50, above - dt.st.squelchDb)) * 40, toneCtx.currentTime, 0.03);
+  toneGain!.gain.setTargetAtTime(open ? 0.15 : 0, toneCtx.currentTime, 0.02);
+}
 
-/** RSSI-vs-position track for the DT heatmap (filled in a later phase). */
+let dtCapture = false;
+async function dtStartCapture() {
+  dt.reset();
+  await dtLockGain(true);
+  dtCapture = true;
+  log("DT sweep capture: turn slowly through a full circle, then back across the peak", "ok");
+  if (!running) await start();
+  dirty = true;
+}
+
+function dtHints(f: ReturnType<typeof dt.fit>, units: string) {
+  const out: string[] = [];
+  if (dt.overload || (f && f.snrDb < 6 && dt.level !== undefined && dt.level > (units === "dBm" ? -40 : -25)))
+    out.push("Very strong and flat: you are close. Use an offset attenuator (tune to LO ± IF / a harmonic), add a step attenuator, or remove the antenna and use the body-shield null.");
+  if (f && f.frontBackDb !== null && f.frontBackDb < 6) out.push(`Front/back only ${f.frontBackDb.toFixed(0)} dB — the strongest return may be a reflection; check ${formatBearing(f.bearing + 180)} too.`);
+  if (f && units === "dBm" && Number.isFinite(f.peakDb)) {
+    const d = distanceHint(f.peakDb, dtFreqHz(), dt.st.eirpDbm, 0, dt.st.plExp);
+    out.push(`Distance hint ≈ ${fmtM(d)} (EIRP ${dt.st.eirpDbm} dBm, n = ${dt.st.plExp}; rough ×/÷3).`);
+  }
+  return out;
+}
+
+function dtDownload(kind: "csv" | "kml" | "gpx") {
+  const name = dt.st.session || "webRx DF";
+  const safe = name.replace(/[^\w.-]+/g, "_");
+  const est = dtEst ? { lat: dtEst.lat, lon: dtEst.lon, ellipse: ellipsePoints(dtEst.lat, dtEst.lon, dtEst.ellipse95) } : undefined;
+  const text = kind === "csv" ? fixesToCsv(dt.st.fixes) : kind === "kml" ? fixesToKml(name, dt.st.fixes, est) : fixesToGpx(name, dt.st.fixes, dtTrack.map((p) => ({ lat: p.lat, lon: p.lon, t: p.t, db: p.db })));
+  const mime = kind === "csv" ? "text/csv" : kind === "kml" ? "application/vnd.google-earth.kml+xml" : "application/gpx+xml";
+  download(new Blob([text], { type: mime }), `${safe}.${kind}`);
+}
+
+const DT_SESS_KEY = "webrx.dt.sessions";
+function dtSessions(): Record<string, FixRecord[]> {
+  try { return JSON.parse(localStorage.getItem(DT_SESS_KEY) || "{}"); } catch (_) { return {}; }
+}
+function dtSaveSessions(m: Record<string, FixRecord[]>) {
+  try { localStorage.setItem(DT_SESS_KEY, JSON.stringify(m)); } catch (_) { log("Could not save DT sessions (storage full?)", "er"); }
+}
+function dtRenderSessions() {
+  const sel = $<HTMLSelectElement>("dtSession");
+  const m = dtSessions();
+  m[dt.st.session] = dt.st.fixes;
+  sel.innerHTML = "";
+  for (const n of Object.keys(m).sort()) { const o = document.createElement("option"); o.value = n; o.textContent = `${n} (${m[n].length})`; sel.appendChild(o); }
+  sel.value = dt.st.session;
+}
+function dtSwitchSession(name: string) {
+  const m = dtSessions();
+  m[dt.st.session] = dt.st.fixes;
+  dtSaveSessions(m);
+  dt.st.session = name;
+  dt.st.fixes = m[name] ?? [];
+  dt.save(true);
+  dtRenderSessions();
+  renderDtFixes();
+  dirty = true;
+}
+
+function bindDtField() {
+  dt.onNewPeak = () => { if (dt.st.haptics && running && navigator.vibrate) navigator.vibrate(25); };
+  const sunOn = localStorage.getItem("webrx.dt.sun") === "1";
+  document.body.classList.toggle("sun", sunOn);
+  const sun = $<HTMLInputElement>("dtSun");
+  sun.checked = sunOn;
+  sun.addEventListener("change", () => { document.body.classList.toggle("sun", sun.checked); localStorage.setItem("webrx.dt.sun", sun.checked ? "1" : "0"); dirty = true; });
+  const tone = $<HTMLInputElement>("dtTone");
+  tone.checked = dt.st.tone;
+  tone.addEventListener("change", () => { dt.st.tone = tone.checked; dt.save(true); if (tone.checked && toneCtx?.state === "suspended") toneCtx.resume(); });
+  const sq = $<HTMLInputElement>("dtSquelch");
+  sq.value = String(dt.st.squelchDb);
+  sq.addEventListener("change", () => { const v = parseFloat(sq.value); dt.st.squelchDb = Number.isFinite(v) ? v : 6; dt.save(true); });
+  const hap = $<HTMLInputElement>("dtHaptics");
+  hap.checked = dt.st.haptics;
+  hap.addEventListener("change", () => { dt.st.haptics = hap.checked; dt.save(true); });
+  const eirp = $<HTMLInputElement>("dtEirp"), ple = $<HTMLInputElement>("dtPlExp");
+  eirp.value = String(dt.st.eirpDbm); ple.value = String(dt.st.plExp);
+  eirp.addEventListener("change", () => { const v = parseFloat(eirp.value); if (Number.isFinite(v)) dt.st.eirpDbm = v; dt.save(true); });
+  ple.addEventListener("change", () => { const v = parseFloat(ple.value); if (Number.isFinite(v) && v >= 1.5 && v <= 6) dt.st.plExp = v; dt.save(true); });
+  $("btnDtCapture").addEventListener("click", () => dtStartCapture());
+  for (const k of ["csv", "kml", "gpx"] as const) $(`btnDtExp${k.toUpperCase()}`).addEventListener("click", () => dtDownload(k));
+  // sessions
+  dtRenderSessions();
+  $<HTMLSelectElement>("dtSession").addEventListener("change", (e) => dtSwitchSession((e.target as HTMLSelectElement).value));
+  $("btnDtNewSession").addEventListener("click", () => {
+    const n = prompt("Name for the new DF session", `Hunt ${Object.keys(dtSessions()).length + 1}`)?.trim();
+    if (n) dtSwitchSession(n);
+  });
+  $("btnDtDelSession").addEventListener("click", () => {
+    if (!confirm(`Delete session “${dt.st.session}” and its fixes?`)) return;
+    const m = dtSessions();
+    delete m[dt.st.session];
+    dtSaveSessions(m);
+    const next = Object.keys(m)[0] ?? "Hunt 1";
+    dt.st.session = next; dt.st.fixes = m[next] ?? [];
+    dt.save(true); dtRenderSessions(); renderDtFixes();
+  });
+  dtRenderExtras = (f, units) => {
+    dtTone(dt.level, f?.floorDb);
+    $("dtHints").textContent = dtHints(f, units).join(" ");
+    if (dtCapture && running) {
+      const r = dt.ready();
+      $("btnDtCapture").textContent = r.ok ? "Captured ✓" : "Capturing…";
+      if (r.ok && gps.fix) {
+        dtCapture = false;
+        const fix = dtSaveFix();
+        if (fix && dt.st.haptics && navigator.vibrate) navigator.vibrate([60, 40, 60]);
+        $("btnDtCapture").textContent = "Sweep capture";
+      }
+    }
+  };
+  bindDtLater();
+}
+function bindDtLater() {}
+
+/** RSSI-vs-position track for the DT heatmap and GPX export. */
+var dtTrack: { lat: number; lon: number; db: number; t: number }[] = [];
 function dtTrackSample() {}

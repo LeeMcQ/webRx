@@ -499,6 +499,12 @@
       .dt-alert { margin: var(--s2) 0; padding: var(--s2) var(--s3); border-radius: 10px; background: rgba(239,68,68,.15); color: #fca5a5; font-weight: 600; }
       .dt-alert.info { background: rgba(245,158,11,.15); color: #fcd34d; }
       .dt-warn { color: #fcd34d; min-height: 1em; }
+      .btn.big { min-height: 56px; font-size: 1.05rem; flex: 1 1 100%; }
+      body.sun { --bg: #fff; --fg: #000; background: #fff !important; color: #000 !important; }
+      body.sun #pane-dt .card { background: #fff !important; color: #000 !important; border: 2px solid #000 !important; }
+      body.sun #pane-dt .stat b, body.sun #pane-dt h2, body.sun #pane-dt label, body.sun #pane-dt .hint { color: #000 !important; }
+      body.sun #pane-dt .stat b { font-size: 1.25rem; }
+      body.sun #pane-dt .dt-alert { background: #fde68a; color: #000; border: 2px solid #000; }
       .dt-stats b.bad { color: #f87171; }
       #dtCanvas { width: min(100%, 420px); aspect-ratio: 1; height: auto; background: transparent; border-radius: 50%; }
       .dt-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s2); margin: var(--s3) 0; }
@@ -1041,7 +1047,9 @@
           <p class="hint dt-guide" id="dtGuide" aria-live="polite"></p>
           <p class="hint dt-warn" id="dtWarn" aria-live="polite"></p>
           <button class="btn ghost" id="btnDtLockGain" type="button" hidden>Lock gain (AGC off)</button>
+          <p class="hint" id="dtHints" aria-live="polite"></p>
           <div class="btns">
+            <button class="btn primary big" id="btnDtCapture" type="button" title="Locks gain, starts measuring, and saves the fix by itself once the circle and a back-sweep are done">Sweep capture</button>
             <button class="btn primary" id="btnDtFix" type="button"><svg class="i" aria-hidden="true"><use href="#i-gps"/></svg>Save fix</button>
             <button class="btn ghost" id="btnDtReset" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear plot</button>
             <button class="btn ghost" id="btnDtClearFixes" type="button">Clear fixes</button>
@@ -1051,6 +1059,27 @@
           </div>
           <div class="col">
             <div class="slot" data-slot="map"></div>
+        <section class="card" id="dtFieldCard">
+          <h2>Field &amp; sessions</h2>
+          <div class="grid2">
+            <label class="check"><input id="dtTone" type="checkbox" /> Audio tone (pitch = level)</label>
+            <div class="field"><label for="dtSquelch">Tone squelch (dB above floor)</label><input id="dtSquelch" type="number" step="1" min="0" inputmode="numeric" /></div>
+            <label class="check"><input id="dtHaptics" type="checkbox" /> Vibrate on a new peak</label>
+            <label class="check"><input id="dtSun" type="checkbox" /> Sunlight / high contrast</label>
+            <div class="field"><label for="dtEirp">Assumed Tx EIRP (dBm)</label><input id="dtEirp" type="number" step="1" inputmode="numeric" /></div>
+            <div class="field"><label for="dtPlExp">Path-loss exponent n</label><input id="dtPlExp" type="number" step="0.1" min="1.5" max="6" inputmode="decimal" /></div>
+            <div class="field full"><label for="dtSession">Session</label>
+              <div class="inline"><select id="dtSession" style="flex:1"></select>
+              <button class="btn ghost" id="btnDtNewSession" type="button">New</button>
+              <button class="btn ghost" id="btnDtDelSession" type="button">Delete</button></div></div>
+          </div>
+          <div class="btns">
+            <button class="btn ghost" id="btnDtExpCSV" type="button">CSV</button>
+            <button class="btn ghost" id="btnDtExpKML" type="button">KML</button>
+            <button class="btn ghost" id="btnDtExpGPX" type="button">GPX</button>
+          </div>
+          <p class="hint">Exports include bearing (°T/°M), σ, beamwidth, contrast, front/back, level and units, gain/AGC, GPS accuracy and heading source for every fix. GPX adds the RSSI track.</p>
+        </section>
         <section class="card" id="dtTriCard">
           <h2>Transmitter estimate <span class="spacer"></span><button class="btn ghost" id="btnDtFitMap" type="button">Show on map</button></h2>
           <p class="hint" id="dtEst" aria-live="polite">Save fixes from at least two places to locate the transmitter.</p>
