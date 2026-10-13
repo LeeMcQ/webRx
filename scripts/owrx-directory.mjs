@@ -12,22 +12,32 @@ const html = await (await fetch("https://www.receiverbook.de/map")).text();
 const m = html.match(/var receivers = (\[.*?\]);\s*\n/s);
 if (!m) throw new Error("receiverbook.de layout changed: receivers list not found");
 const sites = JSON.parse(m[1]);
+/** http(s) URLs only; anything else (javascript:, data:, garbage) is dropped. */
+export const safeHttp = (u) => {
+  if (typeof u !== "string" || u.length > 2048) return null;
+  try {
+    const x = new URL(u.trim());
+    return x.protocol === "http:" || x.protocol === "https:" ? x.href : null;
+  } catch (_) {
+    return null;
+  }
+};
 const clean = (t) => String(t || "").replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 const out = [];
 const kiwi = [];
 for (const s of sites) {
   for (const r of s.receivers || []) {
-    if (r.type !== "KiwiSDR" || !r.url) continue;
-    kiwi.push({ n: clean(r.label || s.label).slice(0, 90), s: clean(s.label).slice(0, 60), u: r.url, v: r.version || "", lat: +s.location.coordinates[1].toFixed(3), lon: +s.location.coordinates[0].toFixed(3), k: "kiwisdr" });
+    if (r.type !== "KiwiSDR" || !safeHttp(r.url)) continue;
+    kiwi.push({ n: clean(r.label || s.label).slice(0, 90), s: clean(s.label).slice(0, 60), u: safeHttp(r.url), v: r.version || "", lat: +s.location.coordinates[1].toFixed(3), lon: +s.location.coordinates[0].toFixed(3), k: "kiwisdr" });
   }
 }
 for (const s of sites) {
   for (const r of s.receivers || []) {
-    if (!/openwebrx/i.test(r.type) || !r.url) continue;
+    if (!/openwebrx/i.test(r.type) || !safeHttp(r.url)) continue;
     out.push({
       n: clean(r.label || s.label).slice(0, 90),
       s: clean(s.label).slice(0, 60),
-      u: r.url,
+      u: safeHttp(r.url),
       v: r.version || "",
       lat: +s.location.coordinates[1].toFixed(3),
       lon: +s.location.coordinates[0].toFixed(3),
