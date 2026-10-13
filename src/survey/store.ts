@@ -2,7 +2,7 @@
 import type { QueuedChunk, SurveyRemote } from "./upload.js";
 
 const DB = "webrx-survey";
-const VER = 1;
+const VER = 2;
 
 function open(): Promise<IDBDatabase> {
   return new Promise((res, rej) => {
@@ -11,6 +11,8 @@ function open(): Promise<IDBDatabase> {
       const db = r.result;
       if (!db.objectStoreNames.contains("surveys")) db.createObjectStore("surveys", { keyPath: "surveyKey" });
       if (!db.objectStoreNames.contains("chunks")) db.createObjectStore("chunks", { keyPath: ["surveyKey", "n"] });
+      // v2: upload config mirrored here so the service worker (no localStorage) can upload in the background
+      if (!db.objectStoreNames.contains("config")) db.createObjectStore("config");
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -43,3 +45,7 @@ export const deleteChunk = (surveyKey: string, n: number) => tx("chunks", "readw
 export async function usedBytes(): Promise<number> {
   return (await allChunks()).reduce((a, c) => a + c.bytes.byteLength, 0);
 }
+
+export type UploadCfg = { serverUrl: string; token: string; autoWifi: boolean; unmetered: boolean };
+export const putUploadCfg = (c: UploadCfg) => tx("config", "readwrite", (o) => o.put(c, "upload"));
+export const getUploadCfg = () => tx<UploadCfg>("config", "readonly", (o) => o.get("upload"));

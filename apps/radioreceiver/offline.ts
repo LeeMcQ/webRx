@@ -12,8 +12,11 @@
 // Bump VERSION when the list changes.
 
 import { addToInbox } from "../../src/storage/recordings.js";
+import { getUploadCfg } from "../../src/survey/store.js";
+import { SYNC_TAG, uploadPass } from "../../src/survey/sync.js";
+import { onUnmeteredNetwork } from "../../src/survey/upload.js";
 
-const VERSION = "v6";
+const VERSION = "v7";
 const CACHE_NAME = `radioreceiver-${VERSION}`;
 const APP_STATIC_RESOURCES = [
   "./",
@@ -162,4 +165,21 @@ we.addEventListener("fetch", (e: FetchEvent) => {
   } else {
     e.respondWith(staleWhileRevalidate(req, e));
   }
+});
+
+
+// ── Background Sync: upload pending RM survey chunks when connectivity returns ──
+we.addEventListener("sync", (e: any) => {
+  if (e.tag !== SYNC_TAG) return;
+  e.waitUntil(
+    (async () => {
+      const cfg = await getUploadCfg();
+      if (!cfg || !cfg.serverUrl || !cfg.autoWifi) return;
+      // Respect the Wi-Fi/unmetered rule: on a metered link finish quietly; the app retries later.
+      if (!onUnmeteredNetwork(navigator, cfg.unmetered).unmetered) return;
+      const r = await uploadPass({ serverUrl: cfg.serverUrl, token: cfg.token }, fetch as any);
+      // Throwing asks the browser to retry this sync later (with its own back-off).
+      if (r.failed) throw new Error(`${r.failed} chunk(s) failed`);
+    })()
+  );
 });

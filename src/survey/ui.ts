@@ -22,9 +22,10 @@ import {
   type DeviceKind,
   type SweepParams,
 } from "./params.js";
-import { expiredChunks, limitState, parseLimit, type LimitAction } from "./retention.js";
-import { allChunks, allSurveys, deleteChunk, putChunk, putSurvey, type StoredSurvey } from "./store.js";
-import { UploadQueue, onUnmeteredNetwork, testConnection, validateServerUrl, type QueuedChunk } from "./upload.js";
+import { limitState, parseLimit, type LimitAction } from "./retention.js";
+import { allChunks, putChunk, putSurvey, putUploadCfg, type StoredSurvey } from "./store.js";
+import { SYNC_TAG, applyRetention, uploadPass } from "./sync.js";
+import { onUnmeteredNetwork, testConnection, validateServerUrl, type QueuedChunk } from "./upload.js";
 
 export interface SurveyHost {
   deviceKind(): DeviceKind;
@@ -164,6 +165,7 @@ function render() {
     <div class="btns"><button class="btn ghost" id="rmTest" type="button">Test connection</button><button class="btn primary" id="rmUploadNow" type="button">Upload now</button></div>
     <p class="hint" id="rmUpMsg" aria-live="polite"></p>
     <table class="ro-table" id="rmQueue"></table>
+    <p class="hint" id="rmBgSync"></p>
     <p class="hint">Uploaded chunks are kept on the phone for 30 days after the server confirms them, then deleted. Data that hasn't been uploaded is never deleted automatically. Chunks are columnar, gzip-compressed and SHA-256 checked; uploads resume where they stopped.</p>
   </section>`;
   bind();
@@ -368,6 +370,7 @@ function bind() {
       wakeLock: $<HTMLInputElement>("rmWake").checked,
     };
     save(SET_KEY, settings);
+    void putUploadCfg({ serverUrl: settings.serverUrl, token: settings.token, autoWifi: settings.autoWifi, unmetered: settings.unmetered }).catch(() => {});
     const bad = settings.serverUrl ? validateServerUrl(settings.serverUrl) : null;
     $("rmUpMsg").textContent = bad ?? "";
   };
@@ -386,6 +389,11 @@ function bind() {
   $("rmSnap").addEventListener("click", () => takeSnapshot("button"));
   go(step);
   refreshQueue();
+  void putUploadCfg({ serverUrl: settings.serverUrl, token: settings.token, autoWifi: settings.autoWifi, unmetered: settings.unmetered }).catch(() => {});
+  navigator.serviceWorker?.getRegistration().then((r: any) => {
+    const el = document.getElementById("rmBgSync");
+    if (el) el.textContent = r && r.sync ? "Background upload: supported — pending chunks upload when the connection returns, even with the app closed." : "Background upload: not supported in this browser — uploads run while the app is open.";
+  }).catch(() => {});
 }
 
 // ═══ run ═══
@@ -667,7 +675,14 @@ function drawMap() {
 
 // ═══ upload ═══
 let uploading = false;
-async function requestBackgroundUpload() {}
+/** Background Sync (Chromium): the service worker uploads when connectivity returns, even after the tab closes. */
+async function requestBackgroundUpload() {
+  if (!settings.serverUrl || !settings.autoWifi) return;
+  try {
+    const reg: any = await navigator.serviceWorker?.getRegistration();
+    if (reg && reg.sync) await reg.sync.register(SYNC_TAG);
+  } catch (_) {}
+}
 async function maybeAutoUpload() {
   if (!settings.autoWifi || !settings.serverUrl) return;
   const net = onUnmeteredNetwork(navigator, settings.unmetered);
@@ -679,27 +694,15 @@ async function uploadNow(manual: boolean) {
   if (bad) return void (manual && ($("rmUpMsg").textContent = bad));
   uploading = true;
   try {
-    const chunks = (await allChunks()).filter((c) => c.state !== "acked");
-    const surveys = new Map((await allSurveys()).map((s) => [s.surveyKey, s]));
-    const q = new UploadQueue({ baseUrl: settings.serverUrl, token: settings.token || undefined }, fetch as any, surveys as any, chunks, async () => {
-      for (const c of chunks) await putChunk(c);
-      for (const s of surveys.values()) await putSurvey(s);
-    });
-    const res = await q.run();
-    for (const s of surveys.values()) if (s.completed && chunks.filter((c) => c.surveyKey === s.surveyKey).every((c) => c.state === "acked") && s.remoteId) await q.complete(s.surveyKey, { samples: s.samples, bytes: s.bytes }).catch(() => false);
+    const res = await uploadPass({ serverUrl: settings.serverUrl, token: settings.token }, fetch as any);
     if (manual || res.sent || res.failed) $("rmUpMsg").textContent = `Uploaded ${res.sent} chunk(s)${res.failed ? `, ${res.failed} failed (will retry with back-off)` : ""}.`;
+    if (res.pending) void requestBackgroundUpload();
   } catch (e: any) {
     if (manual) $("rmUpMsg").textContent = `Upload failed: ${e?.message ?? e}`;
   } finally {
     uploading = false;
-    await applyRetention();
     refreshQueue();
   }
-}
-async function applyRetention() {
-  const all = await allChunks();
-  const dead = new Set(expiredChunks(all.map((c) => ({ key: `${c.surveyKey}|${c.n}`, bytes: c.bytes.byteLength, ackedAt: c.ackedAt })), Date.now()));
-  for (const c of all) if (dead.has(`${c.surveyKey}|${c.n}`)) await deleteChunk(c.surveyKey, c.n);
 }
 async function refreshQueue() {
   const t = $("rmQueue");
