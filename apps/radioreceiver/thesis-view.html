@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-zYn4owyUyBKNY73EevNCNYB7cSjOo8jL/8ut4mh73ao='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-09hajv2zExo8HSimRq4dBiYFsoeErStJiqB4CmQGlTo='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
@@ -730,6 +730,23 @@
       .rmbar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; margin-top: var(--s3); } .rmbar i { display: block; height: 100%; width: 0; background: var(--ok); } .rmbar i.warn { background: var(--warn); }
       #pane-rm .card + .card { margin-top: var(--s4); }
       @media (max-width: 999px) { .bandtable { max-height: none; overflow: visible; } }
+
+      /* SA soft keys + bottom sheet (mobile) / drawer (desktop) */
+      .softkeys { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin: var(--s2) 0 var(--s3); }
+      .sk { min-height: var(--tap); padding: 0 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--muted); font: 700 11px var(--mono); letter-spacing: .02em; cursor: pointer; }
+      .sk[aria-pressed="true"] { color: #fff; border-color: var(--accent); background: rgba(59,130,246,.2); }
+      .skpanel[hidden] { display: none; }
+      .skpanel { display: flex; flex-direction: column; gap: var(--s4); }
+      .sdhead { display: flex; align-items: center; gap: var(--s2); font-size: var(--t13); letter-spacing: .08em; }
+      @media (max-width: 999px) {
+        .sadrawer { position: fixed; z-index: 46; left: 0; right: 0; bottom: calc(var(--nav-h) + var(--sab)); max-height: 52dvh; overflow: auto; padding: var(--s3) var(--s4) var(--s5); width: auto; max-width: none;
+          background: var(--panel); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -12px 30px rgba(0,0,0,.45);
+          transform: translateY(105%); visibility: hidden; transition: transform .22s var(--ease), visibility 0s .22s; }
+        .sadrawer.open { transform: none; visibility: visible; transition: transform .22s var(--ease); }
+        body.sk-open .fabstack { display: none; }
+      }
+      @media (max-height: 500px) and (orientation: landscape) and (max-width: 999px) { .sadrawer { bottom: 0; left: calc(var(--rail-w) + var(--sal)); max-height: 80dvh; } }
+      @media (min-width: 1000px) { .sdhead #saDrawerClose { display: none; } .sadrawer { position: sticky; top: calc(56px + var(--sat) + var(--s4)); max-height: calc(100dvh - 56px - var(--sat) - 2 * var(--s4)); overflow: auto; } }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
@@ -845,11 +862,12 @@
         </section>
             </div>
         <div class="pair">
-          <section class="card">
+<div class="softkeys" id="saKeys" role="toolbar" aria-label="Analyser functions"><button type="button" class="sk" data-sk="preset" aria-pressed="false" aria-controls="saDrawer" title="Presets & quick tune">PRESET</button><button type="button" class="sk" data-sk="freq" aria-pressed="false" aria-controls="saDrawer" title="Frequency, span & sweep">FREQ</button><button type="button" class="sk" data-sk="ampl" aria-pressed="false" aria-controls="saDrawer" title="Amplitude, gain & front end">AMPL</button><button type="button" class="sk" data-sk="bw" aria-pressed="false" aria-controls="saDrawer" title="Bandwidth & listen">BW</button><button type="button" class="sk" data-sk="mark" aria-pressed="false" aria-controls="saDrawer" title="Markers">MARK</button><button type="button" class="sk" data-sk="trace" aria-pressed="false" aria-controls="saDrawer" title="Display & traces">TRACE</button><button type="button" class="sk" data-sk="meas" aria-pressed="false" aria-controls="saDrawer" title="Measurements">MEAS</button></div>
+          <section class="card" id="saBandCard">
             <h2>Band detail <span class="spacer"></span><span class="lbl" id="bandLbl">centre 50%</span></h2>
             <canvas id="band"></canvas>
           </section>
-          <section class="card">
+          <section class="card" id="saLevelCard">
             <h2>Signal level</h2>
             <div class="levels">
               <div class="meter"><div class="fill" id="levelFill"></div><div class="num"><span id="levelNum">—</span><small id="levelUnits">dBFS</small></div></div>
@@ -865,8 +883,9 @@
           </section>
         </div>
           </div>
-          <div class="col">
-        <details class="card fold" open>
+          <div class="col sadrawer" id="saDrawer" role="region" aria-label="Analyser settings">
+            <div class="sdhead"><b id="saDrawerTitle">FREQ</b><span class="spacer"></span><button class="btn ghost icon" id="saDrawerClose" type="button" aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-x"/></svg></button></div>
+        <details class="card fold" id="saFreqCard" open>
           <summary><h2>Frequency &amp; span</h2></summary>
           <div class="foldbody">
             <div class="grid2">
@@ -908,7 +927,7 @@
             <p class="hint">hackrf_sweep-style firmware sweep (receive only): 20 MS/s in 20 MHz steps, ~78 kHz bins, light peak hold. It stops normal measuring. Tap a peak to tune there and make it the DT target. Needs HackRF firmware 2018.01.1 or newer (2023+ recommended).</p>
           </div>
         </details>
-        <details class="card fold">
+        <details class="card fold" id="saResCard">
           <summary><h2>Resolution &amp; amplitude</h2></summary>
           <div class="foldbody">
             <div class="grid2">
@@ -922,7 +941,7 @@
             </div>
           </div>
         </details>
-        <details class="card fold">
+        <details class="card fold" id="saTraceCard">
           <summary><h2>Display &amp; traces</h2></summary>
           <div class="foldbody">
             <div class="grid2">
@@ -948,7 +967,7 @@
             <p class="hint">Freeze only stops the display; measuring, the thesis recorder and sessions keep running.</p>
           </div>
         </details>
-        <details class="card fold">
+        <details class="card fold" id="saMarkCard">
           <summary><h2>Markers &amp; measurements</h2></summary>
           <div class="foldbody">
             <div class="field" style="margin-bottom:8px"><label for="saTap">Tap on spectrum</label><select id="saTap"><option value="tune">Tunes the receiver (drag pans, wheel zooms)</option><option value="m1">Places marker 1</option><option value="m2">Places marker 2</option></select></div>
@@ -999,7 +1018,7 @@
           </div>
           <p class="hint">Tap the spectrum to tune. Audio rides on the same SDR stream as the measurements, so listening never changes what is logged. Tuned <b id="tunedRo">—</b>.</p>
         </section>
-        <details class="card fold">
+        <details class="card fold" id="saRfCard">
           <summary><h2>RF front-end</h2></summary>
           <div class="foldbody">
             <div class="grid2">
@@ -1902,6 +1921,51 @@
   }
   show(start, { hash: false, scrollTop: false });
   window.addEventListener("hashchange", () => show(location.hash.slice(1), { hash: false }));
+
+
+  // ── SA soft keys: each key owns existing cards (moved, not copied — ids and listeners keep working) ──
+  const SK = {
+    preset: { t: "PRESET · presets & quick tune", cards: ["tunerCard"] },
+    freq: { t: "FREQ · frequency, span & sweep", cards: ["saFreqCard", "sweepCard"] },
+    ampl: { t: "AMPL · amplitude, gain & front end", cards: ["saResCard", "hwCard", "saRfCard"] },
+    bw: { t: "BW · bandwidth & listen", cards: ["listenCard"] },
+    mark: { t: "MARK · markers", cards: ["saMarkCard"] },
+    trace: { t: "TRACE · display & traces", cards: ["saTraceCard"] },
+    meas: { t: "MEAS · measurements", cards: ["saBandCard", "saLevelCard"] },
+  };
+  const drawer = $("saDrawer");
+  const panels = {};
+  for (const [k, v] of Object.entries(SK)) {
+    const pnl = document.createElement("div");
+    pnl.className = "skpanel"; pnl.dataset.sk = k; pnl.hidden = true;
+    for (const id of v.cards) { const c = $(id); if (c) { pnl.appendChild(c); if (c.tagName === "DETAILS") c.open = true; } }
+    drawer.appendChild(pnl); panels[k] = pnl;
+  }
+  // anything left in the column (future cards) stays visible under FREQ so nothing is ever hidden
+  [...drawer.children].forEach((el) => { if (!el.classList.contains("skpanel") && !el.classList.contains("sdhead")) panels.freq.appendChild(el); });
+  const SK_KEY = "webrx.sa.softkey";
+  const desk = matchMedia("(min-width: 1000px)");
+  let sk = null;
+  const setSk = (k, open = true) => {
+    sk = k;
+    for (const [n, p] of Object.entries(panels)) p.hidden = n !== k;
+    document.querySelectorAll(".sk").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.sk === k && (open || desk.matches))));
+    $("saDrawerTitle").textContent = SK[k].t;
+    drawer.classList.toggle("open", open && !desk.matches);
+    document.body.classList.toggle("sk-open", open && !desk.matches);
+    try { localStorage.setItem(SK_KEY, k); } catch (_) {}
+  };
+  document.querySelectorAll(".sk").forEach((b) => b.addEventListener("click", () => {
+    const again = b.dataset.sk === sk && drawer.classList.contains("open");
+    setSk(b.dataset.sk, !again);
+    if (!desk.matches && !again) drawer.scrollTop = 0;
+  }));
+  $("saDrawerClose").addEventListener("click", () => setSk(sk, false));
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.classList.contains("open")) setSk(sk, false); });
+  window.addEventListener("webrx:tab", (e) => { if (e.detail !== "sa" && drawer.classList.contains("open")) setSk(sk, false); });
+  desk.addEventListener("change", () => setSk(sk, false));
+  let skStart = "freq"; try { skStart = localStorage.getItem(SK_KEY) || "freq"; } catch (_) {}
+  setSk(SK[skStart] ? skStart : "freq", false);
 
   // ── More sheet (mobile) ──
   const more = $("moreSheet");
