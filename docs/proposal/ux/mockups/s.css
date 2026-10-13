@@ -1,0 +1,43 @@
+:root{--bg:#0b0f14;--p:#121821;--l:#223041;--t:#e6edf3;--m:#8b9bb0;--a:#f5b544;--ok:#3ccf91;--w:#f5b544;--e:#ff6b6b;font:14px/1.4 "IBM Plex Sans",system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);display:grid;min-height:100vh;grid-template-rows:auto auto 1fr auto}
+.wm{position:fixed;right:8px;bottom:84px;font:10px monospace;color:#ff6b6b;letter-spacing:.1em;opacity:.8;z-index:9}
+.strip{display:flex;white-space:nowrap;overflow:hidden;gap:10px;align-items:center;padding:8px 14px;background:#0f151d;border-bottom:1px solid var(--l);font-size:13px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--w);box-shadow:0 0 0 3px #f5b54433}.dot.ok{background:var(--ok)}
+.strip b{font-weight:600}.strip .sp{flex:1}.chip{border:1px solid var(--l);border-radius:99px;padding:4px 10px;color:var(--m);min-height:32px;display:inline-flex;align-items:center}
+.freq{white-space:nowrap;flex-wrap:wrap;font:600 26px/1 "JetBrains Mono",ui-monospace,monospace;letter-spacing:.02em;display:flex;align-items:baseline;gap:8px;padding:12px 14px}
+.freq .dim{color:#3b4a5c}.freq small{font-size:13px;color:var(--m)}.freq .sel{border-bottom:3px solid var(--a)}
+main{padding:0 14px 14px;display:grid;gap:12px;align-content:start}
+.card{background:var(--p);border:1px solid var(--l);border-radius:10px;padding:12px}.card h3{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--m)}
+.spec{height:150px;border-radius:8px;background:linear-gradient(transparent 60%,#0000),linear-gradient(180deg,#0d1622,#0b0f14);position:relative;overflow:hidden;border:1px solid var(--l)}
+.spec svg{position:absolute;inset:0;width:100%;height:100%}.wf{height:130px;border-radius:8px;background:repeating-linear-gradient(90deg,#30123b 0 7%,#4686fb 9%,#1ae4b6 11%,#30123b 13%,#30123b 46%,#faba39 49%,#7a0403 50%,#faba39 51%,#30123b 54%);opacity:.85;border:1px solid var(--l)}
+.pb{position:absolute;top:0;bottom:0;left:44%;width:12%;background:#f5b5441f;border-left:2px solid var(--a);border-right:2px solid var(--a)}
+.grip{position:absolute;bottom:6px;width:28px;height:44px;margin-left:-15px;background:var(--a);border-radius:6px;opacity:.9}
+.mode{position:absolute;top:8px;right:8px;font-size:12px;background:#000a;padding:6px 10px;border-radius:99px;border:1px solid var(--l)}
+.soft{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.soft div{background:#18212d;border:1px solid var(--l);border-radius:8px;padding:8px;min-height:48px}.soft span{display:block;font-size:11px;color:var(--m)}
+.btn{min-height:44px;padding:0 16px;border-radius:8px;border:1px solid var(--l);background:#18212d;color:var(--t);font:inherit;display:inline-flex;align-items:center}.btn.pri{background:var(--a);color:#111;border:0;font-weight:600}
+nav{display:flex;justify-content:space-around;background:#0f151d;border-top:1px solid var(--l);padding:6px 4px env(safe-area-inset-bottom)}nav a{flex:1;text-align:center;font-size:11px;color:var(--m);padding:6px 0;min-height:52px}nav a b{display:block;font-size:15px;color:var(--t)}nav a.on{color:var(--a)}nav a.on b{color:var(--a)}
+.row{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:10px 0;border-bottom:1px solid var(--l)}.row p{margin:0;color:var(--m);font-size:12px;overflow-wrap:anywhere}.row .btn{grid-row:span 2;align-self:center}
+input.s{width:100%;min-height:44px;background:#0b0f14;border:1px solid var(--l);border-radius:8px;color:var(--t);padding:0 12px;font:inherit}
+.seg{display:flex;gap:6px;flex-wrap:wrap}.seg .btn{min-height:36px}.seg .on{border-color:var(--a);color:var(--a)}
+.side{display:none}
+@media(min-width:900px){body{grid-template-columns:200px 1fr 280px;grid-template-rows:auto auto 1fr}.strip{grid-column:1/-1}.freq{grid-column:2/4}
+nav{grid-row:2/4;grid-column:1;flex-direction:column;justify-content:start;border:0;border-right:1px solid var(--l);padding:10px}nav a{flex:0;text-align:left;padding:10px 12px;border-radius:8px;display:flex;gap:10px;align-items:center;font-size:13px}nav a.on{background:#f5b5441a}
+main{grid-column:2}.side{display:grid;gap:12px;align-content:start;grid-column:3;padding:0 14px 14px 0}.spec{height:260px}.wf{height:220px}.soft{grid-template-columns:repeat(6,1fr)}.wm{bottom:8px}}
+/* FAB cluster + quick-view panel (13 Oct decisions) */
+main{padding-bottom:180px;padding-right:30px}
+@media(max-width:899px){nav{position:fixed;left:0;right:0;bottom:0;z-index:20}}
+.fabs{position:fixed;right:14px;bottom:80px;display:flex;flex-direction:column;align-items:center;gap:10px;z-index:30}
+.fabs .mini{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#18212d;border:1px solid var(--l);font-size:15px;box-shadow:0 6px 16px #0008;position:relative}
+.fabs .mini.rec{background:#3a1218;border-color:var(--e);color:var(--e)}
+.fabs .mini small{position:absolute;right:52px;white-space:nowrap;font:600 11px monospace;background:#000c;padding:3px 7px;border-radius:99px;color:var(--e)}
+.fabs .fab{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#2563eb,#0891b2);font-size:20px;box-shadow:0 10px 24px #000a;border:2px solid var(--ok)}
+.qtab{position:fixed;right:0;top:42%;width:24px;min-height:88px;border:1px solid var(--l);border-right:0;border-radius:10px 0 0 10px;background:#0f151d;color:var(--m);writing-mode:vertical-rl;font-size:11px;letter-spacing:.1em;display:grid;place-items:center;z-index:25}
+.qpanel{display:none}
+body.qopen .qpanel{display:block;position:fixed;right:0;top:96px;bottom:70px;width:78%;max-width:300px;background:#0f151df5;border-left:1px solid var(--l);padding:12px;z-index:40;overflow:auto;box-shadow:-12px 0 24px #000a}
+body.qopen .qtab{right:min(78%,300px)}
+.qpanel h4{margin:10px 0 4px;font-size:11px;letter-spacing:.1em;color:var(--a);text-transform:uppercase}.qpanel dl{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:0;font-size:12px}.qpanel dt{color:var(--m)}.qpanel dd{margin:0;text-align:right;font-family:monospace}.qpanel dd:after{content:" ›";color:var(--m)}
+@media(min-width:900px){.fabs{right:296px;bottom:16px}.qtab{display:none}main{padding-right:14px;padding-bottom:110px}}
+@media(max-width:899px){body{padding-right:26px}.qtab{width:22px}}
+.fabs .mini small{right:auto;left:50%;transform:translateX(-50%);top:-20px}
+.fabs{bottom:84px}
+@media(min-width:900px){.fabs{right:24px;bottom:20px}.side{padding-bottom:220px}}
