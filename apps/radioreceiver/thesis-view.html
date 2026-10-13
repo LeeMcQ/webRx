@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-e40gxmpUxOObNDRc0SCKLFaRDZjqN8lVD8XTxnIpdnU='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-5Rw654X6RokWfyf1ODuywydoslhxdkskz6F/6lB/VRU='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
@@ -458,14 +458,36 @@
         .tab::before { top: 8px; height: 26px; }
       }
       .slot:empty { display: none; }
-      .tabbar { grid-template-columns: repeat(6, 1fr); }
+      .tabbar { grid-template-columns: repeat(7, 1fr); }
       .bandtable { display: grid; gap: var(--s2); max-height: 60vh; overflow: auto; }
       .bandrow { display: grid; grid-template-columns: 1fr auto; gap: 2px var(--s3); text-align: left; min-height: var(--tap); padding: var(--s2) var(--s3);
         border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--text); cursor: pointer; font: inherit; }
       .bandrow b { font-size: var(--t13); } .bandrow span { font: var(--t12) var(--mono); color: var(--muted); grid-column: 1; }
       .bandrow small { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: #93c5fd; font-size: var(--t12); }
       .bandrow:hover { border-color: var(--accent); }
-      .bandrow[aria-disabled="true"] { opacity: .55; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
+      .bandrow[aria-disabled="true"] { opacity: .5; cursor: not-allowed; border-style: dashed; filter: grayscale(1); }
+      .bandrow[aria-disabled="true"]:hover { border-color: var(--line, rgba(255,255,255,.12)); }
+      .bandrow i { grid-column: 1; font-style: normal; font-size: var(--t12); color: var(--muted); }
+      .wfdemo { display: flex; gap: 8px; align-items: center; font-size: var(--t13); margin-bottom: 8px; }
+      .lbl.demo { color: #fbbf24; }
+      .wfempty { padding: 12px; border: 1px dashed rgba(148,163,184,.35); border-radius: 8px; font-size: var(--t13); }
+      #wfViews h3 { font-size: var(--t13); margin: 14px 0 6px; }
+      #wfBand { display: flex; gap: 6px; margin-top: 12px; } #wfBand [aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+      .wfgraph { height: 240px; }
+      .wfconnbox summary { cursor: pointer; font-weight: 600; font-size: var(--t13); margin-bottom: 6px; }
+      .wfsub { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: 12px 0 10px; border-bottom: 1px solid rgba(148,163,184,.25); }
+      .wfsub button { min-width: 0; min-height: var(--tap); padding: 4px 2px; line-height: 1.2; background: none; border: 0; border-bottom: 3px solid transparent; color: var(--muted); font: 600 var(--t12) inherit; cursor: pointer; }
+      .wfsub button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+      .wfratewrap { max-height: 220px; overflow: auto; } .wfrate tr.best th, .wfrate tr.best td { color: var(--ok); font-weight: 600; } .stars { letter-spacing: 1px; }
+      .wfaps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+      .wfap { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 8px 10px; border-left: 4px solid var(--c); border-radius: 6px; background: rgba(148,163,184,.06); min-width: 0; }
+      .wfap.me { background: rgba(96,165,250,.12); }
+      .wfap code, .wfap small { display: block; font-size: var(--t12); color: var(--muted); overflow-wrap: anywhere; }
+      .wfrssi { font: 600 var(--t13) var(--mono); color: var(--c); } .wfmeta { grid-column: 1 / -1; font: var(--t12) var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .nettable th { text-align: left; font-weight: 500; color: var(--muted); }
+      #pane-rf, #pane-wf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
+      #btnRfWifi[aria-disabled="true"], #btnRfCell[aria-disabled="true"] { opacity: .5; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
       @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) { .tab b.gear { display: none; } }
       .slot { min-width: 0; }
       .slot-mini #spectrum { height: 170px; } .slot-mini #waterfall { height: 90px; }
@@ -644,6 +666,7 @@
   <defs>
     <symbol id="i-radio" viewBox="0 0 24 24"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></symbol>
     <symbol id="i-map" viewBox="0 0 24 24"><path d="M14.1 5.9 9.9 3.8a2 2 0 0 0-1.8 0L3.6 6A1 1 0 0 0 3 7v12.4a1 1 0 0 0 1.4.9l3.7-1.9a2 2 0 0 1 1.8 0l4.2 2.1a2 2 0 0 0 1.8 0l4.5-2.3a1 1 0 0 0 .6-.9V4.9a1 1 0 0 0-1.4-.9l-3.7 1.9a2 2 0 0 1-1.8 0z"/><path d="M15 5.8v15M9 3.2v15"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.6a10 10 0 0 1 14 0M8.5 16.1a5 5 0 0 1 7 0M2 8.8a15 15 0 0 1 20 0"/><circle cx="12" cy="20" r="1"/></symbol>
     <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
     <symbol id="i-remote" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h.01M14 14h.01M10 17.5h.01M14 17.5h.01"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
@@ -696,6 +719,7 @@
       <button class="tab" role="tab" type="button" id="tab-mt" data-tab="mt" aria-controls="pane-mt" aria-selected="false" tabindex="-1" title="MT · Mobile Tracking" aria-label="MT · Mobile Tracking"><svg class="i" aria-hidden="true"><use href="#i-map"/></svg><b>MT</b><span>Tracking</span></button>
       <button class="tab" role="tab" type="button" id="tab-dt" data-tab="dt" aria-controls="pane-dt" aria-selected="false" tabindex="-1" title="DT · Directional Tracking" aria-label="DT · Directional Tracking"><svg class="i" aria-hidden="true"><use href="#i-compass"/></svg><b>DT</b><span>Direction</span></button>
       <button class="tab" role="tab" type="button" id="tab-rf" data-tab="rf" aria-controls="pane-rf" aria-selected="false" tabindex="-1" title="RF Tech · Wi-Fi, cellular &amp; band tables" aria-label="RF Tech · Wi-Fi, cellular and band tables"><svg class="i" aria-hidden="true"><use href="#i-activity"/></svg><b>RF</b><span>RF Tech</span></button>
+      <button class="tab" role="tab" type="button" id="tab-wf" data-tab="wf" aria-controls="pane-wf" aria-selected="false" tabindex="-1" title="Wi-Fi Analyser" aria-label="Wi-Fi Analyser"><svg class="i" aria-hidden="true"><use href="#i-wifi"/></svg><b>WF</b><span>Wi-Fi</span></button>
       <button class="tab" role="tab" type="button" id="tab-rm" data-tab="rm" aria-controls="pane-rm" aria-selected="false" tabindex="-1" title="RM · Remote Monitoring" aria-label="RM · Remote Monitoring"><svg class="i" aria-hidden="true"><use href="#i-remote"/></svg><b>RM</b><span>Remote</span></button>
       <button class="tab" role="tab" type="button" id="tab-settings" data-tab="settings" aria-controls="pane-settings" aria-selected="false" tabindex="-1" title="Settings" aria-label="Settings"><svg class="i" aria-hidden="true"><use href="#i-settings"/></svg><b class="gear" aria-hidden="true">⚙</b><span>Settings</span></button>
       </div>
@@ -1075,19 +1099,20 @@
         <div class="grid g-split">
           <div class="col">
         <section class="card">
-          <h2>Network signal detail <span class="spacer"></span><span class="lbl">estimated</span></h2>
-          <table>
-            <tr><td>Connection type</td><td id="nType">—</td></tr>
-            <tr><td>Effective type</td><td id="nEffType">—</td></tr>
-            <tr><td>Downlink</td><td id="nDownlink">—</td></tr>
-            <tr><td>Max downlink</td><td id="nDownMax">—</td></tr>
-            <tr><td>RTT</td><td id="nRTT">—</td></tr>
-            <tr><td>Est. quality</td><td id="nQuality">—</td></tr>
-            <tr><td>Signal est. (not measured)</td><td id="nRSSI">—</td></tr>
-            <tr><td>Data saver</td><td id="nSave">—</td></tr>
+          <h2>Network link detail <span class="spacer"></span><span class="lbl">link quality, not RF</span></h2>
+          <table class="nettable">
+            <caption class="sr-only">Network link information from the browser's Network Information API</caption>
+            <tr><th scope="row">Connection type</th><td id="nType">—</td></tr>
+            <tr><th scope="row">Effective type</th><td id="nEffType">—</td></tr>
+            <tr><th scope="row">Downlink</th><td id="nDownlink">—</td></tr>
+            <tr><th scope="row">Max downlink</th><td id="nDownMax">—</td></tr>
+            <tr><th scope="row">Round-trip time</th><td id="nRTT">—</td></tr>
+            <tr><th scope="row">Link quality</th><td id="nQuality">—</td></tr>
+            <tr><th scope="row">Signal (Radio Bridge)</th><td id="nRSSI">—</td></tr>
+            <tr><th scope="row">Data saver</th><td id="nSave">—</td></tr>
           </table>
           <div class="bar"><div id="signalBar"></div></div>
-          <p class="hint">Browsers can't read raw Wi-Fi/cellular RSSI; these values are estimated from the Network Information API (Chrome/Edge).</p>
+          <p class="hint">Browsers can't read Wi-Fi RSSI or cellular RSRP, so no dBm is shown unless the Radio Bridge app supplies one. Link quality is scored mainly from round-trip time. Chrome caps downlink at 10 Mbps (rounded to 25 kbps), rounds RTT to 25 ms, and often omits connection type on desktop.</p>
         </section>
             <section class="card">
               <h2>What a browser can and can't see</h2>
@@ -1097,25 +1122,64 @@
                 <li><b>For real RF:</b> use an SDR in SA — tap a band below to tune it. For phone radio readings, the <b>Radio Bridge</b> Android app (branch <code>radio-bridge</code>, in progress) is planned to feed Wi-Fi, cellular, BLE and GNSS data into RM.</li>
               </ul>
               <div class="btns" style="margin-top:12px"><button class="btn ghost" type="button" id="btnRfWifi">Monitor Wi-Fi quality</button><button class="btn ghost" type="button" id="btnRfCell">Monitor cellular quality</button></div>
+              <p class="hint" id="rfMonHint" hidden></p>
             </section>
           </div>
           <div class="col">
+        <section class="card">
+          <h2>Wi-Fi analyser</h2>
+          <p class="hint">Access points, channel rating, channel graph and time graph (Radio Bridge scan data) are in the <b>Wi-Fi</b> tab.</p>
+          <div class="btns"><a class="btn ghost" href="#wf" id="btnOpenWifi">Open Wi-Fi analyser</a></div>
+        </section>
             <section class="card">
               <h2>Band tables <span class="spacer"></span><span class="lbl">tap to tune in SA</span></h2>
               <div class="field" style="margin-bottom:12px">
                 <label for="bandSet">Table</label>
                 <select id="bandSet">
-                  <option value="cell">South Africa — cellular downlink</option>
+                  <option value="cell">South Africa — cellular bands</option>
                   <option value="wifi24">Wi-Fi 2.4 GHz channels</option>
                   <option value="wifi5">Wi-Fi 5 GHz channels</option>
+                  <option value="wifi6">Wi-Fi 6 GHz channels (6E)</option>
                   <option value="misc">Other useful bands</option>
                 </select>
               </div>
               <div class="bandtable" id="bandTable"></div>
-              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.7 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+              <p class="hint" id="bandHint">RTL-SDR tunes up to about 1.766 GHz; HackRF up to 6 GHz. Bands above your receiver's range are marked.</p>
+              <p class="hint" id="bandNote" hidden></p>
             </section>
           </div>
         </div>
+      </section>
+
+      <section class="pane" id="pane-wf" role="tabpanel" aria-labelledby="tab-wf" hidden>
+        <h2 class="pane-title">Wi-Fi Analyser</h2>
+        <section class="card" id="wfCard">
+          <h2>Access points &amp; channels <span class="spacer"></span><span class="lbl" id="wfSource">no data</span></h2>
+          <label class="wfdemo"><input type="checkbox" id="wfDemo" /> Show demo data (made-up access points, not a scan)</label>
+          <div id="wfEmpty" class="wfempty">
+            <p><b>No Wi-Fi scan data.</b> Browsers can't scan Wi-Fi networks. Connect the <b>Radio Bridge</b> Android app: it sends <code>WifiManager.getScanResults()</code> and the current connection here (<code>window.webrxWifi.push({aps, connection})</code>).</p>
+          </div>
+          <div id="wfViews" hidden>
+            <details class="wfconnbox" open><summary>Current connection</summary><div id="wfConn"></div></details>
+            <div class="seg" id="wfBand" role="group" aria-label="Wi-Fi band">
+              <button type="button" class="btn ghost small" data-band="2.4" aria-pressed="true">2.4 GHz</button><button type="button" class="btn ghost small" data-band="5" aria-pressed="false">5 GHz</button><button type="button" class="btn ghost small" data-band="6" aria-pressed="false">6 GHz</button>
+            </div>
+            <div class="wfsub" role="tablist" aria-label="Wi-Fi analyser views">
+              <button type="button" role="tab" id="wfs-aps" aria-controls="wfp-aps" aria-selected="true">Access Points <span id="wfApCount">0</span></button>
+              <button type="button" role="tab" id="wfs-rate" aria-controls="wfp-rate" aria-selected="false" tabindex="-1">Channel Rating</button>
+              <button type="button" role="tab" id="wfs-graph" aria-controls="wfp-graph" aria-selected="false" tabindex="-1">Channel Graph</button>
+              <button type="button" role="tab" id="wfs-time" aria-controls="wfp-time" aria-selected="false" tabindex="-1">Time Graph</button>
+            </div>
+            <div role="tabpanel" id="wfp-aps" aria-labelledby="wfs-aps"><ul class="wfaps" id="wfAps"></ul></div>
+            <div role="tabpanel" id="wfp-rate" aria-labelledby="wfs-rate" hidden>
+              <p class="hint" id="wfBest"></p>
+              <div class="wfratewrap"><table class="nettable wfrate"><caption class="sr-only">Overlapping access points and rating per channel</caption><thead><tr><th scope="col">Ch</th><th scope="col">APs</th><th scope="col">Rating</th></tr></thead><tbody id="wfRating"></tbody></table></div>
+            </div>
+            <div role="tabpanel" id="wfp-graph" aria-labelledby="wfs-graph" hidden><canvas id="wfChanGraph" class="wfgraph" role="img" aria-label="Access points by channel and signal strength"></canvas></div>
+            <div role="tabpanel" id="wfp-time" aria-labelledby="wfs-time" hidden><p class="hint">RSSI per access point, last 5 minutes.</p><canvas id="wfTimeGraph" class="wfgraph" role="img" aria-label="Signal strength of each access point over the last five minutes"></canvas></div>
+          </div>
+          <p class="hint">Distance is a rough free-space estimate, d = 10^((27.55 − 20·log10 f + |RSSI|)/20). Walls, antennas and transmit power can make it wrong by a factor of 2–10. Wi-Fi scan throttling: Android 9+ allows each app 4 scans per 2 minutes in the foreground, so updates can be slow. You can turn throttling off in Developer options → "Wi-Fi scan throttling".</p>
+        </section>
       </section>
 
       <section class="pane" id="pane-rm" role="tabpanel" aria-labelledby="tab-rm" hidden>
@@ -1461,9 +1525,10 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const TABS = ["sa", "mt", "dt", "rf", "rm", "settings"];
+  const TABS = ["sa", "mt", "dt", "rf", "wf", "rm", "settings"];
+  const LEGACY_WIFI = { wifi: "wf" };
   const LEGACY = { receiver: "sa", map: "mt", monitor: "mt", remote: "rm" };
-  const fix = (n) => LEGACY[n] || n;
+  const fix = (n) => LEGACY[n] || LEGACY_WIFI[n] || n;
   const sysReduce = matchMedia("(prefers-reduced-motion: reduce)");
   const reduce = { get matches() { return sysReduce.matches || document.documentElement.dataset.motion === "reduce"; } };
   let current = null;
@@ -1512,22 +1577,57 @@
     });
   });
   // ── RF Tech: band tables ──
+  // Rows: [name, lo MHz, hi MHz, tune centre?, note?]. Cellular rows are downlink; note gives uplink/duplex.
+  const W6 = Array.from({ length: 24 }, (_, i) => 1 + 4 * i); // U-NII-5 ch 1..93 (SA: 5925–6425 MHz)
   const BANDS = window.webrxBands = {
-    cell: [["B28 · LTE 700", 758, 803], ["B20 · LTE 800", 791, 821], ["B8 · GSM/LTE 900", 925, 960], ["B3 · GSM/LTE 1800", 1805, 1880], ["B1 · UMTS/LTE 2100", 2110, 2170], ["B40 · LTE TDD 2300", 2300, 2400], ["B38 · LTE TDD 2600", 2570, 2620], ["B7 · LTE 2600", 2620, 2690], ["n78 · 5G 3500", 3300, 3800]],
-    wifi24: Array.from({ length: 14 }, (_, i) => { const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c; return [`Channel ${c}`, f - 11, f + 11, f]; }),
-    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165].map((c) => { const f = 5000 + 5 * c; return [`Channel ${c}${c >= 52 && c <= 140 ? " · DFS" : ""}`, f - 10, f + 10, f]; }),
-    misc: [["FM broadcast", 87.5, 108], ["Airband (AM)", 118, 137], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05], ["ISM 433", 433.05, 434.79], ["ISM 868", 868, 868.6], ["ADS-B", 1089, 1091, 1090], ["GPS L1", 1574.4, 1576.4, 1575.42]],
+    cell: [
+      ["B28 · LTE 700", 758, 803, undefined, "FDD · UL 703–748 MHz"], ["B20 · LTE 800", 791, 821, undefined, "FDD · UL 832–862 MHz"],
+      ["B8 · GSM/LTE 900", 925, 960, undefined, "FDD · UL 880–915 MHz"], ["B3 · GSM/LTE 1800", 1805, 1880, undefined, "FDD · UL 1710–1785 MHz"],
+      ["B1 · UMTS/LTE 2100", 2110, 2170, undefined, "FDD · UL 1920–1980 MHz"], ["B40 · LTE TDD 2300", 2300, 2400, undefined, "TDD · same band UL/DL"],
+      ["B38 · LTE TDD 2600", 2570, 2620, undefined, "TDD · same band UL/DL"], ["B7 · LTE 2600", 2620, 2690, undefined, "FDD · UL 2500–2570 MHz"],
+      ["n78 · 5G 3500", 3300, 3800, undefined, "TDD · same band UL/DL"],
+    ],
+    wifi24: Array.from({ length: 14 }, (_, i) => {
+      const c = i + 1, f = c === 14 ? 2484 : 2407 + 5 * c;
+      const note = c === 14 ? "Japan only (802.11b) — not permitted in SA" : c >= 12 ? "permitted in SA (not US)" : c === 1 || c === 6 || c === 11 ? "non-overlapping 1/6/11" : undefined;
+      return [`Channel ${c}`, f - 10, f + 10, f, note];
+    }),
+    wifi5: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165].map((c) => {
+      const f = 5000 + 5 * c;
+      return [`Channel ${c}${c >= 52 && c <= 144 ? " · DFS" : ""}`, f - 10, f + 10, f, c >= 149 ? "5725–5850 MHz: SA low-power SRD only" : undefined];
+    }),
+    wifi6: W6.map((c) => { const f = 5950 + 5 * c; return [`Channel ${c}`, f - 10, f + 10, f, "U-NII-5 · LPI/VLP"]; }),
+    misc: [
+      ["FM broadcast", 87.5, 108], ["VOR / ILS localiser", 108, 118, 113, "aviation navigation"], ["Airband (AM)", 118, 136.975],
+      ["NOAA APT weather sats", 137, 138, 137.5, "NOAA 15/18/19 at 137.62 / 137.9125 / 137.1"], ["2 m amateur", 144, 146], ["Marine VHF", 156, 162.05],
+      ["DAB+ (Band III)", 174, 240, 207, "SA DAB+ trial blocks"], ["ISM / LoRa 433", 433.05, 434.79, 433.92], ["SRD 863–870 (LoRa EU868)", 863, 870, 868.1],
+      ["ADS-B", 1089, 1091, 1090], ["GNSS L5 / E5a", 1164.45, 1188.45, 1176.45], ["GPS L1", 1574.4, 1576.4, 1575.42],
+    ],
   };
-  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(3).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
+  const RTL_MAX = 1766;
+  const fmt = (v) => (v >= 1000 ? (v / 1000).toFixed(4).replace(/\.?0+$/, "") + " GHz" : String(+v.toFixed(3)) + " MHz");
   const renderBands = () => {
-    const max = parseFloat($("freq").max) || 1766;
+    // Receiver range comes from the connected SDR (monitor sets data-rx-max-mhz); the #freq max is only an input limit.
+    const rxMax = parseFloat(document.body.dataset.rxMaxMhz || "");
+    const known = Number.isFinite(rxMax), max = known ? rxMax : RTL_MAX, who = document.body.dataset.rxName || "receiver";
     const rows = BANDS[$("bandSet").value];
-    $("bandTable").innerHTML = rows.map(([n, lo, hi, c]) => {
-      const ctr = c ?? (lo + hi) / 2, out = ctr > max;
-      return `<button type="button" class="bandrow" data-tune="${ctr}" ${out ? 'aria-disabled="true"' : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span><small>${out ? "out of range" : "tune " + fmt(ctr)}</small></button>`;
+    $("bandTable").innerHTML = rows.map(([n, lo, hi, c, note]) => {
+      const ctr = c ?? (lo + hi) / 2, out = hi > max;
+      const why = out ? (known ? `Above ${who} range (max ${fmt(max)})` : `Needs HackRF — above RTL-SDR range (~${fmt(RTL_MAX)})`) : "";
+      const tag = out ? (known ? "out of range" : "needs HackRF") : "tune " + fmt(ctr);
+      return `<button type="button" class="bandrow" data-tune="${ctr}"${out ? ` aria-disabled="true" tabindex="-1" title="${why}"` : ""}><b>${n}</b><span>${fmt(lo)} – ${fmt(hi)}</span>${note ? `<i>${note}</i>` : ""}<small>${tag}</small></button>`;
     }).join("");
+    const bn = $("bandNote"), set = $("bandSet").value;
+    const notes = {
+      cell: "Rows show downlink (tower → phone); uplink range and duplex mode are listed under each band.",
+      wifi24: "20 MHz OFDM channels (±10 MHz). In South Africa channels 1–13 are permitted; channel 14 is Japan-only.",
+      wifi5: "Channels 52–144 require DFS. 5725–5850 MHz (ch 149–165) is a low-power SRD allocation in South Africa.",
+      wifi6: "ICASA opened 5925–6425 MHz (U-NII-5) for Wi-Fi 6E: 20 MHz channels 1–93, centre 5950 + 5·n MHz.",
+    };
+    bn.hidden = !notes[set]; bn.textContent = notes[set] || "";
   };
   $("bandSet").addEventListener("change", renderBands);
+  window.addEventListener("webrx:rxrange", renderBands);
   $("bandTable").addEventListener("click", (e) => {
     const b = e.target.closest(".bandrow");
     if (!b || b.getAttribute("aria-disabled") === "true") return;
@@ -1538,9 +1638,18 @@
   });
   setTimeout(renderBands, 0);
   window.addEventListener("webrx:tab", (e) => { if (e.detail === "rf") renderBands(); });
-  const pickSource = (v) => { const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change")); };
-  $("btnRfWifi").addEventListener("click", () => pickSource("wifi"));
-  $("btnRfCell").addEventListener("click", () => pickSource("cellular"));
+  const hasSource = (v) => !!$("sourceSelect").querySelector(`option[value="${v}"]:not([disabled])`);
+  const pickSource = (v, label) => {
+    const hint = $("rfMonHint");
+    if (!hasSource(v)) { hint.hidden = false; hint.textContent = `${label} monitoring isn't available in this build/browser.`; return; }
+    hint.hidden = true;
+    const sel = $("sourceSelect"); sel.value = v; sel.dispatchEvent(new Event("change"));
+  };
+  for (const [id, v, label] of [["btnRfWifi", "wifi", "Wi-Fi"], ["btnRfCell", "cellular", "Cellular"]]) {
+    const btn = $(id);
+    if (!hasSource(v)) { btn.setAttribute("aria-disabled", "true"); btn.title = `${label} monitor source not available`; }
+    btn.addEventListener("click", () => pickSource(v, label));
+  }
 
   // ── look & feel settings ──
   const UI_KEY = "webrx.ui.v1";

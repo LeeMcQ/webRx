@@ -22,6 +22,7 @@ import {
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
+import { initWifiAnalyser } from "./wifi-ui.js";
 import { shared } from "./listen.js";
 import { analyser, CMAP_NAMES, type Src } from "./analyser.js";
 import * as sess from "./sessions.js";
@@ -138,7 +139,7 @@ let lastTimelineAt = 0;
 let dspMs = 0;
 let dirty = false;
 let lastStats: { peak: number; peakHz: number; band: number; spec: number } | null = null;
-let netInfo: { quality: number; rssi: number; rtt: number | null; dl: number; type: string; eff: string } | null = null;
+let netInfo: { quality: number; rssi: number | null; rtt: number | null; dl: number; type: string; eff: string } | null = null;
 const timeline: { peak: number; band: number }[] = [];
 /** Readings since the last pin, averaged per frequency bin (thesis §3.5.4). */
 const pinAvg = new PowerAverager();
@@ -325,6 +326,10 @@ async function connect(): Promise<boolean> {
     const kind = sdr?.kind ?? "rtlsdr";
     fillRates(kind);
     ($("freq") as HTMLInputElement).max = String((sdr?.maxFrequency ?? 1.8e9) / 1e6);
+    // Tell the RF Tech band table what the connected receiver can actually tune.
+    document.body.dataset.rxMaxMhz = String((sdr?.maxFrequency ?? 1.766e9) / 1e6);
+    document.body.dataset.rxName = sdr?.name ?? "SDR";
+    window.dispatchEvent(new CustomEvent("webrx:rxrange"));
     setChip("dotSource", "txtSource", `${sdr?.name ?? "SDR"} ready`, "ok");
     log(`${sdr?.name ?? "SDR"} connected${sdr?.detail ? ` (${sdr.detail})` : ""}`, "ok");
     updateSourceUi();
@@ -728,14 +733,15 @@ function addRecord(spacingM?: number) {
   } else if (netInfo) {
     const m = pinAvg.meanLevels();
     const rssi = Number.isFinite(m.rssi) ? m.rssi : netInfo.rssi;
+    const lvl = rssi !== null && Number.isFinite(rssi) ? rssi.toFixed(1) : "";
     row = {
       ...base,
-      device: cfg.mode === "wifi" ? "Wi-Fi (estimated)" : "Cellular (estimated)",
+      device: cfg.mode === "wifi" ? (rssi !== null ? "Wi-Fi (Radio Bridge)" : "Wi-Fi (link quality only)") : rssi !== null ? "Cellular (Radio Bridge)" : "Cellular (link quality only)",
       center_freq_hz: "",
       sample_rate_hz: "",
-      peak_power_db: rssi.toFixed(1),
+      peak_power_db: lvl,
       peak_freq_hz: "",
-      band_mean_level_db: rssi.toFixed(1),
+      band_mean_level_db: lvl,
       spectrum_mean_level_db: netInfo.rtt !== null ? String(netInfo.rtt) : "",
       net_quality_pct: String(netInfo.quality),
       pin_spacing_m: spacingM !== undefined ? spacingM.toFixed(1) : "",
@@ -1387,23 +1393,23 @@ function readNetworkInfo() {
   const eff: string = conn.effectiveType || "—";
   const dl: number = typeof conn.downlink === "number" ? conn.downlink : NaN;
   const rtt: number | null = typeof conn.rtt === "number" ? conn.rtt : null;
-  // Same estimate as before: effective type, adjusted by RTT and downlink.
-  const ectScore: Record<string, number> = { "4g": 90, "3g": 60, "2g": 35, "slow-2g": 10 };
-  let q = ectScore[eff] ?? 50;
+  // Link-quality score. RTT is the most informative field Chrome exposes, so it
+  // carries most of the weight. Caveats: downlink is capped at 10 Mbps and
+  // rounded to 25 kbps, RTT is rounded to 25 ms, and `type` is often missing on
+  // desktop. This is NOT a radio signal level.
+  let q: number;
   if (rtt !== null) {
-    if (rtt < 50) q += 10;
-    else if (rtt < 150) q += 5;
-    else if (rtt > 300) q -= 20;
-    else if (rtt > 200) q -= 10;
-  }
-  if (!Number.isNaN(dl)) {
-    if (dl >= 10) q += 10;
-    else if (dl < 0.5) q -= 15;
+    const rttScore = Math.max(0, Math.min(100, 100 - ((rtt - 25) / 475) * 100)); // 25 ms → 100, 500 ms → 0
+    const dlScore = Number.isNaN(dl) ? rttScore : Math.max(0, Math.min(100, (Math.log10(Math.max(dl, 0.05)) + 1.3) / 2.3 * 100)); // 0.05 → 0, 10 Mbps → 100
+    q = Math.round(0.7 * rttScore + 0.3 * dlScore);
+  } else {
+    const ectScore: Record<string, number> = { "4g": 75, "3g": 50, "2g": 25, "slow-2g": 10 };
+    q = ectScore[eff] ?? 50;
   }
   q = Math.max(0, Math.min(100, q));
-  const isCell = type === "cellular" || cfg.mode === "cellular";
-  const [lo, hi] = isCell ? [-110, -70] : [-90, -30];
-  const rssi = Math.round(lo + (q / 100) * (hi - lo));
+  // Real signal level only from the Radio Bridge app (RSSI for Wi-Fi, RSRP for LTE/NR).
+  const rb = radioBridgeSignal();
+  const rssi = rb ? rb.dbm : null;
   const label = q >= 80 ? "Excellent" : q >= 60 ? "Good" : q >= 40 ? "Fair" : q >= 20 ? "Poor" : "Very poor";
   $("nType").textContent = type;
   $("nEffType").textContent = eff;
@@ -1411,7 +1417,7 @@ function readNetworkInfo() {
   $("nDownMax").textContent = typeof conn.downlinkMax === "number" && Number.isFinite(conn.downlinkMax) ? `${conn.downlinkMax.toFixed(1)} Mbps` : "—";
   $("nRTT").textContent = rtt !== null ? `${rtt} ms` : "—";
   $("nQuality").textContent = `${label} (${q}%)`;
-  $("nRSSI").textContent = `${rssi} dBm (est.)`;
+  $("nRSSI").textContent = rb ? `${rb.dbm} dBm ${rb.kind} (Radio Bridge)` : "—";
   $("nSave").textContent = conn.saveData ? "ON" : "off";
   const bar = $("signalBar");
   bar.style.width = `${q}%`;
@@ -1421,24 +1427,29 @@ function readNetworkInfo() {
   return netInfo;
 }
 
+/** Hook for the Radio Bridge app: `window.webrxRadioBridge = { dbm, kind: "RSSI" | "RSRP", at: Date.now() }`. */
+function radioBridgeSignal(): { dbm: number; kind: string } | null {
+  const v = (window as any).webrxRadioBridge;
+  if (!v || typeof v.dbm !== "number" || !Number.isFinite(v.dbm)) return null;
+  if (typeof v.at === "number" && Date.now() - v.at > 10000) return null; // stale
+  return { dbm: Math.round(v.dbm), kind: String(v.kind || "RSSI") };
+}
+
 function pushNetworkSample() {
   const info = readNetworkInfo();
   if (!info || !running) return;
-  // A labelled pseudo-trace: noise floor plus a band at the estimated level (not RF power).
-  const n = cfg.fftSize;
-  if (spec.length !== n) resetSpectrum();
-  for (let k = 0; k < n; ++k) {
-    const inBand = Math.abs(k - n / 2) < n * 0.15;
-    spec[k] = (inBand ? info.rssi : info.rssi - 30) + (Math.random() - 0.5) * 1.5;
-    peak[k] = spec[k];
-  }
+  // No spectrum trace is drawn: a browser cannot measure RF power, so drawing one
+  // would look like a measurement. Only a real Radio Bridge level is plotted on
+  // the timeline; otherwise records carry link quality / RTT only.
   ++frames;
-  lastStats = { peak: info.rssi, peakHz: 0, band: info.rssi, spec: info.rtt ?? NaN };
-  timeline.push({ peak: info.rssi, band: -110 + (info.quality / 100) * 120 });
-  if (timeline.length > 240) timeline.shift();
-  pinAvg.addLevels({ rssi: info.rssi });
+  const lv = info.rssi ?? NaN;
+  lastStats = { peak: lv, peakHz: 0, band: lv, spec: info.rtt ?? NaN };
+  if (info.rssi !== null) {
+    timeline.push({ peak: info.rssi, band: info.rssi });
+    if (timeline.length > 240) timeline.shift();
+    pinAvg.addLevels({ rssi: info.rssi });
+  }
   if (cfg.logMode === "time") addRecord();
-  analyser.ingest(spec);
   dirty = true;
 }
 
@@ -3924,6 +3935,7 @@ export function initMonitor() {
   }
 
   restoreRecording();
+  initWifiAnalyser();
   requestAnimationFrame(frame);
   dirty = true;
 }
