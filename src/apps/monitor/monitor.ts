@@ -9,7 +9,10 @@
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
 import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices/hackrf.js";
-import { SweepGrid } from "../../devices/sweep.js";
+import { SweepGrid, type SweepSlice } from "../../devices/sweep.js";
+import { initSurvey, type SurveyHost } from "../../survey/ui.js";
+import { TUNING_KEY, loadTuning, type TuningState } from "./layout.js";
+import { initPresets } from "./presets.js";
 import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
@@ -454,6 +457,7 @@ function saveFe() {
 /** On connect: load this dongle's own ppm / upconverter / calibration offset if we have them. */
 function loadFeForDevice() {
   if (!sdr) return;
+  setTimeout(restoreSourceMemory, 0);
   const m = feDevices()[deviceKey(sdr)];
   if (m) {
     fe = { upconvHz: m.upconvHz ?? 0, ppm: m.ppm ?? 0 };
@@ -549,6 +553,7 @@ function processBlock(bytes: Uint8Array) {
   const a = Math.min(0.95, Math.max(0, cfg.avg));
   if (specDb.length !== n) specDb = new Float32Array(n).fill(NaN);
   avgStep(spec, specDb, raw, a, avgMode, cfg.cal);
+  if (surveyFrameHook) surveyFrameHook(raw, n);
   for (let k = 0; k < n; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   lastStats = computeStats();
@@ -616,7 +621,72 @@ function tunedHz(): number {
 }
 
 function dtFreqHz(): number {
-  return dt.st.freqHz ?? tunedHz();
+  return tuning && tuning.s.dt.mode === "lock" && tuning.s.dt.lockHz ? tuning.s.dt.lockHz : tunedHz();
+}
+
+// ── shared tuning model (tuned vs view, DT follow/lock, per-source memory, start-up) ──
+let tuning: TuningState;
+let tuningSaveT = 0;
+function sourceKey(): string | undefined {
+  if (remote.connected) return "remote:" + remote.url.page;
+  if (sdr) return "local:" + deviceKey(sdr);
+  return undefined;
+}
+function initTuning() {
+  tuning = loadTuning(localStorage, { freqHz: cfg.freqMHz * 1e6, dtTargetHz: dt.st.freqHz ?? null });
+  tuning.on(() => {
+    dt.st.freqHz = tuning.s.dt.mode === "lock" ? tuning.s.dt.lockHz : null;
+    clearTimeout(tuningSaveT);
+    tuningSaveT = window.setTimeout(() => {
+      try {
+        localStorage.setItem(TUNING_KEY, JSON.stringify(tuning));
+      } catch (_) {}
+    }, 500);
+  });
+  const open = tuning.openingHz();
+  if (open > 0 && Math.abs(open - cfg.freqMHz * 1e6) > 0.5) {
+    cfg.freqMHz = open / 1e6;
+    saveSettings();
+  }
+  dt.st.freqHz = tuning.s.dt.mode === "lock" ? tuning.s.dt.lockHz : null;
+}
+/** Mirrors the live SA tuned frequency and view into the model (called from renderVfo). */
+function bindStartupFreq() {
+  const mode = document.getElementById("setStartFreqMode") as HTMLSelectElement | null, f = document.getElementById("setStartFreq") as HTMLInputElement | null;
+  if (!mode || !f) return;
+  mode.value = tuning.s.startupMode;
+  f.value = String(+(tuning.s.startupHz / 1e6).toFixed(6));
+  f.disabled = mode.value !== "fixed";
+  const apply = () => {
+    f.disabled = mode.value !== "fixed";
+    const v = parseFloat(f.value);
+    tuning.setStartup(Number.isFinite(v) && v > 0 ? v * 1e6 : tuning.s.startupHz, mode.value as "last" | "fixed");
+  };
+  mode.addEventListener("change", apply);
+  f.addEventListener("change", apply);
+}
+function syncTuning() {
+  if (!tuning || pb) return;
+  const hz = tunedHz();
+  if (Number.isFinite(hz) && hz > 0 && Math.abs(hz - tuning.s.tunedHz) > 0.5) tuning.tune(hz, sourceKey());
+  const [f0, f1] = analyser.viewHz(src());
+  if (f1 > f0 && (Math.abs((f0 + f1) / 2 - tuning.s.view.centreHz) > 1 || Math.abs(f1 - f0 - tuning.s.view.spanHz) > 1)) tuning.setView((f0 + f1) / 2, f1 - f0);
+}
+/** On (re)connecting a source, go back to the frequency last used with it. */
+function restoreSourceMemory() {
+  const k = sourceKey();
+  if (!k || !tuning) return;
+  const m = tuning.restore(k);
+  if (!m) return void tuning.remember(k, { tunedHz: tunedHz() });
+  if (remote.connected) return void remote.tune(m.tunedHz);
+  if (Math.abs(m.tunedHz - tunedHz()) < 1) return;
+  shared.set({ offsetHz: 0 });
+  const f = document.getElementById("freq") as HTMLInputElement | null;
+  if (f) {
+    f.value = String(+(m.tunedHz / 1e6).toFixed(6));
+    f.dispatchEvent(new Event("change"));
+  }
+  log(`Restored ${freqLabel(m.tunedHz)} (last used with this source)`, "ok");
 }
 
 function bwHz(): number | null {
@@ -2316,11 +2386,27 @@ function dtSaveFix() {
 function bindDt() {
   if (!document.getElementById("dtCanvas")) return;
   const fq = $<HTMLInputElement>("dtFreq");
-  fq.value = dt.st.freqHz ? String(dt.st.freqHz / 1e6) : "";
+  const lm = $<HTMLSelectElement>("dtLockMode");
+  const showLock = () => {
+    const locked = tuning.s.dt.mode === "lock";
+    lm.value = tuning.s.dt.mode;
+    fq.disabled = !locked;
+    if (document.activeElement !== fq) fq.value = locked && tuning.s.dt.lockHz ? String(+(tuning.s.dt.lockHz / 1e6).toFixed(6)) : "";
+    fq.placeholder = locked ? "MHz" : `follows tuned · ${(tunedHz() / 1e6).toFixed(4)}`;
+  };
+  tuning.on(showLock);
+  showLock();
+  lm.addEventListener("change", () => {
+    if (lm.value === "lock") tuning.dtLock(tuning.s.dt.lockHz ?? tunedHz());
+    else tuning.dtFollow();
+    dt.reset();
+    dirty = true;
+  });
   fq.addEventListener("change", () => {
     const v = parseFloat(fq.value);
-    dt.st.freqHz = Number.isFinite(v) && v > 0 ? v * 1e6 : null;
-    if (dt.st.freqHz && Math.abs(dt.st.freqHz - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
+    if (!(Number.isFinite(v) && v > 0)) return showLock();
+    tuning.dtLock(v * 1e6);
+    if (Math.abs(v * 1e6 - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
     dt.reset();
     dirty = true;
   });
@@ -3155,9 +3241,13 @@ function feedRemote(f: Float32Array) {
   dirty = true;
 }
 
+let remoteMemKey = "";
 function renderRemote() {
   if (!document.getElementById("rxLive")) return;
   const on = remote.connected;
+  const rk = on ? remote.url.page : "";
+  if (rk && rk !== remoteMemKey) setTimeout(restoreSourceMemory, 800);
+  remoteMemKey = rk;
   $("rxLive").hidden = !on;
   $("btnRxConnect").textContent = remote.state === "connecting" ? "Connecting…" : "Connect";
   ($("btnRxConnect") as HTMLButtonElement).disabled = remote.state === "connecting";
@@ -3451,7 +3541,7 @@ function onRemoteChange() {
       if (!rc.wasFocused) {
         rc.wasFocused = true;
         const d = document.getElementById("btnRxDisconnect");
-        if (d && document.getElementById("pane-rm")?.hidden === false) d.focus({ preventScroll: true });
+        if (d && document.getElementById("pane-cm")?.hidden === false) d.focus({ preventScroll: true });
       }
       setChip("dotSource", "txtSource", `${remote.label}: ${remote.name || "remote"}`, "ok");
       rememberServer(remote.url.page, remote.name || remote.url.page, remote.kind);
@@ -3529,8 +3619,8 @@ function bindRemote() {
   $("rxOnlyOk").addEventListener("change", renderDir);
   $("rxKind").addEventListener("change", renderDir);
   $("rxSort").addEventListener("change", renderDir);
-  window.addEventListener("webrx:tab", (e) => (e as CustomEvent).detail === "rm" && loadDir());
-  if (document.getElementById("pane-rm")?.hidden === false) loadDir();
+  window.addEventListener("webrx:tab", (e) => (e as CustomEvent).detail === "cm" && loadDir());
+  if (document.getElementById("pane-cm")?.hidden === false) loadDir();
   setInterval(() => remote.connected && renderRemote(), 1000);
   renderSaved();
   renderRemote();
@@ -3834,6 +3924,7 @@ function centreOnTuned() {
 // ── VFO: big frequency, scroll over a digit to tune it, tap to type ──
 const VFO_DIGITS = 10; // up to 9.999 999 999 GHz
 function renderVfo() {
+  syncTuning();
   const box = document.getElementById("vfoDigits");
   if (!box) return;
   const hz = Math.max(0, Math.round(tunedHz()));
@@ -4038,7 +4129,19 @@ function bindVfo() {
 // ═══════════════════════════════════════════════════════════════════
 
 export function initMonitor() {
+  initTuning();
   bind();
+  bindStartupFreq();
+  initSurvey(surveyHost);
+  const pr = initPresets({
+    show: (t) => (window as any).webrxShowTab?.(t),
+    deviceKind: () => surveyHost.deviceKind(),
+    openConnect: () => document.getElementById("connChip")?.click(),
+    openSoftKey: (k) => (window as any).webrxOpenSoftKey?.(k),
+    log: (m, k) => log(m, k === "ok" ? "ok" : ""),
+    dtLock: (hz) => tuning.dtLock(hz),
+  });
+  document.getElementById("btnRunSetup")?.addEventListener("click", () => pr.openFirstRun(true));
   fillRates(effectiveKind());
   resetSpectrum();
   updateSourceUi();
@@ -4360,9 +4463,8 @@ function drawSweep() {
     b.title = "Tune here and make it the DT target";
     b.addEventListener("click", async () => {
       await stopSweep();
-      dt.st.freqHz = Math.round(p.hz);
+      tuning.dtLock(Math.round(p.hz));
       dt.reset();
-      ($("dtFreq") as HTMLInputElement).value = String(p.hz / 1e6);
       const sc = $<HTMLInputElement>("saCentre");
       sc.value = String(+(p.hz / 1e6).toFixed(6));
       sc.dispatchEvent(new Event("change"));
@@ -4396,6 +4498,90 @@ async function toggleSweep() {
     log(`Sweep failed: ${e?.message ?? e} — firmware may be too old`, "er");
   }
 }
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  RM survey host: what the survey module may use from the receiver
+// ═══════════════════════════════════════════════════════════════════
+
+/** Raw dBFS frame tap for RTL hopping (set only while an RM survey runs on an RTL-SDR). */
+let surveyFrameHook: ((raw: Float32Array, n: number) => void) | null = null;
+let rtlHop: { stop: boolean } | null = null;
+
+const surveyHost: SurveyHost = {
+  deviceKind: () => (remote.connected ? "remote" : !device || !sdr ? "none" : sdr.kind === "hackrf" ? "hackrf" : "rtlsdr"),
+  deviceLabel: () => (sdr ? `${sdr.name}${sdr.serial ? ` · S/N ${sdr.serial}` : ""}` : remote.connected ? remote.label : "No receiver"),
+  serial: () => sdr?.serial,
+  biasTee: () => !!(cfg as any).biasTee,
+  connect: async () => {
+    if (!isSdrMode()) {
+      log("Pick a Radio SDR source (RTL-SDR / HackRF) for surveys", "wn");
+      return false;
+    }
+    return connect();
+  },
+  calOffsetDb: () => cfg.cal,
+  ppm: () => fe.ppm,
+  levelDbfs: () => (lastStats && Number.isFinite(lastStats.band) ? lastStats.band - cfg.cal : null),
+  tunedHz: () => cfg.freqMHz * 1e6,
+  openNoiseCal: () => openCalibration(),
+  noiseFloorDbm: () => loadCalibration()?.noiseFloorDb ?? null,
+  async applyGains(p) {
+    const d = device;
+    if (d instanceof HackRF) {
+      await ctl(() => d.setAmpEnabled(p.amp)).catch(() => {});
+      await ctl(() => d.setLnaVga({ lna: p.lnaDb, vga: p.vgaDb })).catch(() => {});
+    }
+  },
+  async startSweep(ranges, onSlice, fftSize) {
+    if (device instanceof HackRF) {
+      if (running) await stop();
+      if (device.sweeping) await device.stopSweep();
+      await device.startSweep(ranges, onSlice, fftSize);
+      return;
+    }
+    if (!device || sdr?.kind !== "rtlsdr") throw new Error("No receiver connected");
+    // RTL-SDR hopping: retune across the ranges, keep the centre 80 % of each frame.
+    if (!running) await start();
+    const hop = (rtlHop = { stop: false });
+    const rate = cfg.sampleRate, useW = 0.8 * rate;
+    let want = 0, got: Float32Array | null = null;
+    surveyFrameHook = (raw) => {
+      if (want > 0) want--;
+      else if (!got) got = raw.slice();
+    };
+    (async () => {
+      const saved = cfg.freqMHz;
+      while (!hop.stop) {
+        for (const [lo, hi] of ranges) {
+          for (let c = lo * 1e6 + useW / 2; c - useW / 2 < hi * 1e6 && !hop.stop; c += useW) {
+            cfg.freqMHz = c / 1e6;
+            await ctl(() => applyTuning(device!)).catch(() => {});
+            got = null;
+            want = 1; // discard the frame that straddles the retune
+            const t0 = performance.now();
+            while (!got && !hop.stop && performance.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 10));
+            const f = got as Float32Array | null;
+            if (!f) continue;
+            const n = f.length, a = Math.floor(n * 0.1), b = Math.ceil(n * 0.9);
+            onSlice({ startHz: c - rate / 2 + (a * rate) / n, binHz: rate / n, db: f.slice(a, b) });
+          }
+        }
+      }
+      cfg.freqMHz = saved;
+      if (device) await ctl(() => applyTuning(device!)).catch(() => {});
+    })();
+  },
+  async stopSweep() {
+    if (device instanceof HackRF && device.sweeping) await device.stopSweep();
+    if (rtlHop) rtlHop.stop = true;
+    rtlHop = null;
+    surveyFrameHook = null;
+  },
+  fix: () => (gps.fix ? { t: Date.now(), lat: gps.fix.lat, lon: gps.fix.lon, accM: gps.fix.accuracyM ?? undefined, speed: (gps.fix as any).speed ?? null } : null),
+  heading: () => dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined) ?? null,
+  log: (m, k) => log(m, k === "ok" ? "ok" : k === "warn" ? "wn" : k === "err" ? "er" : ""),
+};
 
 function bindHardware() {
   const ra = document.getElementById("rtlAgc") as HTMLInputElement | null;

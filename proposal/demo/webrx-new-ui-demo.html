@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>webRx — proposed UI (DEMO)</title>
+<style>
+:root{--bg:#0b0f14;--p:#121821;--p2:#18212d;--l:#223041;--t:#e6edf3;--m:#8b9bb0;--a:#f5b544;--ok:#3ccf91;--w:#f5b544;--e:#ff6b6b;--nav:64px;--sab:env(safe-area-inset-bottom,0px);--sar:env(safe-area-inset-right,0px);font:14px/1.4 system-ui,sans-serif;color-scheme:dark}
+body.sun{--bg:#fff;--p:#f3f5f8;--p2:#e8ecf2;--l:#9aa7b8;--t:#000;--m:#333;--a:#b45309}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--t)}
+button{font:inherit;color:inherit}
+.demo-badge{position:fixed;left:50%;top:0;transform:translateX(-50%);z-index:90;background:#ff6b6b;color:#000;font:700 10px monospace;padding:1px 8px;border-radius:0 0 6px 6px;letter-spacing:.1em}
+header{position:sticky;top:0;z-index:20;background:var(--bg)}
+.strip{display:flex;gap:8px;align-items:center;padding:8px 12px;background:#0f151d;border-bottom:1px solid var(--l);font-size:13px;white-space:nowrap;overflow:hidden;cursor:pointer;min-height:36px}
+body.sun .strip{background:#e8ecf2}
+.dot{width:10px;height:10px;border-radius:50%;background:#64748b;flex:none}.dot.live{background:var(--ok);animation:pu 1.4s infinite}.dot.warn{background:var(--w)}.dot.err{background:var(--e)}
+@keyframes pu{50%{box-shadow:0 0 0 5px #3ccf9133}}
+.badge{border:1px solid var(--l);border-radius:99px;padding:1px 8px;font-size:11px;color:var(--m)}
+.strip .sp{flex:1}
+.fbar{display:flex;align-items:baseline;gap:8px;padding:6px 12px;flex-wrap:wrap;border-bottom:1px solid var(--l)}
+.ro{font:600 26px/1 ui-monospace,monospace;letter-spacing:.02em;display:flex}
+.ro span{cursor:pointer;padding:0 1px}.ro span.sel{border-bottom:3px solid var(--a)}.ro .dim{color:#3b4a5c}
+.fbar small{color:var(--m);font-size:12px}
+.ib{min-width:44px;min-height:40px;border-radius:8px;border:1px solid var(--l);background:var(--p2);cursor:pointer}
+nav#nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;background:#0f151d;border-top:1px solid var(--l);padding-bottom:var(--sab)}
+body.sun nav#nav{background:#e8ecf2}
+nav#nav a{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--m);padding:8px 0;min-height:56px;text-decoration:none;cursor:pointer}
+nav#nav a b{display:block;font-size:15px;color:var(--t)}nav#nav a.on,nav#nav a.on b{color:var(--a)}
+nav .grp,nav a.dk{display:none}
+main{padding:12px 40px calc(var(--nav) + 200px + var(--sab)) 12px;scroll-padding-bottom:260px;max-width:1100px}
+section.tab{display:none}section.tab.on{display:grid;gap:12px}
+.card{background:var(--p);border:1px solid var(--l);border-radius:10px;padding:12px;position:relative}
+.card h3{margin:0 0 8px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--m)}
+canvas{display:block;width:100%;border-radius:8px;border:1px solid var(--l);background:#0a0f16;touch-action:pan-y}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.btn{min-height:44px;padding:0 14px;border-radius:8px;border:1px solid var(--l);background:var(--p2);display:inline-flex;align-items:center;gap:6px;cursor:pointer;text-decoration:none;color:var(--t)}
+.btn.pri{background:var(--a);color:#111;border:0;font-weight:600}.btn.on{border-color:var(--a);color:var(--a)}
+.soft{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;position:relative}
+.soft button{background:var(--p2);border:1px solid var(--l);border-radius:8px;padding:6px 8px;min-height:52px;text-align:left;cursor:pointer;overflow:hidden}
+.soft button span{display:block;font-size:10px;color:var(--a);letter-spacing:.08em}
+.seg{display:inline-flex;border:1px solid var(--l);border-radius:8px;overflow:hidden;flex-wrap:wrap}.seg button{border:0;background:var(--p2);min-height:40px;padding:0 12px;cursor:pointer}.seg button.on{background:var(--a);color:#111}
+.field{display:grid;gap:4px;margin:8px 0}.field label{font-size:12px;color:var(--m)}
+input,select{min-height:40px;background:var(--bg);border:1px solid var(--l);border-radius:8px;color:var(--t);padding:0 10px;font:inherit;width:100%}
+input[type=range]{padding:0}input[type=checkbox]{width:22px;min-height:22px}
+.chk{display:flex;gap:10px;align-items:center;min-height:44px;cursor:pointer}
+.warn{background:#3a2a0c;border:1px solid var(--w);color:#ffd58a;padding:8px;border-radius:8px;font-size:12px}
+.note{color:var(--m);font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 6px;border-bottom:1px solid var(--l);text-align:left}
+.map{height:280px;border-radius:8px;border:1px solid var(--l);background:repeating-linear-gradient(0deg,#0f1a26 0 39px,#1a2838 40px),repeating-linear-gradient(90deg,#0f1a26 0 39px,#1a2838 40px);position:relative;overflow:hidden}
+.map .pt{position:absolute;width:12px;height:12px;border-radius:50%}
+.lvl{height:18px;border-radius:9px;background:var(--p2);overflow:hidden;border:1px solid var(--l)}.lvl i{display:block;height:100%;background:linear-gradient(90deg,#3ccf91,#f5b544,#ff6b6b);width:40%;transition:width .2s}
+.fabs{position:fixed;right:calc(12px + var(--sar));bottom:calc(var(--nav) + var(--sab) + 12px);z-index:45;display:flex;flex-direction:column;align-items:center;gap:10px}
+body.playing .fabs{bottom:calc(var(--nav) + var(--sab) + 132px)}
+body.scrolling .fabs .mini{opacity:0;pointer-events:none;transform:translateY(20px)}.fabs .mini{transition:opacity .2s,transform .2s}
+.mini{width:44px;height:44px;border-radius:50%;border:1px solid var(--l);background:var(--p2);display:grid;place-items:center;cursor:pointer;box-shadow:0 6px 16px #0008;position:relative;font-size:15px}
+.mini:disabled{opacity:.45}
+.mini.rec{background:#3a1218;border-color:var(--e);color:var(--e)}
+.mini .pill{position:absolute;top:-20px;left:50%;transform:translateX(-50%);font:700 10px monospace;background:#000c;color:var(--e);padding:2px 6px;border-radius:99px;white-space:nowrap}
+.fab{width:56px;height:56px;border-radius:50%;border:1px solid #fff2;background:linear-gradient(135deg,#2563eb,#0891b2);color:#fff;display:grid;place-items:center;cursor:pointer;position:relative;box-shadow:0 10px 24px #000a;font-size:22px;touch-action:none}
+.fab:active{transform:scale(.94)}.fab.live{box-shadow:0 10px 24px #000a,0 0 0 4px #22c55e59}
+body.night .fab{background:#991b1b}
+.bdot{position:absolute;top:4px;right:4px;width:14px;height:14px;border-radius:50%;background:#64748b;border:2px solid var(--bg)}.bdot.live{background:var(--ok);animation:pu 1.4s infinite}.bdot.warn{background:var(--w)}.bdot.err{background:var(--e)}
+.qtab{position:fixed;right:0;top:42%;z-index:35;width:24px;min-height:88px;border:1px solid var(--l);border-right:0;border-radius:10px 0 0 10px;background:#0f151d;color:var(--m);writing-mode:vertical-rl;font-size:11px;letter-spacing:.1em;cursor:pointer;padding:0}
+.qtab::after{content:"";position:absolute;inset:0 0 0 -20px}
+#qv{position:fixed;right:0;top:0;bottom:0;width:min(300px,82%);z-index:60;background:#0f151df7;border-left:1px solid var(--l);padding:14px 14px 90px;overflow:auto;transform:translateX(100%);transition:transform .25s;box-shadow:-12px 0 24px #000a}
+body.sun #qv{background:#f3f5f8f7}
+#qv.open{transform:none}
+#qv h4{margin:12px 0 4px;font-size:11px;letter-spacing:.1em;color:var(--a);text-transform:uppercase}
+#qv dl{display:grid;grid-template-columns:auto 1fr;margin:0;font-size:12px}#qv dt{color:var(--m);padding:4px 0}#qv dd{margin:0;text-align:right;font-family:ui-monospace,monospace;padding:4px 0;cursor:pointer;text-decoration:underline dotted #8b9bb066}
+.qhead{display:flex;justify-content:space-between;align-items:center}
+#scrim{position:fixed;inset:0;background:#0009;z-index:70;display:none}#scrim.on{display:block}
+#sheet{position:fixed;left:0;right:0;bottom:0;z-index:71;max-height:82vh;overflow:auto;background:var(--p);border:1px solid var(--l);border-radius:14px 14px 0 0;padding:14px 16px calc(24px + var(--sab));transform:translateY(105%);transition:transform .22s}
+#sheet:not(.on){visibility:hidden}#sheet.on{transform:none}#sheet h2{margin:0 0 6px;font-size:16px;display:flex;justify-content:space-between;align-items:center}
+.flash{animation:fl 1.4s}@keyframes fl{0%,60%{box-shadow:0 0 0 3px var(--a)}100%{box-shadow:none}}
+.was{display:none;position:absolute;top:-8px;right:6px;z-index:5;font:600 10px monospace;background:#7c3aed;color:#fff;padding:2px 6px;border-radius:6px;pointer-events:none;white-space:nowrap}
+body.showmoved .was{display:inline-block}body.showmoved .was-inline{color:#c4b5fd}
+.relbox{position:relative}
+#first{position:fixed;inset:0;z-index:80;background:var(--bg);overflow:auto;padding:30px 16px;display:none}#first.on{display:block}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}.grid button{min-height:72px;text-align:left;background:var(--p2);border:1px solid var(--l);border-radius:10px;padding:10px;cursor:pointer}
+.grid button small{display:block;color:var(--m)}
+.toast{position:fixed;left:50%;bottom:calc(var(--nav) + 90px);transform:translateX(-50%);background:#000d;color:#fff;padding:8px 14px;border-radius:99px;z-index:95;font-size:13px;display:none}
+.sub{display:flex;gap:6px;flex-wrap:wrap}
+#player{position:fixed;left:0;right:0;bottom:calc(var(--nav) + var(--sab));z-index:28;background:#0f151d;border-top:1px solid var(--l);padding:10px 70px 10px 12px;display:none}body.playing #player{display:flex;gap:8px;align-items:center}
+@media(min-width:900px){
+ body{display:grid;grid-template-columns:200px 1fr 290px;grid-template-rows:auto 1fr}
+ header{grid-column:1/-1}
+ nav#nav{position:sticky;top:90px;align-self:start;grid-column:1;grid-row:2;flex-direction:column;border:0;border-right:1px solid var(--l);background:none;padding:10px;height:calc(100vh - 90px)}
+ nav#nav a,nav#nav a.dk{flex:none;display:flex;gap:10px;align-items:center;text-align:left;padding:8px 12px;border-radius:8px;min-height:44px;font-size:13px}
+ nav#nav a b{display:inline;font-size:14px;width:30px}nav#nav a.on{background:#f5b5441a}
+ nav .grp{display:block;margin:10px 12px 4px;padding-top:10px;border-top:1px solid var(--l);font-size:10px;letter-spacing:.12em;color:var(--m)}
+ nav#nav a.more{display:none}
+ main{grid-column:2;grid-row:2;padding:14px 14px 140px;max-width:none;min-width:0}
+ #qv{position:sticky;top:90px;grid-column:3;grid-row:2;transform:none;width:auto;height:calc(100vh - 90px);box-shadow:none;align-self:start;padding-bottom:200px}
+ body.qvcollapsed{grid-template-columns:200px 1fr 0}body.qvcollapsed #qv{display:none}
+ .qtab{display:none}body.qvcollapsed .qtab{display:block}
+ .fabs{right:314px;bottom:20px}body.qvcollapsed .fabs{right:24px}body.playing .fabs{bottom:90px}
+ body.qvcollapsed main{padding-right:40px}
+ #player{bottom:0;left:200px;right:290px}
+ .soft{grid-template-columns:repeat(7,1fr)}
+ #sheet{left:auto;right:300px;width:420px;bottom:20px;border-radius:14px;max-height:80vh}
+}
+</style></head>
+<body>
+<div class="demo-badge">DEMO · MOCK DATA</div>
+<header>
+ <div class="strip" id="strip" role="status" title="Tap: source chooser"><span class="dot" id="sDot"></span><b id="sState">No source</b><span id="sTxt" class="note"></span><span class="sp"></span><span class="badge" id="sUnit">dBFS</span><span class="badge" id="sPreset">—</span><button class="badge" id="movedBtn" style="cursor:pointer;background:none">Show moved</button></div>
+ <div class="fbar relbox"><span class="was">was: 6 separate inputs</span><button class="ib" id="fDown" aria-label="Step down">−</button><div class="ro" id="ro" aria-label="Tuned frequency"></div><button class="ib" id="fUp" aria-label="Step up">+</button><small id="fMeta"></small><small id="fView"></small></div>
+</header>
+<nav id="nav" role="tablist">
+ <a data-t="sa"><b>SA</b>Spectrum</a><a data-t="mt"><b>MT</b>Map</a><a data-t="dt"><b>DT</b>Direction</a><a data-t="cm"><b>CM</b>Remote</a><a data-t="rm"><b>RM</b>Survey</a>
+ <a class="more" data-t="more"><b>⋯</b>More</a>
+ <span class="grp">MORE</span><a data-t="wf" class="dk"><b>WF</b>Wi-Fi</a><a data-t="bands" class="dk"><b>BD</b>Bands</a><a data-t="settings" class="dk"><b>⚙</b>Settings</a><a data-t="help" class="dk"><b>?</b>Help</a>
+</nav>
+<main id="main">
+<section class="tab" id="t-sa">
+ <div class="card"><div class="row" style="justify-content:space-between"><div class="seg" id="saModeSeg"><button class="on" data-m="live">Live</button><button data-m="sweep">Sweep</button></div><span class="note" id="annot"></span></div>
+ <canvas id="spec" height="170" style="margin-top:8px"></canvas><canvas id="wf" height="130" style="margin-top:6px"></canvas></div>
+ <div class="soft" id="soft"></div>
+ <div class="row relbox"><span class="was">was: SA › Display section</span>
+  <button class="btn pri" id="bListen">▶ Listen</button><button class="btn" id="bPeak">Peak</button><button class="btn" id="bFreeze">❄ Freeze</button><button class="btn" id="bSnap">📷 Snapshot</button><button class="btn" id="bTune">🎯 Tune</button><button class="btn" data-sheet="front">Front end ▸</button><button class="btn" data-sheet="sweep">Sweep ▸</button></div>
+ <div class="card relbox"><span class="was">was: Listen card + RM receiver</span><h3>Listen</h3><div class="row"><span id="lsInfo"></span><button class="btn" data-sheet="listen">Listen settings ▸</button></div></div>
+</section>
+<section class="tab" id="t-mt">
+ <div class="row relbox"><span class="was">was: MT › GPS card / compass button</span><button class="btn" id="cGps">📍 GPS ±6 m</button><button class="btn" id="cCompass">🧭 Compass 212°T</button></div>
+ <div class="map"><span class="badge" style="position:absolute;left:8px;top:8px;background:#000a">DEMO map · level heat (dBFS)</span><span class="pt" style="left:30%;top:40%;background:#3ccf91"></span><span class="pt" style="left:40%;top:45%;background:#f5b544"></span><span class="pt" style="left:50%;top:52%;background:#ff6b6b"></span></div>
+ <div class="row relbox"><span class="was">was: MT › Export card</span><button class="btn pri" id="mtRec">● Record</button><button class="btn" data-toast="CSV exported (demo)">CSV</button><button class="btn" data-toast="Share sheet (demo)">Share</button><button class="btn" data-toast="Snapshot saved (demo)">Snapshot</button><button class="btn" data-toast="Opens map.html (demo)">Open map</button></div>
+ <details class="card"><summary>Sessions &amp; playback</summary><p class="note">3 DEMO sessions</p><button class="btn" id="bPlay">▶ Play “Drive 12 Oct”</button> <button class="btn">Import…</button></details>
+ <details class="card relbox" id="mtLog"><summary>Logging rules</summary><span class="was">was: Settings › Logging</span><div class="field"><label>Log mode</label><select><option>Distance</option><option>Time</option></select></div><div class="field"><label>Spacing (m)</label><input type="number" value="10"></div><div class="field"><label>Every (s)</label><input type="number" value="1"></div><div class="field"><label>Measurement BW (kHz)</label><input type="number" value="12.5"></div><div class="field"><label>Distance formula</label><select><option>Haversine</option><option>Vincenty</option></select></div></details>
+ <details class="card"><summary>Calibration point &amp; map tools</summary><button class="btn">Calibrate here</button> <button class="btn">Centre</button> <button class="btn">Fit</button> <button class="btn">Clear</button></details>
+</section>
+<section class="tab" id="t-dt">
+ <div class="card"><div class="row" style="justify-content:space-between"><span class="badge" id="dtTarget"></span><div class="seg" id="dtFL"><button class="on" data-v="f">Follow tuned</button><button data-v="l">🔒 Lock</button></div></div>
+ <div class="lvl" style="margin-top:10px"><i id="dtLvl"></i></div><div class="note" id="dtNums">−48 dBFS · SNR 22 dB · gain 28 dB (locked)</div>
+ <canvas id="polar" height="260" style="margin-top:8px;max-width:340px;margin-inline:auto"></canvas>
+ <div style="text-align:center;font:600 28px ui-monospace,monospace" id="dtBear">212°T ±8°</div>
+ <div style="text-align:center"><button class="btn pri" id="takeFix" style="min-width:200px;min-height:56px">Take fix</button></div></div>
+ <div class="row relbox"><span class="was">was: DT cards (Lock gain, Find, Capture)</span><button class="btn" id="dMark">● Mark</button><button class="btn" data-toast="Capturing 360° sweep (demo)">⟳ Capture</button><button class="btn" id="dTone">🔊 Tone</button><button class="btn on" id="dLock">🔒 Lock gain</button><button class="btn" id="dFind">🔍 Find</button><button class="btn" id="dReset">Reset</button></div>
+ <div class="card"><h3>Triangulation</h3><div class="map" style="height:200px" id="triMap"></div><p class="note" id="triTxt"></p><div class="row"><button class="btn" id="dHeat">Heatmap</button><button class="btn">Fit</button><button class="btn" id="dClear">Clear fixes</button></div></div>
+ <details class="card"><summary>Target &amp; receiver</summary><div class="field"><label>Locked target (MHz)</label><input id="dtFreq" type="number" step="0.0001" placeholder="follows tuned"></div><div class="field"><label>Bandwidth</label><select><option>12.5 kHz</option><option>25 kHz</option></select></div><div class="field"><label>Antenna mode</label><select><option>Yagi/LPDA — peak</option><option>Loop — null</option></select></div><div class="field"><label>Squelch</label><input type="range"></div><label class="chk"><input type="checkbox" class="bias"> Antenna power (bias-tee)</label><div class="warn biasW" style="display:none">Puts DC on the antenna port.</div></details>
+ <details class="card"><summary>North reference</summary><div class="field"><label>Declination</label><select><option>Auto (WMM from GPS): −26.1°</option><option>Manual</option></select></div><div class="field"><label>Mount offset (°)</label><input type="number" value="0"></div><div class="field"><label>Manual heading</label><input type="number"></div><div class="field"><label>Lag compensation (ms)</label><input type="number" value="120"></div><button class="btn">Calibrate compass (figure-8)</button></details>
+ <details class="card"><summary>Range estimate</summary><div class="field"><label>EIRP (dBm)</label><input type="number" value="37"></div><div class="field"><label>Path-loss exponent</label><input type="number" value="2.7" step="0.1"></div><label class="chk"><input type="checkbox"> Relative levels (dB below max)</label><p class="note">Est. range ≈ 1.4 km (DEMO)</p></details>
+ <details class="card"><summary>Field options</summary><label class="chk"><input type="checkbox" id="sunChk"> Sun / high-contrast theme</label><label class="chk"><input type="checkbox"> Haptics (Android only)</label><label class="chk"><input type="checkbox" checked> Hints</label></details>
+ <details class="card"><summary>Sessions, export &amp; share</summary><div class="row"><select style="width:auto"><option>Hunt 13 Oct</option></select><button class="btn">New</button><button class="btn">Delete</button></div><div class="row" style="margin-top:8px"><button class="btn">CSV</button><button class="btn">KML</button><button class="btn">GPX</button><button class="btn">JSON</button><button class="btn">Import…</button><button class="btn" data-toast="Link copied: ?dts=…#dt (demo)">Share link</button><button class="btn" id="bPlay2">▶ Playback</button></div></details>
+</section>
+<section class="tab" id="t-cm">
+ <div class="card relbox"><span class="was">was: RM receiver card (tab renamed RM → CM)</span><h3>Connected server</h3><div class="row"><span class="dot" id="rmDot"></span><b id="rmName">Not connected</b><span class="badge" id="rmUnit">—</span><span class="badge" id="rmUsers"></span></div>
+ <div class="row" style="margin-top:8px"><div class="field" style="flex:1;min-width:140px"><label>Profile</label><select><option>40 m</option><option>Full HF</option></select></div><a class="btn" href="#cm" id="rmOpen">Open server page ↗</a><button class="btn" id="rmDis">Disconnect</button><button class="btn" id="rmDrop">Simulate drop</button></div>
+ <div class="row"><span class="note">Mini listen:</span><select style="width:auto"><option>LSB</option><option>USB</option><option>AM</option></select><input type="range" style="width:120px" aria-label="Volume"><button class="btn">▶ Audio</button></div></div>
+ <div class="card"><input placeholder="Search servers…"><div class="row" style="margin-top:8px"><button class="btn on">Near me</button><button class="btn">HF</button><button class="btn">VHF/UHF</button><button class="btn">Kiwi</button><button class="btn">OpenWebRX</button><button class="btn">UberSDR</button><button class="btn">Free slot</button></div><div id="rmList"></div>
+ <div class="row" style="margin-top:8px"><input placeholder="Add by URL" style="flex:1"><button class="btn">Add</button></div></div>
+</section>
+<section class="tab" id="t-rm">
+ <div class="card"><h3>RM · Recording / Monitoring survey <span class="badge">DEMO</span></h3><div class="seg" id="rmSteps"><button class="on" data-s="1">1 Equipment</button><button data-s="2">2 Calibrate</button><button data-s="3">3 Scan</button><button data-s="4">4 Run</button></div></div>
+ <div class="card rmstep" id="rs1"><h3>1 · Identify equipment</h3><p class="note">Detected (DEMO): <b>HackRF One</b> · serial …0042 · fw 2024.02.1 · 1 MHz–6 GHz</p>
+  <div class="field"><label>Receiver</label><select><option>HackRF One (USB, auto-detected)</option><option>RTL-SDR Blog V4</option><option>Remote: KiwiSDR Johannesburg</option></select></div>
+  <div class="field"><label>Antenna</label><select><option>Mag-mount whip 1/4λ (0 dBi)</option><option>Discone (2 dBi)</option><option>Yagi (custom gain)</option></select></div>
+  <div class="row"><div class="field" style="flex:1"><label>Antenna gain (dBi)</label><input type="number" value="0"></div><div class="field" style="flex:1"><label>Cable loss (dB)</label><input type="number" value="1.5" step="0.1"></div></div>
+  <label class="chk"><input type="checkbox" class="bias"> External LNA powered by bias-tee</label><div class="warn biasW" style="display:none">Puts DC on the antenna port.</div>
+  <div class="row"><span class="badge">📍 Phone GPS ±5 m ✓</span><span class="badge">🧭 Compass ✓ (not required)</span></div><button class="btn pri" data-next="2">Next: Calibrate</button></div>
+ <div class="card rmstep" id="rs2" hidden><h3>2 · Calibration (existing app methods)</h3>
+  <table><tr><td>Frequency correction (PPM)</td><td>+0.8 ppm (saved for serial …0042)</td><td><button class="btn">Re-measure</button></td></tr><tr><td>Gain lock</td><td>LNA 24 / VGA 20 · amp off</td><td><button class="btn on">Locked</button></td></tr><tr><td>Noise-floor reference (dummy load + vehicle)</td><td>−96.4 dBFS · threshold −90.4 (+6 dB)</td><td><button class="btn">Run wizard</button></td></tr><tr><td>dBFS → dBm offset</td><td>none (no reference source) → logs dBFS</td><td><button class="btn">Add reference</button></td></tr><tr><td>Antenna factor</td><td>from antenna gain + cable loss</td><td></td></tr></table>
+  <button class="btn pri" data-next="3">Next: Scan details</button></div>
+ <div class="card rmstep" id="rs3" hidden><h3>3 · Sweep parameters (all editable)</h3>
+  <div class="row"><div class="field" style="flex:2;min-width:160px"><label>Parameter profile</label><select id="pfSel"><option>Wideband 1–6000 MHz (default)</option><option>LTE ZA downlinks</option><option>ISM + PMR fine</option></select></div><button class="btn" id="pfSave">Save as…</button><button class="btn" id="pfDel">Delete</button></div>
+  <div class="field"><label>Device</label><select><option>HackRF One — hackrf_sweep mode (primary)</option><option>RTL-SDR — frequency hopping (fallback, 24–1766 MHz)</option></select></div>
+  <h3>Ranges</h3><table id="rgT"></table><button class="btn" id="rgAdd">+ Add range</button>
+  <h3 style="margin-top:12px">Resolution &amp; timing</h3><div class="row"><div class="field" style="flex:1;min-width:130px"><label>Bin width / RBW (kHz)</label><input type="number" step="any" value="1000"></div><div class="field" style="flex:1;min-width:130px"><label>FFT size</label><select><option>256</option><option>512</option><option>1024</option><option>2048</option><option>8192</option></select></div><div class="field" style="flex:1;min-width:130px"><label>Dwell per step (ms)</label><input type="number" step="any" value="20"></div><div class="field" style="flex:1;min-width:130px"><label>Sweep repeat interval (s)</label><input type="number" step="0.1" value="2"></div><div class="field" style="flex:1;min-width:130px"><label>Detector</label><select><option>Peak</option><option>Average</option><option>RMS</option></select></div></div>
+  <h3>Front end</h3><div class="row"><div class="field" style="flex:1;min-width:130px"><label>LNA (dB, 0–40 /8)</label><input type="number" step="8" value="24"></div><div class="field" style="flex:1;min-width:130px"><label>VGA (dB, 0–62 /2)</label><input type="number" step="2" value="20"></div><div class="field" style="flex:1;min-width:130px"><label>RF amp</label><select><option>Off</option><option>On (+14 dB)</option></select></div><div class="field" style="flex:1;min-width:130px"><label>Bias-tee</label><select><option>Off</option><option>On (DC on antenna)</option></select></div></div>
+  <h3>Squelch &amp; gating</h3><div class="row"><div class="field" style="flex:1;min-width:130px"><label>Threshold above noise (dB)</label><input type="number" step="0.5" value="6"></div><div class="field" style="flex:1;min-width:130px"><label>Hysteresis (dB)</label><input type="number" step="0.5" value="2"></div><div class="field" style="flex:1;min-width:130px"><label>GPS distance gate (m)</label><input type="number" step="any" value="10"></div><div class="field" style="flex:1;min-width:130px"><label>Time gate (s)</label><input type="number" step="any" value="30"></div><div class="field" style="flex:1;min-width:130px"><label>Change gate (dB)</label><input type="number" step="0.5" value="3"></div></div>
+  <h3>Reduction &amp; storage</h3><div class="row"><div class="field" style="flex:1;min-width:130px"><label>Band reduction</label><select id="redSel"><option>Peak + mean per range</option><option>N sub-bands per range</option><option>None (all bins)</option></select></div><div class="field" style="flex:1;min-width:130px"><label>Sub-bands N</label><input type="number" step="any" value="60"></div><div class="field" style="flex:1;min-width:130px"><label>Quantisation step (dB)</label><select><option>0.5</option><option>0.25</option><option>1.0</option></select></div><div class="field" style="flex:1;min-width:130px"><label>Snapshot interval</label><select><option>Off (button only)</option><option>every 100 m</option><option>every 60 s</option></select></div></div>
+  <div class="row"><div class="field" style="flex:1;min-width:130px"><label>Mode</label><select><option>Vehicle</option><option>Walking</option><option>Static</option></select></div><div class="field" style="flex:1;min-width:130px"><label>Antenna height (m)</label><input type="number" step="0.1" value="1.6"></div><div class="field" style="flex:1;min-width:130px"><label>Notes / weather</label><input placeholder="Clear, 24 °C"></div></div>
+  <p class="note" id="pfEst">Estimated: ≈ 0.2 MB/h compressed (vehicle) · values are prefilled suggestions — change anything.</p>
+  <label class="chk"><input type="checkbox" checked> Low-power mode (worker DSP, map redraw every 2 s)</label>
+  <button class="btn pri" data-next="4">Start survey</button></div>
+ <div class="rmstep" id="rs4" hidden style="display:grid;gap:12px">
+  <div class="card"><div class="row" style="justify-content:space-between"><b>● Surveying <span id="svT">00:00</span></b><div class="seg" id="svBand"><button class="on">All</button><button>FM</button><button>LTE B3</button><button>ISM 433</button></div></div>
+  <div class="map" id="svMap" style="height:260px"><canvas id="svCan" height="260" style="border:0;background:transparent;height:100%"></canvas><span class="badge" style="position:absolute;left:8px;top:8px;background:#000a">DEMO trail · colour = level</span></div>
+  <div class="row note" style="margin-top:6px"><span style="color:#60a5fa">■</span>&lt;−90 <span style="color:#3ccf91">■</span>−90…−70 <span style="color:#f5b544">■</span>−70…−50 <span style="color:#ff6b6b">■</span>&gt;−50 dBFS</div></div>
+  <div class="card"><h3>Running stats</h3><table id="svStats"></table></div>
+  <div class="card"><h3>Upload queue</h3><table id="svQ"></table><div class="row"><span class="badge" id="svNet">Network: cellular (metered) — waiting for Wi-Fi</span><button class="btn" id="svWifi">Simulate Wi-Fi</button><button class="btn pri" id="svSnap">📷 Take snapshot</button><button class="btn" id="svPause">Pause survey</button><button class="btn" id="svStop">Stop &amp; save</button></div><p class="note" id="svEp">Upload server: not set — add it in Settings › Upload. Unuploaded data is never auto-deleted; uploaded data is deleted 30 days after the server confirms it.</p><div class="warn" id="svLim" style="display:none"></div></div>
+ </div>
+</section>
+<section class="tab" id="t-wf">
+ <div class="sub"><div class="seg" id="wfSeg"><button class="on" data-v="aps">APs</button><button data-v="rate">Rating</button><button data-v="graph">Graph</button><button data-v="time">Time</button></div><div class="seg" id="wfBand"><button class="on">2.4</button><button>5</button><button>6</button></div></div>
+ <p class="note">Source: <span class="badge">DEMO data</span> — a browser can't scan Wi-Fi; real data comes from the Radio Bridge app.</p>
+ <div class="card" id="wfBody"></div>
+ <div><button class="btn" data-toast="Opens SA Sweep 2400–2500 MHz (HackRF)">Show in SA (HackRF sweep)</button></div>
+</section>
+<section class="tab" id="t-bands"><input placeholder="Search bands…" id="bSearch"><div class="card"><table id="bandTbl"></table></div><div class="card"><h3>Network quality (not RF)</h3><p class="note">Link 1.55 Mbps · RTT 80 ms (DEMO)</p><div class="row"><button class="btn">Wi-Fi monitor</button><button class="btn">Cellular monitor</button></div></div></section>
+<section class="tab" id="t-settings">
+ <div class="card"><h3>Receiver (summary — edit where it's used)</h3><table id="recSum"></table><div class="field"><label>Start-up frequency (MHz)</label><input type="number" value="433.92"></div></div>
+ <div class="card"><h3>Start-up</h3><div class="field"><label>Start tab</label><select><option>Last used</option><option>SA</option><option>MT</option><option>DT</option><option>CM (remote)</option><option>RM (survey)</option><option>WF</option><option>Bands</option></select></div><div class="field"><label>Default preset</label><select id="defPre"></select></div></div>
+ <div class="card"><h3>Look &amp; feel</h3><label class="chk"><input type="checkbox" id="digitSwipe"> Swipe digits to tune (opt-in)</label><label class="chk"><input type="checkbox" id="nightChk"> Night (red) theme</label><label class="chk"><input type="checkbox" id="sunChk2"> Sun / high contrast</label><div class="field"><label>Detail level</label><select><option>Basic</option><option>Measure</option><option>Expert</option></select></div><div class="field"><label>Waterfall palette</label><select><option>Viridis</option><option>Turbo</option><option>Grayscale</option><option>Classic</option></select></div></div>
+ <div class="card"><h3>Upload &amp; storage (RM surveys)</h3><div class="field"><label>Upload server URL (https)</label><input id="upUrl" type="url" placeholder="https://your-server.example/api"></div><div class="field"><label>Token (optional)</label><input id="upTok" type="password" placeholder="Bearer token"></div><div class="row"><button class="btn" id="upTest">Test connection</button><span class="note" id="upMsg">No server set — surveys stay on this device.</span></div><label class="chk"><input type="checkbox" checked> Upload automatically on Wi-Fi only</label>
+ <div class="row"><div class="field" style="flex:1"><label>On-device size limit</label><input id="limV" type="number" value="2"></div><div class="field" style="flex:1"><label>Unit</label><select id="limU"><option>GB</option><option>MB</option></select></div><div class="field" style="flex:2"><label>When the limit is reached</label><select><option>Pause recording (resume when space frees)</option><option>Stop the survey</option></select></div></div>
+ <p class="note">Warns at 90 %. Retention: uploaded data deleted automatically 30 days after the server confirms it; data not yet uploaded is never deleted automatically.</p><p class="note">Used: 41.2 MB (DEMO) · 38.0 MB uploaded, 3.2 MB waiting</p></div>
+ <div class="card"><h3>Recording</h3><div class="field"><label>Max MB</label><input type="number" value="200"></div><div class="field"><label>Max minutes</label><input type="number" value="120"></div></div>
+ <div class="card"><h3>App</h3><div class="row"><button class="btn">Install app</button><button class="btn" id="rerun">Run setup again</button><button class="btn">System log</button></div></div>
+</section>
+<section class="tab" id="t-help"><div class="card"><h3>Help</h3><p>DEMO of the proposed layout. Tap the strip or the round button to connect (long-press = quick connect/disconnect). Swipe from the right edge or tap “◂ LIVE” for the quick view. Use “Show moved” in the strip to see where old controls went.</p></div></section>
+</main>
+<button class="qtab" id="qtab" aria-label="Open quick view">◂ LIVE</button>
+<aside id="qv" aria-label="Quick view"></aside>
+<div class="fabs" id="fabs"><button class="mini" id="fRec" aria-label="Record">●</button><button class="mini" id="fStart" aria-label="Start">▶</button><button class="fab" id="fab" aria-label="Connection: No source" aria-haspopup="dialog">⏻<span class="bdot" id="bdot"></span></button></div>
+<div id="player"><b>▶ DEMO playback</b><input type="range" style="flex:1"><button class="btn" id="pClose">✕</button></div>
+<div id="scrim"></div><div id="sheet" role="dialog" aria-modal="true"></div>
+<div id="first"><h1 style="margin-top:0">Welcome to webRx</h1><p class="note">DEMO — step <b id="fStep">1</b> of 2</p><div id="firstBody"></div><p><button class="btn" id="fSkip">Skip</button></p></div>
+<div class="toast" id="toast"></div>
+<script>
+"use strict";
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+const S={tab:"sa",tuned:433.92e6,view:433.92e6,span:2e6,step:12500,mode:"NFM",bw:12500,conn:"idle",src:null,running:false,rec:false,recT:0,freeze:false,sweep:false,preset:"PMR/LoRa 433",dtLock:null,fixes:[],tone:false,lock:true,lna:24,vga:20,amp:false,bias:false,ref:-20,div:10,rbw:"auto",det:"RMS",win:"Hann",remote:null,reconnect:0,heat:false,mark:null,playing:false};
+const PRESETS=[["FM broadcast",98e6,20.48e6,"10 kHz","WFM",200e3,"AGC","RTL/HackRF"],["Airband",127.5e6,2.4e6,"3 kHz","AM",8e3,"Fixed-mid · 25 kHz step","RTL"],["ADS-B 1090",1090e6,2e6,"10 kHz","—",0,"Fixed max","RTL/HackRF"],["2 m ham",145e6,2.4e6,"2 kHz","NFM",12.5e3,"Fixed-mid","RTL"],["PMR446",446.1e6,0.2e6,"1 kHz","NFM",12.5e3,"Fixed-mid","RTL"],["PMR/LoRa 433",433.92e6,2e6,"5 kHz","NFM",12.5e3,"Fixed-mid","RTL"],["NOAA APT",137.5e6,2e6,"1 kHz","WFM",38e3,"Fixed-mid + bias-tee","RTL"],["Cellular (ZA)",1842.5e6,75e6,"100 kHz","—",0,"Fixed-mid","HackRF sweep"],["Wi-Fi survey",2442e6,100e6,"100 kHz","—",0,"Fixed-mid, amp off","HackRF + WF"],["Fox-hunt DF",145.5e6,0.1e6,"1 kHz","NFM",12.5e3,"Fixed-low, AGC off","RTL/HackRF"],["HF via Kiwi",7.1e6,0.2e6,"server","LSB",2.7e3,"server AGC","Remote Kiwi"],["Wideband sweep",3000e6,5999e6,"1 MHz","—",0,"Fixed-mid, amp off","HackRF sweep"]];
+const fmt=h=>h>=1e9?(h/1e9).toFixed(6)+" GHz":(h/1e6).toFixed(4)+" MHz";
+const toast=t=>{const e=$("#toast");e.textContent=t;e.style.display="block";clearTimeout(toast.h);toast.h=setTimeout(()=>e.style.display="none",1800)};
+const TABS=["sa","mt","dt","cm","rm","wf","bands","settings","help"],ALIAS={wifi:"wf",rf:"bands",receiver:"sa",map:"mt",monitor:"mt",remote:"cm"};
+function show(t,push=true){t=ALIAS[t]||t;if(t==="more"){openMore();return}if(!TABS.includes(t))t="sa";S.tab=t;
+ $$("section.tab").forEach(s=>s.classList.toggle("on",s.id==="t-"+t));$$("#nav a").forEach(a=>a.classList.toggle("on",a.dataset.t===t||(a.dataset.t==="more"&&["wf","bands","settings","help"].includes(t))));
+ if(push&&location.hash!=="#"+t)history.replaceState(null,"","#"+t);closeSheet();renderQV();if(t==="wf")wfView(S.wfv||"aps");}
+$$("#nav a").forEach(a=>a.onclick=()=>show(a.dataset.t));addEventListener("hashchange",()=>show(location.hash.slice(1),false));
+function openSheet(title,html,after){$("#sheet").innerHTML=`<h2>${title}<button class="ib" id="shX" aria-label="Close">✕</button></h2>`+html;$("#sheet").classList.add("on");$("#scrim").classList.add("on");$("#shX").onclick=closeSheet;if(after)after($("#sheet"));$$("[data-toast]",$("#sheet")).forEach(b=>b.onclick=()=>toast(b.dataset.toast))}
+function closeSheet(){$("#sheet").classList.remove("on");$("#scrim").classList.remove("on")}
+$("#scrim").onclick=closeSheet;addEventListener("keydown",e=>{if(e.key==="Escape"){closeSheet();$("#qv").classList.remove("open")}});
+function openMore(){openSheet("More",`<div class="grid">${[["wf","WF · Wi-Fi analyser"],["bands","Bands (RF Tech)"],["settings","Settings"],["help","Help"]].map(([k,n])=>`<button data-go="${k}">${n}</button>`).join("")}</div>`,s=>$$("[data-go]",s).forEach(b=>b.onclick=()=>show(b.dataset.go)))}
+const stTxt=()=>({idle:"No source",connecting:"Connecting…",live:"Live",err:"Error"}[S.conn]);
+const stCls=()=>S.conn==="live"?(S.reconnect?"warn":"live"):S.conn==="connecting"?"warn":S.conn==="err"?"err":"";
+function chooser(){openSheet("Connection",`<div class="row"><span class="dot ${stCls()}"></span><b>${stTxt()}</b> <span class="note">${S.src||""}</span></div>
+ <div class="seg" id="chSeg" style="margin:10px 0"><button class="on" data-v="local">Local SDR</button><button data-v="remote">Remote</button><button data-v="net">Network monitors</button><button data-v="demo">Demo</button></div><div id="chBody"></div>
+ <div class="row" style="margin-top:10px"><button class="btn" data-go="mt">📍 GPS ±6 m</button><span class="badge">Network good</span><span class="badge">DSP ok</span></div><p class="note">Tip: long-press the round button to connect/disconnect the last source without this sheet.</p>`,s=>{
+ const body=$("#chBody",s);const views={local:`<div class="field"><label>Device <span class="note">(same options as the old Source select)</span></label><select><option>Auto — RTL-SDR or HackRF (WebUSB)</option><option>RTL-SDR</option><option>HackRF One / Pro</option></select></div><p class="note">DEMO device: HackRF One · serial …0042 · 1 MHz–6 GHz</p><button class="btn pri" id="chConn">${S.conn==="live"&&!S.remote?"Disconnect":"Connect"}</button>`,
+ remote:`<p class="note">Recent</p><button class="btn" data-rm="0">KiwiSDR Johannesburg</button> <button class="btn" data-go="rm">Browse all (CM) ›</button>`,
+ net:`<button class="btn" id="chWifi">Wi-Fi monitor → open WF</button> <button class="btn" id="chCell">Cellular monitor</button>`,demo:`<button class="btn pri" id="chDemo">Start DEMO source</button>`};
+ const set=v=>{$$("#chSeg button",s).forEach(b=>b.classList.toggle("on",b.dataset.v===v));body.innerHTML=views[v];
+  const c=$("#chConn",s);if(c)c.onclick=()=>{if(S.conn==="live"&&!S.remote)disconnect();else connect("HackRF One · 20 MS/s")};
+  const d=$("#chDemo",s);if(d)d.onclick=()=>connect("DEMO source");const w=$("#chWifi",s);if(w)w.onclick=()=>show("wf");const ce=$("#chCell",s);if(ce)ce.onclick=()=>{toast("Cellular monitor (demo)");closeSheet()};
+  $$("[data-rm]",body).forEach(b=>b.onclick=()=>connectRemote(0));$$("[data-go]",body).forEach(b=>b.onclick=()=>show(b.dataset.go));};
+ $$("#chSeg button",s).forEach(b=>b.onclick=()=>set(b.dataset.v));$$("[data-go]",s).forEach(b=>b.onclick=()=>show(b.dataset.go));set("local");})}
+function connect(name){S.conn="connecting";S.src=name;S.remote=null;sync();closeSheet();setTimeout(()=>{S.conn="live";S.running=true;sync();toast("Connected: "+name)},700)}
+function disconnect(){S.conn="idle";S.src=null;S.running=false;S.rec=false;S.remote=null;S.reconnect=0;sync();closeSheet();toast("Disconnected")}
+let lpT=null,lpFired=false;const fab=$("#fab");
+fab.addEventListener("pointerdown",()=>{lpFired=false;lpT=setTimeout(()=>{lpFired=true;if(S.conn==="live")disconnect();else connect(S.lastSrc||"HackRF One · 20 MS/s");toast("Long-press: quick connect/disconnect")},600)});
+fab.addEventListener("pointerup",()=>{clearTimeout(lpT)});fab.addEventListener("pointerleave",()=>clearTimeout(lpT));
+fab.addEventListener("click",()=>{if(!lpFired)chooser();lpFired=false});
+$("#strip").onclick=e=>{if(e.target.id!=="movedBtn")chooser()};
+$("#fStart").onclick=()=>{if(S.conn!=="live")return;S.running=!S.running;sync()};
+$("#fRec").onclick=()=>{if(S.conn!=="live")return toast("Connect a source first");S.rec=!S.rec;S.recT=0;sync()};$("#mtRec").onclick=()=>$("#fRec").click();
+function sync(){if(S.src)S.lastSrc=S.src;const c=stCls();$("#sDot").className="dot "+c;$("#bdot").className="bdot "+c;
+ fab.classList.toggle("live",S.conn==="live");fab.setAttribute("aria-label","Connection: "+(S.conn==="live"?S.src:stTxt()));
+ $("#sState").textContent=stTxt()+(S.reconnect?` · Reconnecting ${S.reconnect}/5`:"");$("#sTxt").textContent=S.src?"· "+S.src:"";
+ $("#sUnit").textContent=S.remote?S.remote.u:"dBFS";$("#sPreset").textContent=S.preset;
+ $("#fStart").textContent=S.running?"■":"▶";$("#fStart").setAttribute("aria-label",S.running?"Stop":"Start");$("#fStart").disabled=S.conn!=="live";
+ $("#fRec").classList.toggle("rec",S.rec);$("#fRec").innerHTML="●"+(S.rec?`<span class="pill">REC ${String(S.recT/60|0).padStart(2,"0")}:${String(S.recT%60).padStart(2,"0")}</span>`:"");
+ $("#rmDot").className="dot "+(S.remote?(S.reconnect?"warn":"live"):"");$("#rmName").textContent=S.remote?S.remote.n:"Not connected";$("#rmUnit").textContent=S.remote?S.remote.u:"—";$("#rmUsers").textContent=S.remote?(S.reconnect?`Reconnecting ${S.reconnect}/5 in 4 s`:"users 3/8 · 60 min limit"):"";
+ renderRO();renderQV();}
+setInterval(()=>{if(S.rec){S.recT++;sync()}},1000);
+let selDigit=4;
+function renderRO(){const s=(S.tuned/1e6).toFixed(6).padStart(11,"0");const fnz=s.search(/[1-9]/);let h="";[...s].forEach((ch,i)=>{if(ch==="."){h+="<i style='font-style:normal'>.</i>";return}h+=`<span data-i="${i}" class="${i<fnz?"dim":""} ${i===selDigit?"sel":""}">${ch}</span>`});$("#ro").innerHTML=h;
+ $$("#ro span").forEach(e=>e.onclick=()=>{selDigit=+e.dataset.i;renderRO()});
+ $("#fMeta").textContent=`${S.mode} ${(S.bw/1e3).toFixed(1)} kHz · step ${S.step/1e3} kHz`;$("#fView").textContent=`view ${fmt(S.view)} · span ${+(S.span/1e6).toFixed(3)} MHz`+(Math.abs(S.view-S.tuned)>1?" (≠ tuned)":"");
+ $("#dtTarget").textContent=S.dtLock?"Target 🔒 "+fmt(S.dtLock):"Target: follows tuned "+fmt(S.tuned);}
+function digitStep(){const s=(S.tuned/1e6).toFixed(6).padStart(11,"0");const dot=s.indexOf(".");const p=selDigit<dot?dot-selDigit-1:-(selDigit-dot);return Math.pow(10,p)*1e6}
+const tuneBy=d=>{S.tuned=Math.max(0,Math.min(6e9,S.tuned+d));renderRO();renderQV()};
+$("#fUp").onclick=()=>tuneBy(digitStep());$("#fDown").onclick=()=>tuneBy(-digitStep());
+$("#ro").addEventListener("wheel",e=>{e.preventDefault();tuneBy((e.deltaY<0?1:-1)*digitStep())},{passive:false});
+let swY=null;$("#ro").addEventListener("pointerdown",e=>{if($("#digitSwipe").checked&&e.pointerType!=="mouse")swY=e.clientY});$("#ro").addEventListener("pointermove",e=>{if(swY!==null&&Math.abs(e.clientY-swY)>24){tuneBy((e.clientY<swY?1:-1)*digitStep());swY=e.clientY}});addEventListener("pointerup",()=>swY=null);
+const SOFT=[["PRESET",()=>S.preset],["FREQ",()=>fmt(S.view)],["AMPL",()=>`Ref ${S.ref} dB`],["BW",()=>`RBW ${S.rbw}`],["MARK",()=>S.mark?"M1 "+(S.mark/1e6).toFixed(3):"—"],["TRACE",()=>"Max hold"],["MEAS",()=>"Ch power"]];
+function renderSoft(){$("#soft").innerHTML=`<span class="was">was: SA details + Settings › Gain/FFT/Avg</span>`+SOFT.map(([k,f])=>`<button data-k="${k}"><span>${k}</span>${f()}</button>`).join("");$$("#soft button").forEach(b=>b.onclick=()=>softSheet(b.dataset.k))}
+const sel=(id,opts,v)=>`<select id="${id}">${opts.map(o=>`<option ${o==v?"selected":""}>${o}</option>`).join("")}</select>`;
+const was=t=>`<p class="note was-inline">was: ${t}</p>`;
+function softSheet(k){
+ const H={PRESET:`<div class="grid">${PRESETS.map((p,i)=>`<button data-p="${i}"><b>${p[0]}</b><small>${fmt(p[1])} · span ${+(p[2]/1e6).toFixed(2)} MHz · RBW ${p[3]} · ${p[4]}${p[5]?" "+p[5]/1e3+" kHz":""} · ${p[6]} · ${p[7]}</small></button>`).join("")}</div>`,
+ FREQ:`<div class="field"><label>View centre (MHz) — separate from tuned</label><input id="vC" type="number" step="0.001" value="${(S.view/1e6).toFixed(4)}"></div><div class="field"><label>Span (MHz)</label><input id="vS" type="number" step="0.1" value="${S.span/1e6}"></div><div class="row"><button class="btn" id="cOnT">Centre on tuned</button><button class="btn" id="zIn">Zoom in (decimate)</button></div><div class="field"><label>Step</label>${sel("stp",["1 kHz","6.25 kHz","8.33 kHz","12.5 kHz","25 kHz","100 kHz"],"12.5 kHz")}</div><label class="chk"><input type="checkbox" checked> Band labels</label><label class="chk"><input type="checkbox" checked> Snap to step</label>${was("Scope zoom buttons + SA › Frequency &amp; span")}`,
+ AMPL:`<div class="field"><label>Ref level (dBFS)</label><input id="aRef" type="range" min="-60" max="10" value="${S.ref}"></div><div class="field"><label>dB/div</label>${sel("aDiv",[1,2,5,10,20],S.div)}</div><div class="field"><label>Gain strategy</label>${sel("gs",["Auto (AGC)","Fixed-mid","Fixed-low","Manual"],"Fixed-mid")}</div>${was("Settings › Gain / Amp")}
+ <h3>HackRF</h3><div class="field"><label>LNA <b id="lnaV">${S.lna}</b> dB (0–40, 8 dB steps)</label><input id="lna" type="range" min="0" max="40" step="8" value="${S.lna}"></div><div class="field"><label>VGA <b id="vgaV">${S.vga}</b> dB (0–62, 2 dB steps)</label><input id="vga" type="range" min="0" max="62" step="2" value="${S.vga}"></div><label class="chk"><input type="checkbox" id="amp" ${S.amp?"checked":""}> RF amp +14 dB</label><div class="warn" id="ampW" style="display:${S.amp?"block":"none"}">Amp on: keep input below −5 dBm; strong nearby transmitters can damage the front end. Warn above ≈ −30 dBm.</div><div class="field"><label>Baseband filter</label>${sel("bbf",["Auto (≤0.75×Fs) → 15 MHz","1.75 MHz","5 MHz","10 MHz","20 MHz","28 MHz"],"")}</div><label class="chk"><input type="checkbox" class="bias" ${S.bias?"checked":""}> Bias-tee / antenna power</label><div class="warn biasW" style="display:${S.bias?"block":"none"}">Puts DC on the antenna port — only with a powered LNA/active antenna.</div><button class="btn" data-toast="Calibration wizard (demo)">Calibrate… (enables dBm)</button>`,
+ BW:`<div class="field"><label>RBW</label>${sel("rbw",["auto","100 Hz","1 kHz","3 kHz","10 kHz","100 kHz","1 MHz"],S.rbw)}</div><div class="field"><label>VBW / averaging (linear power)</label>${sel("vbw",["auto","1 kHz","300 Hz","100 Hz","off"],"auto")}</div><div class="field"><label>Detector</label>${sel("det",["Sample","Peak","RMS","Average","Neg-peak"],S.det)}</div><div class="field"><label>Window</label>${sel("win",["Hann","Blackman-Harris","Flat-top (amplitude)"],S.win)}</div><div class="field"><label>FFT size</label>${sel("fft",[1024,2048,4096,8192],2048)}</div>${was("SA › Resolution + Settings › FFT size / Averaging")}`,
+ MARK:`<div class="row"><button class="btn" id="mPk">M1 → peak</button><button class="btn">Next peak</button><button class="btn">Δ M2</button><button class="btn">Marker → tune</button><button class="btn">Zoom to M1</button><button class="btn" id="mClr">Clear</button></div><div class="field"><label>Tap on spectrum</label>${sel("tapm",["Tunes","Places M1","Places M2"],"Tunes")}</div><table><tr><th>M</th><th>Freq</th><th>Level</th></tr><tr><td>M1</td><td>${S.mark?fmt(S.mark):"—"}</td><td>−41.8 dBFS</td></tr></table>`,
+ TRACE:`<div class="row"><button class="btn">Clear</button><button class="btn on">Max hold</button><button class="btn">Min hold</button><button class="btn">Average</button><button class="btn" id="tFrz">Freeze</button></div><label class="chk"><input type="checkbox" checked> Fill</label><label class="chk"><input type="checkbox"> Smooth</label><label class="chk"><input type="checkbox" checked> Waterfall</label><div class="field"><label>Palette</label>${sel("pal",["Viridis","Turbo","Grayscale","Classic"],"Viridis")}</div><div class="field"><label>Waterfall floor / contrast</label><input type="range"><input type="range"></div><button class="btn" id="tSnap">Snapshot PNG</button>`,
+ MEAS:`<div class="field"><label>Channel power BW (kHz)</label><input type="number" value="12.5"></div><table><tr><td>Channel power (ENBW-corrected)</td><td>−38.6 dBFS</td></tr><tr><td>OBW 99 %</td><td>10.9 kHz</td></tr><tr><td>Noise</td><td>−131 dBFS/Hz</td></tr><tr><td>Stats</td><td>frames 1 204 · drops 0</td></tr></table><p class="note">DEMO values</p>`};
+ openSheet(k,H[k],s=>{const on=(id,ev,f)=>{const e=$("#"+id,s);if(e)e["on"+ev]=f};
+  $$("[data-p]",s).forEach(b=>b.onclick=()=>applyPreset(+b.dataset.p));
+  on("vC","change",e=>{S.view=e.target.value*1e6;renderRO();renderSoft()});on("vS","change",e=>{S.span=e.target.value*1e6;renderRO()});on("cOnT","click",()=>{S.view=S.tuned;renderRO();renderSoft()});
+  on("zIn","click",()=>{S.span/=2;renderRO();toast("Retuned with decimation (demo)")});
+  on("aRef","input",e=>{S.ref=+e.target.value;annot();renderSoft()});on("aDiv","change",e=>{S.div=+e.target.value;annot()});
+  on("lna","input",e=>{S.lna=+e.target.value;$("#lnaV",s).textContent=S.lna;renderQV()});on("vga","input",e=>{S.vga=+e.target.value;$("#vgaV",s).textContent=S.vga;renderQV()});
+  on("amp","change",e=>{S.amp=e.target.checked;$("#ampW",s).style.display=S.amp?"block":"none";renderQV()});
+  on("rbw","change",e=>{S.rbw=e.target.value;annot();renderSoft()});on("det","change",e=>{S.det=e.target.value;annot()});on("win","change",e=>{S.win=e.target.value;annot()});
+  on("mPk","click",()=>{S.mark=S.tuned-2e3;renderSoft();closeSheet()});on("mClr","click",()=>{S.mark=null;renderSoft();closeSheet()});
+  on("tFrz","click",()=>$("#bFreeze").click());on("tSnap","click",()=>$("#bSnap").click());bindBias(s);})}
+function annot(){$("#annot").textContent=`RBW ${S.rbw==="auto"?"2.3 kHz":S.rbw} · VBW auto · ${S.det} · ${S.win} · Ref ${S.ref} dBFS · ${S.div} dB/div`}
+function applyPreset(i){const p=PRESETS[i];S.preset=p[0];S.tuned=S.view=p[1];S.span=p[2];if(p[4]!=="—")S.mode=p[4];S.bw=p[5]||S.bw;S.rbw=p[3];closeSheet();
+ if(p[0]==="Fox-hunt DF")show("dt");else if(p[0]==="Wi-Fi survey")show("wf");else if(p[0]==="HF via Kiwi")show("cm");else show("sa");setSweep(/sweep/i.test(p[7]),true);annot();renderSoft();lsInfo();sync();toast("Preset: "+p[0])}
+$$("[data-sheet]").forEach(b=>b.onclick=()=>({front:frontSheet,sweep:sweepSheet,listen:listenSheet})[b.dataset.sheet]());
+function frontSheet(){openSheet("Front end",`<div class="field"><label>Sample rate</label>${sel("sr",["2.4 MS/s","10 MS/s","20 MS/s"],"20 MS/s")}</div>${was("Settings › Sample rate, Bias-tee, DC remove; Tuner card › PPM, Upconverter")}<label class="chk"><input type="checkbox" class="bias" ${S.bias?"checked":""}> Bias-tee / antenna power</label><div class="warn biasW" style="display:${S.bias?"block":"none"}">Puts DC on the antenna port. Only use it with a powered LNA or active antenna, never a DC-shorted antenna.</div><div class="field"><label>Direct sampling (RTL)</label>${sel("ds",["Auto (off on V4)","Off","Q branch","I branch"],"")}</div><div class="field"><label>PPM</label><input type="number" value="0"></div><div class="field"><label>Upconverter offset (MHz)</label><input type="number" value="0"></div><label class="chk"><input type="checkbox" checked> DC remove</label><label class="chk"><input type="checkbox"> RTL AGC</label><p class="note">HackRF One · serial …0042 · firmware 2024.02.1 (DEMO)</p>`,bindBias)}
+function bindBias(r){$$(".bias",r).forEach(c=>c.onchange=e=>{S.bias=e.target.checked;$$(".bias").forEach(x=>x.checked=S.bias);$$(".biasW").forEach(w=>w.style.display=S.bias?"block":"none");renderQV()})}
+function sweepSheet(){openSheet("HackRF sweep",`<div class="row"><div class="field" style="flex:1"><label>Start (MHz)</label><input type="number" value="1"></div><div class="field" style="flex:1"><label>Stop (MHz)</label><input type="number" value="6000"></div></div><div class="field"><label>Bin width</label>${sel("bin",["100 kHz","1 MHz","5 MHz"],"1 MHz")}</div><label class="chk"><input type="checkbox" checked> Max hold</label><button class="btn pri" id="swGo">Start sweep</button><p class="note">Peaks (DEMO): 98.0 MHz · 433.9 MHz · 942.6 MHz · 2.44 GHz — tap a peak in the plot to jump SA there</p>`,s=>$("#swGo",s).onclick=()=>{setSweep(true);closeSheet()})}
+function listenSheet(){openSheet("Listen",`<div class="row"><button class="btn pri" id="lsA">▶ Audio</button><input type="range" style="width:140px" aria-label="Volume"></div><div class="field"><label>Mode</label>${sel("lm",["NFM","WFM","AM","USB","LSB","CW","RAW"],S.mode)}</div><div class="row"><span class="badge">BW</span>${[6,12.5,25,200].map(b=>`<button class="btn bwc" data-b="${b}">${b} kHz</button>`).join("")}</div><div class="row"><div class="field" style="flex:1"><label>Passband low edge (Hz)</label><input id="pLo" type="number" value="${-S.bw/2}"></div><div class="field" style="flex:1"><label>Passband high edge (Hz)</label><input id="pHi" type="number" value="${S.bw/2}"></div></div>${was("SA › passband inputs (removed in PR #11, restored)")}<div class="field"><label>Squelch</label><input type="range"></div><label class="chk"><input type="checkbox"> Stereo</label><div class="field"><label>De-emphasis</label>${sel("de",["50 µs (ZA/EU)","75 µs","off"],"")}</div>`,s=>{
+ $$(".bwc",s).forEach(b=>b.onclick=()=>{S.bw=b.dataset.b*1e3;$("#pLo",s).value=-S.bw/2;$("#pHi",s).value=S.bw/2;renderRO();lsInfo()});
+ const pe=()=>{const lo=+$("#pLo",s).value,hi=+$("#pHi",s).value;if(hi>lo){S.bw=hi-lo;renderRO();lsInfo()}};$("#pLo",s).onchange=pe;$("#pHi",s).onchange=pe;$("#lm",s).onchange=e=>{S.mode=e.target.value;renderRO();lsInfo()};$("#lsA",s).onclick=()=>toast("Audio on (demo)")})}
+function lsInfo(){$("#lsInfo").textContent=`${S.mode} · ${(S.bw/1e3).toFixed(1)} kHz · squelch −90 · ${S.remote?S.remote.n:"local"}`}
+$("#bListen").onclick=listenSheet;$("#bPeak").onclick=()=>{S.mark=S.tuned-2e3;renderSoft();toast("M1 → peak −41.8 dBFS @ "+fmt(S.mark))};
+$("#bFreeze").onclick=()=>{S.freeze=!S.freeze;$("#bFreeze").classList.toggle("on",S.freeze)};$("#bSnap").onclick=()=>toast("Snapshot PNG saved (demo)");$("#bTune").onclick=e=>{const b=e.currentTarget;b.classList.toggle("on");toast(b.classList.contains("on")?"Tune mode: drag retunes":"Scroll mode: vertical swipe scrolls")};
+$$("#saModeSeg button").forEach(b=>b.onclick=()=>setSweep(b.dataset.m==="sweep"));
+function setSweep(on,quiet){S.sweep=on;$$("#saModeSeg button").forEach(b=>b.classList.toggle("on",(b.dataset.m==="sweep")===on));if(!quiet)toast(on?"Sweep 1–6000 MHz (demo)":"Live")}
+const spec=$("#spec"),wfc=$("#wf");let hold=[];
+function fit(c){const w=Math.max(200,c.getBoundingClientRect().width|0);if(c.width!==w)c.width=w}
+function frame(ts){try{if(spec.offsetParent){fit(spec);fit(wfc);const W=spec.width,H=spec.height,g=spec.getContext("2d");
+ if(!S.freeze){const pts=[];for(let i=0;i<W;i++){const x=i/W;let v=-95+Math.random()*4;if(S.sweep){[.016,.072,.157,.407].forEach((p,k)=>{v=Math.max(v,-40-k*6-Math.abs(x-p)*3000)})}else{v=Math.max(v,-42-Math.pow((x-.5)*90,2)*.6+Math.sin(ts/300)*2,-70-Math.pow((x-.2)*160,2),-65-Math.pow((x-.78-.02*Math.sin(ts/900))*200,2))}pts.push(v)}
+  hold=hold.length===W?hold.map((h,i)=>Math.max(h-.05,pts[i])):pts.slice();spec._p=pts;
+  const wg=wfc.getContext("2d");wg.drawImage(wfc,0,1);for(let i=0;i<W;i+=2){const n=Math.min(1,Math.max(0,(pts[i]+100)/60));wg.fillStyle=`hsl(${260-n*200},80%,${12+n*45}%)`;wg.fillRect(i,0,2,1)}}
+ g.fillStyle="#0a0f16";g.fillRect(0,0,W,H);g.strokeStyle="#223041";for(let y=0;y<H;y+=H/8){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke()}
+ const Y=v=>H*((S.ref-v)/(S.div*8));if(!S.sweep){const pw=Math.max(4,W*S.bw/S.span);g.fillStyle="#f5b5441f";g.fillRect(W/2-pw/2,0,pw,H);g.fillStyle="#f5b544";g.fillRect(W/2-pw/2-2,0,2,H);g.fillRect(W/2+pw/2,0,2,H)}
+ g.strokeStyle="#8b9bb0";g.setLineDash([4,4]);g.beginPath();hold.forEach((v,i)=>i?g.lineTo(i,Y(v)):g.moveTo(i,Y(v)));g.stroke();g.setLineDash([]);
+ g.strokeStyle="#3ccf91";g.lineWidth=1.5;g.beginPath();(spec._p||[]).forEach((v,i)=>i?g.lineTo(i,Y(v)):g.moveTo(i,Y(v)));g.stroke();g.lineWidth=1;
+ g.fillStyle="#8b9bb0";g.font="11px monospace";g.fillText(S.sweep?"SWEEP 1–6000 MHz · max hold":`${fmt(S.view)} · span ${+(S.span/1e6).toFixed(3)} MHz`,8,14);g.fillText("DEMO",W-40,14);if(S.freeze)g.fillText("❄ FROZEN",W/2-30,28);
+ if(S.mark&&!S.sweep){const mx=W/2+(S.mark-S.view)/S.span*W,my=Y(-42)-10;g.fillStyle="#f5b544";g.beginPath();g.moveTo(mx,my);g.lineTo(mx-5,my-8);g.lineTo(mx+5,my-8);g.fill();g.fillText("M1",mx+6,my-2)}}
+ drawPolar(ts);}catch(err){console.error(err)}requestAnimationFrame(frame)}
+spec.addEventListener("click",e=>{const r=spec.getBoundingClientRect();const x=(e.clientX-r.left)/r.width;if(S.sweep){S.tuned=S.view=Math.round(x*6e9/1e5)*1e5;setSweep(false,true);toast("Jumped SA to "+fmt(S.tuned))}else S.tuned=Math.round((S.view+(x-.5)*S.span)/S.step)*S.step;renderRO();renderQV()});
+let bear=212;function drawPolar(ts){const c=$("#polar");if(!c.offsetParent)return;fit(c);const W=c.width,H=c.height,g=c.getContext("2d"),cx=W/2,cy=H/2,R=Math.min(W,H)/2-14;
+ g.clearRect(0,0,W,H);g.strokeStyle="#223041";[1,.66,.33].forEach(k=>{g.beginPath();g.arc(cx,cy,R*k,0,7);g.stroke()});g.fillStyle="#8b9bb0";g.font="11px monospace";g.fillText("N",cx-4,cy-R-2);
+ bear=212+Math.sin(ts/1500)*3;g.fillStyle="#3ccf9155";g.beginPath();for(let a=0;a<360;a+=3){const d=Math.abs(((a-bear+540)%360)-180);const r=R*(.25+.75*Math.exp(-d*d/1800));const rad=(a-90)*Math.PI/180;g.lineTo(cx+Math.cos(rad)*r,cy+Math.sin(rad)*r)}g.closePath();g.fill();
+ const rad=(bear-90)*Math.PI/180;g.strokeStyle="#f5b544";g.lineWidth=3;g.beginPath();g.moveTo(cx,cy);g.lineTo(cx+Math.cos(rad)*R,cy+Math.sin(rad)*R);g.stroke();g.lineWidth=1;
+ $("#dtBear").textContent=Math.round(bear)+"°T ±8°";$("#dtLvl").style.width=(55+Math.sin(ts/400)*8)+"%";}
+function addFix(){S.fixes.push({b:Math.round(bear)-S.fixes.length*40,x:75-S.fixes.length*22,y:80-S.fixes.length*8});renderTri();toast("Fix "+S.fixes.length+" marked")}
+function renderTri(){$("#triMap").innerHTML=S.fixes.map(f=>`<span class="pt" style="left:${f.x}%;top:${f.y}%;background:#f5b544"></span><span style="position:absolute;left:${f.x}%;top:${f.y}%;width:400px;height:2px;background:#f5b54488;transform-origin:0 0;transform:rotate(${f.b-90}deg)"></span>`).join("")+(S.fixes.length>=3?`<span style="position:absolute;left:30%;top:20%;width:44px;height:26px;border:2px solid #3ccf91;border-radius:50%"></span>`:"")+(S.heat?`<span class="badge" style="position:absolute;right:6px;top:6px;background:#000a">heatmap on</span>`:"");
+ $("#triTxt").textContent=S.fixes.length>=3?`${S.fixes.length} fixes · estimate ±180 m (1σ ellipse) · DEMO`:`${S.fixes.length} fixes · need ≥3 with ≥30° spread`}
+$("#takeFix").onclick=addFix;$("#dMark").onclick=addFix;$("#dTone").onclick=e=>{S.tone=!S.tone;e.currentTarget.classList.toggle("on",S.tone);toast(S.tone?"Tone on — pitch follows channel power":"Tone off")};
+$("#dLock").onclick=e=>{S.lock=!S.lock;e.currentTarget.classList.toggle("on",S.lock);$("#dtNums").textContent=`−48 dBFS · SNR 22 dB · gain 28 dB (${S.lock?"locked":"auto"})`};
+$("#dFind").onclick=()=>{show("sa");setSweep(true);toast("Find signal → SA Sweep (tap DT to return)")};$("#dReset").onclick=()=>toast("Max hold reset");$("#dClear").onclick=()=>{S.fixes=[];renderTri()};$("#dHeat").onclick=e=>{S.heat=!S.heat;e.currentTarget.classList.toggle("on",S.heat);renderTri()};
+$$("#dtFL button").forEach(b=>b.onclick=()=>{$$("#dtFL button").forEach(x=>x.classList.toggle("on",x===b));S.dtLock=b.dataset.v==="l"?S.tuned:null;$("#dtFreq").value=S.dtLock?(S.dtLock/1e6).toFixed(4):"";renderRO()});
+$("#dtFreq").onchange=e=>{S.dtLock=e.target.value?e.target.value*1e6:null;$$("#dtFL button").forEach(x=>x.classList.toggle("on",(x.dataset.v==="l")===!!S.dtLock));renderRO()};
+const sun=v=>{document.body.classList.toggle("sun",v);$("#sunChk").checked=$("#sunChk2").checked=v};$("#sunChk").onchange=e=>sun(e.target.checked);$("#sunChk2").onchange=e=>sun(e.target.checked);$("#nightChk").onchange=e=>document.body.classList.toggle("night",e.target.checked);
+const play=v=>{document.body.classList.toggle("playing",v);renderQV()};$("#bPlay").onclick=()=>play(true);$("#bPlay2").onclick=()=>play(true);$("#pClose").onclick=()=>play(false);
+const SERVERS=[{n:"KiwiSDR Johannesburg",k:"KiwiSDR",u:"dBm",d:"0–30 MHz · 3/8 users · 12 km"},{n:"OpenWebRX Pretoria",k:"OpenWebRX",u:"dBFS",d:"VHF/UHF · 1/4 · 55 km"},{n:"UberSDR Cape Town",k:"UberSDR",u:"dB",d:"HF · 0/10 · 1 270 km"},{n:"KiwiSDR Durban",k:"KiwiSDR",u:"dBm",d:"HF · 8/8 full · 500 km"}];
+$("#rmList").innerHTML=SERVERS.map((s,i)=>`<div style="display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:10px 0;border-bottom:1px solid var(--l)"><b style="overflow-wrap:anywhere">${s.n} <span class="badge">${s.k} · ${s.u}</span></b><button class="btn" data-c="${i}" style="grid-row:span 2">Connect</button><span class="note">${s.d} · DEMO</span></div>`).join("");
+$$("[data-c]").forEach(b=>b.onclick=()=>connectRemote(+b.dataset.c));
+function connectRemote(i){const s=SERVERS[i];S.conn="connecting";S.src=s.n;S.remote=s;S.reconnect=0;closeSheet();sync();setTimeout(()=>{S.conn="live";S.running=true;sync();lsInfo();toast("Connected · units "+s.u)},700)}
+$("#rmDis").onclick=disconnect;$("#rmOpen").onclick=e=>{e.preventDefault();toast("Opens the server page in a new tab (demo)")};
+$("#rmDrop").onclick=()=>{if(!S.remote)return toast("Connect a server first");let n=1;S.reconnect=1;sync();const it=setInterval(()=>{n++;if(n>3){clearInterval(it);S.reconnect=0;sync();toast("Reconnected")}else{S.reconnect=n;sync()}},1200)};
+const APS=[["HomeNet",-42,6,20,"WPA3"],["Neighbour_2G",-61,1,20,"WPA2"],["Office-Guest",-70,1,20,"Open"],["IoT-Hub",-55,11,20,"WPA2"],["Telkom-ABCD",-78,6,40,"WPA2"]];
+function wfView(v){S.wfv=v;$$("#wfSeg button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));const B=$("#wfBody");const cols=["#3ccf91","#f5b544","#60a5fa","#f472b6","#a78bfa"];
+ if(v==="aps")B.innerHTML=`<table><tr><th>SSID</th><th>RSSI</th><th>Ch</th><th>Width</th><th>Security</th><th>≈ dist</th></tr>${APS.map(a=>`<tr><td>${a[0]}</td><td>${a[1]} dBm</td><td>${a[2]}</td><td>${a[3]} MHz</td><td>${a[4]}</td><td>${Math.round(Math.pow(10,(-30-a[1])/25))} m</td></tr>`).join("")}</table>`;
+ if(v==="rate")B.innerHTML=`<table>${[[1,"★★☆☆☆"],[6,"★☆☆☆☆"],[11,"★★★★☆"]].map(c=>`<tr><td>Ch ${c[0]}</td><td>${c[1]}</td></tr>`).join("")}</table><p>Best channel: <b>11</b> (DEMO)</p>`;
+ if(v==="graph"){B.innerHTML=`<canvas id="wfg" height="180"></canvas>`;const c=$("#wfg");fit(c);const g=c.getContext("2d"),W=c.width;g.font="11px sans-serif";APS.forEach((a,i)=>{const x=W*(a[2]+1)/15,h=(100+a[1])*2,w=W*(a[3]/5)/15;g.strokeStyle=g.fillStyle=cols[i];g.beginPath();g.moveTo(x-w,175);g.quadraticCurveTo(x,175-h*2,x+w,175);g.stroke();g.fillText(a[0],x-20,172-h)});g.fillStyle="#8b9bb0";for(let ch=1;ch<=13;ch++)g.fillText(ch,W*(ch+1)/15-3,178)}
+ if(v==="time"){B.innerHTML=`<canvas id="wft" height="160"></canvas><p class="note">Last 5 min (DEMO)</p>`;const c=$("#wft");fit(c);const g=c.getContext("2d");APS.forEach((a,i)=>{g.strokeStyle=cols[i];g.beginPath();for(let x=0;x<c.width;x+=6)g.lineTo(x,(-a[1]-30)*2.4+Math.sin(x/30+i)*6);g.stroke()})}}
+$$("#wfSeg button").forEach(b=>b.onclick=()=>wfView(b.dataset.v));$$("#wfBand button").forEach(b=>b.onclick=()=>$$("#wfBand button").forEach(x=>x.classList.toggle("on",x===b)));
+const BANDS=[["FM broadcast","87.5–108 MHz",98e6],["Airband","118–136.975 MHz",127.5e6],["NOAA APT","137–138 MHz",137.5e6],["2 m ham","144–146 MHz",145e6],["ISM 433","433.05–434.79 MHz",433.92e6],["PMR446","446.0–446.2 MHz",446.1e6],["LTE B3 DL","1805–1880 MHz",1842.5e6],["Wi-Fi 2.4 GHz","2400–2483.5 MHz","wf"],["Wi-Fi 5 GHz","5150–5850 MHz","wf"],["Wi-Fi 6 GHz (ZA)","5925–6425 MHz","wf"]];
+function renderBands(q=""){$("#bandTbl").innerHTML=`<tr><th>Band</th><th>Range</th><th></th></tr>`+BANDS.filter(b=>b[0].toLowerCase().includes(q)).map(b=>`<tr><td>${b[0]}</td><td>${b[1]}</td><td><button class="btn" data-bt="${b[2]}">${b[2]==="wf"?"Open in WF":"Tune in SA"}</button></td></tr>`).join("");
+ $$("[data-bt]").forEach(x=>x.onclick=()=>{if(x.dataset.bt==="wf")return show("wf");S.tuned=S.view=+x.dataset.bt;show("sa");renderRO();renderSoft()})}
+$("#bSearch").oninput=e=>renderBands(e.target.value.toLowerCase());
+function jump(tab,soft,el){show(tab);setTimeout(()=>{if(soft)softSheet(soft);else if(el){const e=$(el);if(e){if(e.tagName==="DETAILS")e.open=true;e.scrollIntoView({block:"center"});e.classList.add("flash");setTimeout(()=>e.classList.remove("flash"),1500)}}},50)}
+const SUM=[["Source",()=>S.src||"none",()=>chooser()],["Gain",()=>`LNA ${S.lna} / VGA ${S.vga} / amp ${S.amp?"on":"off"}`,()=>jump("sa","AMPL")],["Sample rate",()=>"20 MS/s",()=>{show("sa");frontSheet()}],["FFT / averaging",()=>"2048 / linear auto",()=>jump("sa","BW")],["Calibration",()=>"not calibrated (dBFS)",()=>jump("sa","AMPL")],["Bias-tee",()=>S.bias?"ON (DC on antenna)":"off",()=>{show("sa");frontSheet()}],["Logging",()=>"distance · 10 m",()=>jump("mt",null,"#mtLog")]];
+function renderSum(){$("#recSum").innerHTML=SUM.map((r,i)=>`<tr><td>${r[0]}</td><td>${r[1]()}</td><td><button class="btn" data-j="${i}">Edit ›</button></td></tr>`).join("");$$("[data-j]").forEach(b=>b.onclick=()=>SUM[+b.dataset.j][2]())}
+$("#defPre").innerHTML=PRESETS.map(p=>`<option>${p[0]}</option>`).join("");
+function renderQV(){const live=S.conn==="live",u=S.remote?S.remote.u:"dBFS";
+ const G=[["Source",[["Device",S.src||"—",()=>chooser()],["Rate","20 MS/s",()=>{show("sa");frontSheet()}],["Gain",`${S.lna}/${S.vga}${S.amp?"+14":""} dB`,()=>jump("sa","AMPL")],["Units",u,()=>jump("sa","AMPL")],["Bias-tee",S.bias?"ON":"off",()=>{show("sa");frontSheet()}]]],
+ ["Measurement",[["Centre",fmt(S.view),()=>jump("sa","FREQ")],["Tuned",fmt(S.tuned),()=>jump("sa","FREQ")],["Span",+(S.span/1e6).toFixed(3)+" MHz",()=>jump("sa","FREQ")],["RBW / FFT",(S.rbw==="auto"?"2.3 kHz":S.rbw)+" / 2048",()=>jump("sa","BW")],["Mode",`${S.mode} ${(S.bw/1e3).toFixed(1)}k`,()=>{show("sa");listenSheet()}],["Level",live?"−42 "+u:"—",()=>jump("sa","MEAS")],["Peak",live?"−38 "+u:"—",()=>jump("sa","MARK")],["Noise",live?"−96 "+u:"—",()=>jump("sa","MEAS")]]],
+ ["Position",[["GPS","±6 m",()=>jump("mt",null,"#cGps")],["Heading","212°T",()=>jump("dt",null,"#dtBear")]]],
+ ["Session",[["Recording",S.rec?`● ${S.recT}s`:"off",()=>show("settings")],["Playback",document.body.classList.contains("playing")?"playing":"—",()=>show("mt")]]],
+ ["Health",[["Network","good",()=>show("bands")],["DSP","0 dropped",()=>show("settings")],["Remote",S.remote?(S.reconnect?`reconnecting ${S.reconnect}/5`:"ok"):"—",()=>show("cm")]]]];
+ $("#qv").innerHTML=`<div class="qhead"><b>Live quick view</b><button class="ib" id="qvX" aria-label="Collapse quick view">›</button></div><p class="note" style="margin:2px 0">DEMO · tap a value to jump</p>`+G.map(([h,rows])=>`<h4>${h}</h4><dl>${rows.map((r,i)=>`<dt>${r[0]}</dt><dd data-q="${h}.${i}" role="button" tabindex="0">${r[1]}</dd>`).join("")}</dl>`).join("");
+ G.forEach(([h,rows])=>rows.forEach((r,i)=>{$(`[data-q="${h}.${i}"]`).onclick=()=>{if(innerWidth<900)$("#qv").classList.remove("open");r[2]()}}));
+ $("#qvX").onclick=()=>{if(innerWidth>=900)document.body.classList.add("qvcollapsed");else $("#qv").classList.remove("open")};renderSum()}
+$("#qtab").onclick=()=>{if(innerWidth>=900)document.body.classList.remove("qvcollapsed");else $("#qv").classList.add("open")};
+let ex=null;addEventListener("touchstart",e=>{const x=e.touches[0].clientX;ex=x>innerWidth-18?x:null},{passive:true});
+addEventListener("touchmove",e=>{if(ex!==null&&ex-e.touches[0].clientX>40){$("#qv").classList.add("open");ex=null}},{passive:true});
+let qx=null;$("#qv").addEventListener("touchstart",e=>{qx=e.touches[0].clientX},{passive:true});$("#qv").addEventListener("touchmove",e=>{if(qx!==null&&e.touches[0].clientX-qx>50&&innerWidth<900){$("#qv").classList.remove("open");qx=null}},{passive:true});
+$("#movedBtn").onclick=e=>{e.stopPropagation();document.body.classList.toggle("showmoved");$("#movedBtn").textContent=document.body.classList.contains("showmoved")?"Hide moved":"Show moved"};
+[["#rmList","was: RM directory (rows no longer overflow)"],["#recSum","was: Settings › Receiver inputs (now edited where used)"],["#fabs","was: header Start/Stop/Rec · same FAB"],["#wfBody","was: top-level WF tab → More"],["#bandTbl","was: RF Tech tab → More › Bands"],["#qv","was: Live panel (kept, grouped)"]].forEach(([s,t])=>{const e=$(s);if(!e)return;const w=document.createElement("span");w.className="was";w.textContent=t;if(s==="#fabs")w.style.cssText="top:-30px;right:0";if(s==="#bandTbl"){e.parentNode.style.position="relative";e.parentNode.prepend(w)}else{if(getComputedStyle(e).position==="static")e.style.position="relative";e.prepend(w)}});
+function first(step){$("#first").classList.add("on");$("#fStep").textContent=step;
+ if(step===1){$("#firstBody").innerHTML=`<h2>How will you receive?</h2><div class="grid"><button id="f1">🔌 <b>Connect radio</b><small>RTL-SDR or HackRF over USB</small></button><button id="f2">🌍 <b>No radio? Try Remote</b><small>KiwiSDR / OpenWebRX / UberSDR</small></button><button id="f3">🎬 <b>Demo</b><small>Recorded signals</small></button></div>`;
+  $("#f1").onclick=()=>{connect("HackRF One · 20 MS/s");first(2)};$("#f2").onclick=()=>{S.remoteFirst=1;first(2)};$("#f3").onclick=()=>{connect("DEMO source");first(2)}}
+ else{$("#firstBody").innerHTML=`<h2>What do you want to do?</h2><div class="grid">${[["Listen to FM",0],["Aircraft",1],["Ham 2 m",3],["Weather satellites",6],["Find a transmitter",9],["Check Wi-Fi",8],["Phone bands",7],["HF (remote)",10],["Explore everything",11]].map(([n,i])=>`<button data-fp="${i}"><b>${n}</b><small>${PRESETS[i][0]} · ${PRESETS[i][7]}</small></button>`).join("")}</div>`;
+  $$("[data-fp]").forEach(b=>b.onclick=()=>{$("#first").classList.remove("on");try{localStorage.setItem("demo.first","1")}catch(_){}applyPreset(+b.dataset.fp);if(S.remoteFirst&&!/Kiwi|Wi-Fi/.test(PRESETS[+b.dataset.fp][0]))show("cm");toast("That's a signal — tap it to tune, ▶ to listen")})}}
+$("#fSkip").onclick=()=>{$("#first").classList.remove("on");try{localStorage.setItem("demo.first","1")}catch(_){}};$("#rerun").onclick=()=>first(1);
+$$("[data-toast]").forEach(b=>b.onclick=()=>toast(b.dataset.toast));
+bindBias(document);renderSoft();renderBands();wfView("aps");renderTri();annot();lsInfo();sync();
+const qs=new URLSearchParams(location.search);if(qs.get("live"))connect("HackRF One · 20 MS/s");if(qs.get("rec"))setTimeout(()=>{S.rec=true;S.recT=134;sync()},900);
+show(location.hash.slice(1)||"sa",false);if(qs.get("panel"))$("#qv").classList.add("open");if(qs.get("moved"))$("#movedBtn").click();
+let seen=null;try{seen=localStorage.getItem("demo.first")}catch(_){}if(!qs.get("nofirst")&&!seen)first(1);
+let scT;addEventListener('scroll',()=>{if(innerWidth>=900)return;document.body.classList.add('scrolling');clearTimeout(scT);scT=setTimeout(()=>document.body.classList.remove('scrolling'),900)},{passive:true});
+// ---- RM survey demo ----
+const steps=n=>{$$("#rmSteps button").forEach(b=>b.classList.toggle("on",+b.dataset.s===n));$$(".rmstep").forEach(e=>{e.hidden=e.id!=="rs"+n});$("#rs4").style.display=n===4?"grid":"none";if(n===4)svStart()};
+$$("#rmSteps button").forEach(b=>b.onclick=()=>steps(+b.dataset.s));$$("[data-next]").forEach(b=>b.onclick=()=>steps(+b.dataset.next));
+const SV={on:false,t:0,pts:[],kept:0,drop:0,bytes:0,chunks:[],wifi:false,paused:false};
+function svStart(){if(SV.on)return;SV.on=true;setTimeout(()=>{S.rec=true;sync()},800);if(S.conn!=="live")connect("HackRF One · 20 MS/s");}
+function lvlCol(v){return v<-90?"#60a5fa":v<-70?"#3ccf91":v<-50?"#f5b544":"#ff6b6b"}
+setInterval(()=>{if(!SV.on||SV.paused)return;SV.t++;const n=SV.pts.length;const a=n*0.11;const x=0.1+0.8*(0.5+0.4*Math.sin(a*0.7)),y=0.1+0.8*(0.5+0.4*Math.cos(a*0.45));const v=-95+45*Math.exp(-((x-.6)**2+(y-.4)**2)*12)+Math.random()*6;
+ const keep=n===0||Math.abs(v-SV.pts[n-1].v)>=3||SV.t%3===0;if(keep){SV.pts.push({x,y,v});SV.kept++;SV.bytes+=54}else SV.drop++;
+ if(SV.kept&&SV.kept%40===0&&!SV.chunks.find(c=>c.n===SV.kept/40))SV.chunks.push({n:SV.kept/40,kb:(40*54/2.6/1024).toFixed(1),st:"queued"});
+ if(SV.wifi)SV.chunks.forEach(c=>{if(c.st==="queued")c.st="uploading";else if(c.st==="uploading")c.st="✓ acked"});svDraw()},500);
+function svDraw(){const c=$("#svCan");if(!c||!c.offsetParent)return;fit(c);const g=c.getContext("2d");g.clearRect(0,0,c.width,c.height);g.lineWidth=4;for(let i=1;i<SV.pts.length;i++){const p=SV.pts[i-1],q=SV.pts[i];g.strokeStyle=lvlCol(q.v);g.beginPath();g.moveTo(p.x*c.width,p.y*c.height);g.lineTo(q.x*c.width,q.y*c.height);g.stroke()}
+ const l=SV.pts[SV.pts.length-1];if(l){g.fillStyle="#fff";g.beginPath();g.arc(l.x*c.width,l.y*c.height,6,0,7);g.fill()}
+ const mm=String(SV.t/120|0).padStart(2,"0")+":"+String((SV.t/2|0)%60).padStart(2,"0");$("#svT").textContent=mm;const raw=SV.kept*54,gz=raw/2.6;
+ $("#svStats").innerHTML=`<tr><td>Samples kept / dropped (gating)</td><td>${SV.kept} / ${SV.drop}</td></tr><tr><td>Distance</td><td>${(SV.pts.length*0.012).toFixed(2)} km</td></tr><tr><td>Max / median level</td><td>${SV.pts.length?Math.max(...SV.pts.map(p=>p.v)).toFixed(1):"—"} / −84.2 dBFS</td></tr><tr><td>Storage used (gzip)</td><td>${(gz/1024).toFixed(1)} KB · est. ≈ 70 KB/h (vehicle)</td></tr><tr><td>Snapshots</td><td>${SV.snaps||0} (button / interval off)</td></tr><tr><td>Device storage</td><td>${(41.2+gz/1048576).toFixed(1)} MB of ${$("#limV").value} ${$("#limU").value} limit</td></tr><tr><td>Battery / CPU</td><td>🔋 78 % (−9 %/h) · CPU 14 % · low-power on</td></tr>`;
+ $("#svQ").innerHTML=`<tr><th>Chunk</th><th>Size</th><th>Status</th></tr>`+(SV.chunks.length?SV.chunks.slice(-5).map(c=>`<tr><td>#${c.n}</td><td>${c.kb} KB</td><td>${c.st}</td></tr>`).join(""):`<tr><td colspan=3 class="note">No chunks yet (one per 40 samples)</td></tr>`);
+ const limMB=(+$("#limV").value||2)*($("#limU").value==="GB"?1024:1),usedMB=41.2+SV.kept*54/2.6/1048576;const L=$("#svLim");L.style.display=usedMB>0.9*limMB?"block":"none";L.textContent=`Storage ${usedMB.toFixed(1)} / ${limMB} MB (≥ 90 %) — recording will pause at the limit. Unuploaded data is kept.`;
+ $("#svNet").textContent=SV.wifi?"Network: Wi-Fi — uploading":"Network: cellular (metered) — waiting for Wi-Fi"}
+const PF={rg:[[1,6000]]};function rgDraw(){$("#rgT").innerHTML=`<tr><th>Start (MHz)</th><th>Stop (MHz)</th><th></th></tr>`+PF.rg.map((r,i)=>`<tr><td><input type="number" value="${r[0]}" data-r="${i}.0"></td><td><input type="number" value="${r[1]}" data-r="${i}.1"></td><td><button class="btn" data-rd="${i}">✕</button></td></tr>`).join("");$$("[data-r]").forEach(e=>e.onchange=()=>{const[i,j]=e.dataset.r.split(".");PF.rg[i][j]=+e.value;est()});$$("[data-rd]").forEach(b=>b.onclick=()=>{PF.rg.splice(+b.dataset.rd,1);rgDraw();est()})}
+function est(){const mhz=PF.rg.reduce((a,r)=>a+Math.max(0,r[1]-r[0]),0);$("#pfEst").textContent=`Ranges ${PF.rg.length} · ${mhz} MHz · ≈ ${(5000*(PF.rg.length*60*2+14)/2.6/1048576).toFixed(2)} MB/h compressed with 60 sub-bands per range (vehicle, 5 000 samples/h) · values are prefilled suggestions — change anything.`}
+$("#rgAdd").onclick=()=>{PF.rg.push([2400,2500]);rgDraw();est()};$("#pfSave").onclick=()=>{const o=document.createElement("option");o.textContent="My profile "+($("#pfSel").options.length);$("#pfSel").append(o);$("#pfSel").value=o.textContent;toast("Profile saved (DEMO)")};$("#pfDel").onclick=()=>toast("Profile deleted (DEMO)");
+$("#pfSel").onchange=e=>{PF.rg=e.target.selectedIndex===1?[[791,821],[925,960],[1805,1880],[2110,2170],[2620,2690]]:e.target.selectedIndex===2?[[433,435],[446,446.2]]:[[1,6000]];rgDraw();est()};rgDraw();est();
+$("#svSnap").onclick=()=>{SV.snaps=(SV.snaps||0)+1;SV.bytes+=350;toast("Full-spectrum snapshot "+SV.snaps+" saved (≈ 0.35 KB gz)");svDraw()};
+$("#upTest").onclick=()=>{const u=$("#upUrl").value.trim();const m=$("#upMsg");if(!/^https:\/\/[^\s/]+/.test(u)){m.textContent="Enter a valid https:// URL.";m.style.color="#ff6b6b";return}m.style.color="";m.textContent="Testing… (DEMO: GET "+u.replace(/\/$/,"")+"/surveys/ping)";setTimeout(()=>{m.textContent="✓ Reachable (DEMO — no request was actually sent)";$("#svEp").firstChild&&($("#svEp").textContent="Upload server: "+u+" · unuploaded data is never auto-deleted; uploaded data is deleted 30 days after confirmation.")},600)};
+$("#svWifi").onclick=()=>{SV.wifi=!SV.wifi;svDraw()};$("#svPause").onclick=e=>{SV.paused=!SV.paused;e.currentTarget.textContent=SV.paused?"Resume survey":"Pause survey"};$("#svStop").onclick=()=>{SV.on=false;toast("Survey saved (DEMO): "+SV.kept+" samples")};
+if(qs.get("survey")){steps(4);for(let i=0;i<150;i++){SV.t++;const n=SV.pts.length,a=n*0.11,x=0.1+0.8*(0.5+0.4*Math.sin(a*0.7)),y=0.1+0.8*(0.5+0.4*Math.cos(a*0.45));SV.pts.push({x,y,v:-95+45*Math.exp(-((x-.6)**2+(y-.4)**2)*12)+Math.random()*6});SV.kept++;if(SV.kept%40===0)SV.chunks.push({n:SV.kept/40,kb:"0.8",st:SV.kept<100?"✓ acked":"queued"})}SV.drop=212;setTimeout(()=>{S.rec=true;S.recT=78;sync()},900)}
+requestAnimationFrame(frame);
+</script></body></html>
