@@ -1,5 +1,5 @@
 // Layout model: hash aliases, storage migration, shared tuning state, unit badges.
-import { TuningState, migrateStorage, paneIdFor, resolveTab, unitFor, LAYOUT_VERSION_KEY } from "../src/apps/monitor/layout.js";
+import { TuningState, loadTuning, TUNING_KEY, migrateStorage, paneIdFor, resolveTab, unitFor, LAYOUT_VERSION_KEY } from "../src/apps/monitor/layout.js";
 
 declare const process: { exit(code: number): never };
 let failures = 0;
@@ -74,6 +74,20 @@ check("CM pane id", paneIdFor("cm") === "pane-cm");
   check("listeners notified", calls >= 6, calls);
   const round = new TuningState(1, JSON.parse(JSON.stringify(t)));
   check("JSON round trip", round.s.memory["remote:kiwi"].tunedHz === 7.1e6 && round.s.dt.mode === "follow");
+}
+
+{
+  const kv = new Mem();
+  const t = loadTuning(kv, { freqHz: 145.5e6, dtTargetHz: 145.525e6 });
+  check("seed from old settings: tuned = SA centre", t.s.tunedHz === 145.5e6);
+  check("seed: old DT target becomes a DT lock", t.s.dt.mode === "lock" && t.dtTargetHz() === 145.525e6);
+  t.setStartup(433.92e6, "fixed");
+  kv.setItem(TUNING_KEY, JSON.stringify(t));
+  const t2 = loadTuning(kv, { freqHz: 1, dtTargetHz: null });
+  check("saved model wins over legacy", t2.s.tunedHz === 145.5e6 && t2.openingHz() === 433.92e6);
+  t2.setStartup(433.92e6, "last");
+  check("start-up 'last' opens on last tuned", t2.openingHz() === 145.5e6);
+  check("no legacy DT target → follow", loadTuning(new Mem(), { freqHz: 1e8, dtTargetHz: null }).s.dt.mode === "follow");
 }
 
 // ── unit badges ──

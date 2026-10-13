@@ -91,10 +91,23 @@ export interface TuningSnapshot {
   view: { centreHz: number; spanHz: number };
   dt: { mode: "follow" | "lock"; lockHz: number | null };
   startupHz: number;
+  /** "last": open on the last tuned frequency; "fixed": always open on startupHz. */
+  startupMode: "last" | "fixed";
   memory: Record<SourceKey, Memory>;
 }
 
 export const TUNING_KEY = "webrx.tuning.v1";
+
+/** Loads the saved tuning model, seeding it from pre-v3 settings (SA centre, DT target) so nothing is lost. */
+export function loadTuning(kv: Pick<KV, "getItem">, legacy: { freqHz: number; dtTargetHz: number | null }): TuningState {
+  let saved: Partial<TuningSnapshot> | null = null;
+  try {
+    saved = JSON.parse(kv.getItem(TUNING_KEY) || "null");
+  } catch (_) {}
+  const t = new TuningState(legacy.freqHz, saved);
+  if (!saved && legacy.dtTargetHz) t.s.dt = { mode: "lock", lockHz: legacy.dtTargetHz };
+  return t;
+}
 
 /**
  * One tuned frequency, a separate SA view, an optional DT lock, a start-up
@@ -109,6 +122,7 @@ export class TuningState {
       view: { centreHz: startupHz, spanHz: 2.4e6 },
       dt: { mode: "follow", lockHz: null },
       startupHz,
+      startupMode: "last",
       memory: {},
       ...(saved || {}),
     } as TuningSnapshot;
@@ -146,9 +160,14 @@ export class TuningState {
   dtTargetHz(): number {
     return this.s.dt.mode === "lock" && this.s.dt.lockHz ? this.s.dt.lockHz : this.s.tunedHz;
   }
-  setStartup(hz: number) {
+  setStartup(hz: number, mode: "last" | "fixed" = this.s.startupMode) {
     if (hz > 0) this.s.startupHz = hz;
+    this.s.startupMode = mode;
     this.emit();
+  }
+  /** Frequency to open on: fixed start-up, else the last tuned one. */
+  openingHz(): number {
+    return this.s.startupMode === "fixed" ? this.s.startupHz : this.s.tunedHz;
   }
   remember(source: SourceKey, m: Partial<Memory>) {
     this.s.memory[source] = { ...(this.s.memory[source] || { tunedHz: this.s.tunedHz }), ...m };

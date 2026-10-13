@@ -11,6 +11,7 @@ import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.j
 import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices/hackrf.js";
 import { SweepGrid, type SweepSlice } from "../../devices/sweep.js";
 import { initSurvey, type SurveyHost } from "../../survey/ui.js";
+import { TUNING_KEY, loadTuning, type TuningState } from "./layout.js";
 import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
@@ -455,6 +456,7 @@ function saveFe() {
 /** On connect: load this dongle's own ppm / upconverter / calibration offset if we have them. */
 function loadFeForDevice() {
   if (!sdr) return;
+  setTimeout(restoreSourceMemory, 0);
   const m = feDevices()[deviceKey(sdr)];
   if (m) {
     fe = { upconvHz: m.upconvHz ?? 0, ppm: m.ppm ?? 0 };
@@ -618,7 +620,72 @@ function tunedHz(): number {
 }
 
 function dtFreqHz(): number {
-  return dt.st.freqHz ?? tunedHz();
+  return tuning && tuning.s.dt.mode === "lock" && tuning.s.dt.lockHz ? tuning.s.dt.lockHz : tunedHz();
+}
+
+// ── shared tuning model (tuned vs view, DT follow/lock, per-source memory, start-up) ──
+let tuning: TuningState;
+let tuningSaveT = 0;
+function sourceKey(): string | undefined {
+  if (remote.connected) return "remote:" + remote.url.page;
+  if (sdr) return "local:" + deviceKey(sdr);
+  return undefined;
+}
+function initTuning() {
+  tuning = loadTuning(localStorage, { freqHz: cfg.freqMHz * 1e6, dtTargetHz: dt.st.freqHz ?? null });
+  tuning.on(() => {
+    dt.st.freqHz = tuning.s.dt.mode === "lock" ? tuning.s.dt.lockHz : null;
+    clearTimeout(tuningSaveT);
+    tuningSaveT = window.setTimeout(() => {
+      try {
+        localStorage.setItem(TUNING_KEY, JSON.stringify(tuning));
+      } catch (_) {}
+    }, 500);
+  });
+  const open = tuning.openingHz();
+  if (open > 0 && Math.abs(open - cfg.freqMHz * 1e6) > 0.5) {
+    cfg.freqMHz = open / 1e6;
+    saveSettings();
+  }
+  dt.st.freqHz = tuning.s.dt.mode === "lock" ? tuning.s.dt.lockHz : null;
+}
+/** Mirrors the live SA tuned frequency and view into the model (called from renderVfo). */
+function bindStartupFreq() {
+  const mode = document.getElementById("setStartFreqMode") as HTMLSelectElement | null, f = document.getElementById("setStartFreq") as HTMLInputElement | null;
+  if (!mode || !f) return;
+  mode.value = tuning.s.startupMode;
+  f.value = String(+(tuning.s.startupHz / 1e6).toFixed(6));
+  f.disabled = mode.value !== "fixed";
+  const apply = () => {
+    f.disabled = mode.value !== "fixed";
+    const v = parseFloat(f.value);
+    tuning.setStartup(Number.isFinite(v) && v > 0 ? v * 1e6 : tuning.s.startupHz, mode.value as "last" | "fixed");
+  };
+  mode.addEventListener("change", apply);
+  f.addEventListener("change", apply);
+}
+function syncTuning() {
+  if (!tuning || pb) return;
+  const hz = tunedHz();
+  if (Number.isFinite(hz) && hz > 0 && Math.abs(hz - tuning.s.tunedHz) > 0.5) tuning.tune(hz, sourceKey());
+  const [f0, f1] = analyser.viewHz(src());
+  if (f1 > f0 && (Math.abs((f0 + f1) / 2 - tuning.s.view.centreHz) > 1 || Math.abs(f1 - f0 - tuning.s.view.spanHz) > 1)) tuning.setView((f0 + f1) / 2, f1 - f0);
+}
+/** On (re)connecting a source, go back to the frequency last used with it. */
+function restoreSourceMemory() {
+  const k = sourceKey();
+  if (!k || !tuning) return;
+  const m = tuning.restore(k);
+  if (!m) return void tuning.remember(k, { tunedHz: tunedHz() });
+  if (remote.connected) return void remote.tune(m.tunedHz);
+  if (Math.abs(m.tunedHz - tunedHz()) < 1) return;
+  shared.set({ offsetHz: 0 });
+  const f = document.getElementById("freq") as HTMLInputElement | null;
+  if (f) {
+    f.value = String(+(m.tunedHz / 1e6).toFixed(6));
+    f.dispatchEvent(new Event("change"));
+  }
+  log(`Restored ${freqLabel(m.tunedHz)} (last used with this source)`, "ok");
 }
 
 function bwHz(): number | null {
@@ -2318,11 +2385,27 @@ function dtSaveFix() {
 function bindDt() {
   if (!document.getElementById("dtCanvas")) return;
   const fq = $<HTMLInputElement>("dtFreq");
-  fq.value = dt.st.freqHz ? String(dt.st.freqHz / 1e6) : "";
+  const lm = $<HTMLSelectElement>("dtLockMode");
+  const showLock = () => {
+    const locked = tuning.s.dt.mode === "lock";
+    lm.value = tuning.s.dt.mode;
+    fq.disabled = !locked;
+    if (document.activeElement !== fq) fq.value = locked && tuning.s.dt.lockHz ? String(+(tuning.s.dt.lockHz / 1e6).toFixed(6)) : "";
+    fq.placeholder = locked ? "MHz" : `follows tuned · ${(tunedHz() / 1e6).toFixed(4)}`;
+  };
+  tuning.on(showLock);
+  showLock();
+  lm.addEventListener("change", () => {
+    if (lm.value === "lock") tuning.dtLock(tuning.s.dt.lockHz ?? tunedHz());
+    else tuning.dtFollow();
+    dt.reset();
+    dirty = true;
+  });
   fq.addEventListener("change", () => {
     const v = parseFloat(fq.value);
-    dt.st.freqHz = Number.isFinite(v) && v > 0 ? v * 1e6 : null;
-    if (dt.st.freqHz && Math.abs(dt.st.freqHz - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
+    if (!(Number.isFinite(v) && v > 0)) return showLock();
+    tuning.dtLock(v * 1e6);
+    if (Math.abs(v * 1e6 - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
     dt.reset();
     dirty = true;
   });
@@ -3157,9 +3240,13 @@ function feedRemote(f: Float32Array) {
   dirty = true;
 }
 
+let remoteMemKey = "";
 function renderRemote() {
   if (!document.getElementById("rxLive")) return;
   const on = remote.connected;
+  const rk = on ? remote.url.page : "";
+  if (rk && rk !== remoteMemKey) setTimeout(restoreSourceMemory, 800);
+  remoteMemKey = rk;
   $("rxLive").hidden = !on;
   $("btnRxConnect").textContent = remote.state === "connecting" ? "Connecting…" : "Connect";
   ($("btnRxConnect") as HTMLButtonElement).disabled = remote.state === "connecting";
@@ -3836,6 +3923,7 @@ function centreOnTuned() {
 // ── VFO: big frequency, scroll over a digit to tune it, tap to type ──
 const VFO_DIGITS = 10; // up to 9.999 999 999 GHz
 function renderVfo() {
+  syncTuning();
   const box = document.getElementById("vfoDigits");
   if (!box) return;
   const hz = Math.max(0, Math.round(tunedHz()));
@@ -4040,7 +4128,9 @@ function bindVfo() {
 // ═══════════════════════════════════════════════════════════════════
 
 export function initMonitor() {
+  initTuning();
   bind();
+  bindStartupFreq();
   initSurvey(surveyHost);
   fillRates(effectiveKind());
   resetSpectrum();
@@ -4363,9 +4453,8 @@ function drawSweep() {
     b.title = "Tune here and make it the DT target";
     b.addEventListener("click", async () => {
       await stopSweep();
-      dt.st.freqHz = Math.round(p.hz);
+      tuning.dtLock(Math.round(p.hz));
       dt.reset();
-      ($("dtFreq") as HTMLInputElement).value = String(p.hz / 1e6);
       const sc = $<HTMLInputElement>("saCentre");
       sc.value = String(+(p.hz / 1e6).toFixed(6));
       sc.dispatchEvent(new Event("change"));

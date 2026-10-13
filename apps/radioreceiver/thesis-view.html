@@ -1209,7 +1209,11 @@
           <h2>Target &amp; heading</h2>
           <div class="grid2">
             <div class="field">
-              <label for="dtFreq">Target frequency (MHz)</label>
+              <label for="dtLockMode">Target</label>
+              <select id="dtLockMode"><option value="follow">Follow tuned (SA)</option><option value="lock">Lock to a frequency</option></select>
+            </div>
+            <div class="field">
+              <label for="dtFreq">Locked target (MHz)</label>
               <input id="dtFreq" type="number" inputmode="decimal" step="0.0001" placeholder="follows tuned" />
             </div>
             <div class="field">
@@ -1424,6 +1428,14 @@
           <section class="card">
             <h2>Receiver &amp; logging</h2>
             <div class="grid2">
+            <div class="field sdr">
+              <label for="setStartFreqMode">Open on</label>
+              <select id="setStartFreqMode"><option value="last">Last tuned frequency</option><option value="fixed">A fixed start-up frequency</option></select>
+            </div>
+            <div class="field sdr">
+              <label for="setStartFreq">Start-up frequency (MHz)</label>
+              <input id="setStartFreq" type="number" inputmode="decimal" step="0.001" min="0.5" max="6000" />
+            </div>
             <div class="field sdr">
               <label for="freq">Centre frequency (MHz)</label>
               <input id="freq" type="number" inputmode="decimal" step="0.001" min="0.5" max="6000" value="433.92" list="freqPresets" />
