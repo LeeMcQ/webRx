@@ -7,9 +7,9 @@
 
 import type { SweepSlice } from "../devices/sweep.js";
 import { SweepGrid } from "../devices/sweep.js";
-import { decodeChunk, encodeChunk, gzip, gunzip, sha256Hex, type SampleRow } from "./codec.js";
+import { decodeChunk, gunzip } from "./codec.js";
+import { ProcessorClient, type ChunkOut } from "./processor.js";
 import { simplify } from "./dp.js";
-import { SampleGate, Squelch, reduceBands } from "./gating.js";
 import {
   DEFAULT_PARAMS,
   calibrationComplete,
@@ -17,7 +17,6 @@ import {
   estimateBytesPerHour,
   loadProfiles,
   saveProfile,
-  toDbm,
   validateParams,
   type DbmCalibration,
   type DeviceKind,
@@ -395,11 +394,7 @@ interface Run {
   params: SweepParams;
   cal: DbmCalibration;
   grids: SweepGrid[];
-  gate: SampleGate;
-  squelch: Squelch | null;
-  floor: Float32Array | null;
-  rows: SampleRow[];
-  chunkN: number;
+  proc: ProcessorClient;
   samples: number;
   sweeps: number;
   lastSweepAt: number;
@@ -412,13 +407,20 @@ interface Run {
   lastSnapPos: { lat: number; lon: number } | null;
   paused: boolean;
   cpuMs: number;
+  sliceMs: number;
   battery: { level: number; charging: boolean } | null;
   skip: boolean;
   wake: any;
   lastSweepSeen: number[];
 }
 let run: Run | null = null;
-const CHUNK_ROWS = 300;
+const workerUrl = () => {
+  try {
+    return new URL("survey-worker.js", document.baseURI).href;
+  } catch (_) {
+    return null;
+  }
+};
 
 function binsFor(r: { startMHz: number; stopMHz: number }, p: SweepParams) {
   return Math.max(1, Math.min(16384, Math.ceil(((r.stopMHz - r.startMHz) * 1000) / p.binKHz)));
@@ -433,12 +435,14 @@ async function startRun() {
   const key = `rm-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   run = {
     key, params: p, cal: { ...cal }, grids: p.ranges.map((r) => new SweepGrid(r.startMHz * 1e6, r.stopMHz * 1e6, binsFor(r, p))),
-    gate: new SampleGate({ distM: p.distM, timeS: p.timeS, changeDb: p.changeDb }), squelch: null, floor: null, rows: [], chunkN: 0, samples: 0, sweeps: 0,
-    lastSweepAt: 0, startedAt: Date.now(), bytes: 0, rawBytes: 0, trail: [], snapshots: 0, lastSnapAt: Date.now(), lastSnapPos: null, paused: false, cpuMs: 0,
+    proc: new ProcessorClient(workerUrl()), samples: 0, sweeps: 0,
+    lastSweepAt: 0, startedAt: Date.now(), bytes: 0, rawBytes: 0, trail: [], snapshots: 0, lastSnapAt: Date.now(), lastSnapPos: null, paused: false, cpuMs: 0, sliceMs: 0,
     battery: null, skip: false, wake: null, lastSweepSeen: p.ranges.map(() => 0),
   };
   const meta = { name: key, unit: "dBm", calibration: run.cal, params: p, device: host.deviceLabel(), startedAt: new Date(run.startedAt).toISOString() };
   await putSurvey({ surveyKey: key, name: key, startedAt: run.startedAt, samples: 0, bytes: 0, meta } as StoredSurvey);
+  await run.proc.init({ surveyKey: key, params: p, cal: run.cal });
+  host.log(`Survey processing: ${run.proc.usingWorker ? "Web Worker" : "main thread (no Worker support)"}`, "ok");
   try {
     await host.applyGains(p);
     await host.startSweep(p.ranges.map((r) => [r.startMHz, r.stopMHz]), onSlice, p.fftSize);
@@ -473,50 +477,32 @@ function onSlice(s: SweepSlice) {
     r.skip = !!(r.battery && !r.battery.charging && r.battery.level < 0.2) && !r.skip;
     if (now - r.lastSweepAt >= r.params.repeatS * 1000 && !r.skip) {
       r.lastSweepAt = now;
-      sample(now);
+      void sample(now);
     }
   }
-  r.cpuMs = r.cpuMs * 0.95 + (performance.now() - t0) * 0.05;
+  r.grids.length && (r.sliceMs = r.sliceMs * 0.95 + (performance.now() - t0) * 0.05);
 }
 
-function sweepValues(r: Run): Float32Array {
-  const parts: Float32Array[] = r.grids.map((g) => {
-    const dbm = new Float32Array(g.db.length);
-    for (let i = 0; i < dbm.length; i++) dbm[i] = Number.isFinite(g.db[i]) ? toDbm(g.db[i], r.cal) : -160;
-    if (r.params.reduction === "none") return dbm;
-    return reduceBands(dbm, r.params.reduction === "peakmean" ? 1 : r.params.subBands);
-  });
-  const out = new Float32Array(parts.reduce((a, p) => a + p.length, 0));
-  let o = 0;
-  for (const p of parts) out.set(p, o), (o += p.length);
-  return out;
+function gridCopies(r: Run): Float32Array[] {
+  return r.grids.map((g) => g.db.slice());
 }
 
-function sample(now: number) {
+async function sample(now: number) {
   const r = run!;
   const fix = host.fix();
-  const vals = sweepValues(r);
-  // per-value noise floor tracker (slow rise, fast fall) → threshold = floor + thresholdDb
-  if (!r.floor || r.floor.length !== vals.length) r.floor = vals.slice();
-  for (let i = 0; i < vals.length; i++) r.floor[i] = vals[i] < r.floor[i] ? vals[i] : r.floor[i] + 0.02 * (vals[i] - r.floor[i]);
-  const thr = Array.from(r.floor, (f) => f + r.params.thresholdDb);
-  if (!r.squelch) r.squelch = new Squelch(thr, r.params.hysteresisDb, vals.length);
-  r.squelch.thresholdDb = thr;
-  const { out, open } = r.squelch.apply(vals);
-  if (!fix) return;
-  const reason = r.gate.offer(fix, out.map((v) => (Number.isFinite(v) ? v : -160)));
-  if (reason === "none" || reason === "jitter") return;
-  const code = { first: 1, distance: 2, time: 3, change: 4 }[reason as "first"] ?? 0;
-  r.rows.push({ t: now, lat: fix.lat, lon: fix.lon, accM: fix.accM, reason: code, values: out });
+  const t0 = performance.now();
+  const res = await r.proc.sample(gridCopies(r), fix, now).catch((e) => (host.log(`Survey processing error: ${e?.message ?? e}`, "err"), null));
+  r.cpuMs = r.cpuMs * 0.9 + (performance.now() - t0) * 0.1;
+  if (!res || !res.kept || run !== r) return;
   r.samples++;
-  let mx = -Infinity;
-  for (const v of out) if (Number.isFinite(v)) mx = Math.max(mx, v);
-  r.trail.push({ lat: fix.lat, lon: fix.lon, db: open ? mx : NaN, keep: open > 0 });
+  if (res.trail) r.trail.push(res.trail);
+  if (res.chunk) await storeChunk(r, res.chunk);
   const se = r.params.snapshotEvery;
-  if (se === "60s" && now - r.lastSnapAt >= 60_000) takeSnapshot("interval");
-  if (se === "100m" && r.lastSnapPos && Math.hypot((fix.lat - r.lastSnapPos.lat) * 111_133, (fix.lon - r.lastSnapPos.lon) * 111_133 * Math.cos((fix.lat * Math.PI) / 180)) >= 100) takeSnapshot("interval");
-  if (!r.lastSnapPos) r.lastSnapPos = { lat: fix.lat, lon: fix.lon };
-  if (r.rows.length >= CHUNK_ROWS) void flush();
+  if (fix) {
+    if (se === "60s" && now - r.lastSnapAt >= 60_000) void takeSnapshot("interval");
+    if (se === "100m" && r.lastSnapPos && Math.hypot((fix.lat - r.lastSnapPos.lat) * 111_133, (fix.lon - r.lastSnapPos.lon) * 111_133 * Math.cos((fix.lat * Math.PI) / 180)) >= 100) void takeSnapshot("interval");
+    if (!r.lastSnapPos) r.lastSnapPos = { lat: fix.lat, lon: fix.lon };
+  }
   scheduleDraw();
 }
 
@@ -525,38 +511,38 @@ async function takeSnapshot(why: "button" | "interval") {
   const r = run;
   if (!r) return;
   const fix = host.fix();
-  const parts = r.grids.map((g) => Array.from(g.db, (v) => (Number.isFinite(v) ? toDbm(v, r.cal) : NaN)));
-  const values = new Float32Array(parts.flat());
   r.lastSnapAt = Date.now();
   if (fix) r.lastSnapPos = { lat: fix.lat, lon: fix.lon };
-  await storeChunk(r, [{ t: Date.now(), lat: fix?.lat ?? 0, lon: fix?.lon ?? 0, accM: fix?.accM, reason: 9, values }], { snapshot: why, ranges: r.params.ranges, bins: r.grids.map((g) => g.db.length) });
+  const bins = r.grids.reduce((a, g) => a + g.db.length, 0);
+  const c = await r.proc.snapshot(gridCopies(r), fix, Date.now(), r.params.ranges, why);
+  await storeChunk(r, c);
   r.snapshots++;
-  host.log(`Snapshot saved (${values.length} bins, dBm)`, "ok");
+  host.log(`Snapshot saved (${bins} bins, dBm)`, "ok");
   uiRunState();
 }
 
-async function storeChunk(r: Run, rows: SampleRow[], extra: Record<string, unknown> = {}) {
-  const raw = encodeChunk({ surveyId: r.key, n: r.chunkN, unit: "dBm", baseDb: -160, quantDb: r.params.quantDb, calibration: { ...r.cal }, params: { ...extra, reduction: r.params.reduction, subBands: r.params.subBands, ranges: r.params.ranges } }, rows);
-  const bytes = await gzip(raw);
-  const lim = limitState(await usedOnDevice(), parseLimit(settings.limitValue, settings.limitUnit), bytes.length, settings.limitAction);
+async function storeChunk(r: Run, out: ChunkOut) {
+  const lim = limitState(await usedOnDevice(), parseLimit(settings.limitValue, settings.limitUnit), out.bytes.length, settings.limitAction);
   if (lim.atLimit) {
     // never drop data: keep this chunk, then pause/stop recording
     (settings.limitAction === "stop" ? stopRun : pauseRun)(`on-device limit reached (${mb(lim.limitBytes)})`);
   }
-  const c: QueuedChunk = { surveyKey: r.key, n: r.chunkN++, sha256: await sha256Hex(bytes), bytes, state: "queued", tries: 0, nextAt: 0 };
+  const c: QueuedChunk = { surveyKey: r.key, n: out.n, sha256: out.sha256, bytes: out.bytes, state: "queued", tries: 0, nextAt: 0 };
   await putChunk(c);
-  r.bytes += bytes.length;
-  r.rawBytes += raw.length;
+  usedCache.v += out.bytes.length;
+  r.bytes += out.bytes.length;
+  r.rawBytes += out.rawLen;
   const w = $("rmLimitMsg");
   if (w) w.textContent = lim.warn ? `Storage at ${Math.round((100 * lim.usedBytes) / lim.limitBytes)} % of your ${mb(lim.limitBytes)} limit — upload or raise the limit. At the limit the survey will ${settings.limitAction}.` : "";
+  void requestBackgroundUpload();
   void maybeAutoUpload();
 }
 
 async function flush() {
   const r = run;
-  if (!r || !r.rows.length) return;
-  const rows = r.rows.splice(0);
-  await storeChunk(r, rows);
+  if (!r) return;
+  const c = await r.proc.flush();
+  if (c) await storeChunk(r, c);
 }
 
 let usedCache = { at: 0, v: 0 };
@@ -581,6 +567,7 @@ async function stopRun(why: string) {
   if (!r) return;
   await host.stopSweep();
   await flush();
+  r.proc.terminate();
   r.wake?.release?.();
   run = null;
   await putSurvey({ surveyKey: r.key, name: r.key, startedAt: r.startedAt, endedAt: Date.now(), samples: r.samples, bytes: r.bytes, completed: true, meta: { unit: "dBm", calibration: r.cal, params: r.params, device: host.deviceLabel() } } as StoredSurvey);
@@ -616,7 +603,7 @@ function stats() {
     ["On device", `${mb(used)}${lim ? ` / ${mb(lim)}` : ""}`],
     ["Rate", mins > 0.5 ? `${mb(r.bytes / (mins / 60))}/h` : "—"],
     ["Battery", r.battery ? `${Math.round(r.battery.level * 100)} %${r.battery.charging ? " ⚡" : r.battery.level < 0.2 ? " (half rate)" : ""}` : "—"],
-    ["CPU / slice", `${r.cpuMs.toFixed(2)} ms`],
+    ["CPU", `${r.sliceMs.toFixed(2)} ms/slice · ${r.cpuMs.toFixed(1)} ms/sample${r.proc.usingWorker ? " (worker)" : ""}`],
   ].map(([a, v]) => `<div><small>${a}</small><b>${v}</b></div>`).join("");
   const bar = $("rmBar");
   if (bar) {
@@ -680,6 +667,7 @@ function drawMap() {
 
 // ═══ upload ═══
 let uploading = false;
+async function requestBackgroundUpload() {}
 async function maybeAutoUpload() {
   if (!settings.autoWifi || !settings.serverUrl) return;
   const net = onUnmeteredNetwork(navigator, settings.unmetered);

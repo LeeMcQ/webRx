@@ -4,6 +4,7 @@ import { DEFAULT_PARAMS, estimateBytesPerHour, toDbm, validateParams, valuesPerS
 import { SampleGate, Squelch, reduceBands } from "../src/survey/gating.js";
 import { simplify } from "../src/survey/dp.js";
 import { ByteReader, ByteWriter, decodeChunk, encodeChunk, gunzip, gzip, sha256Hex, unzigzag, zigzag } from "../src/survey/codec.js";
+import { ProcessorClient, handle, SurveyProcessor } from "../src/survey/processor.js";
 import { expiredChunks, limitState, parseLimit } from "../src/survey/retention.js";
 import { UploadQueue, backoffMs, onUnmeteredNetwork, testConnection, validateServerUrl, type QueuedChunk } from "../src/survey/upload.js";
 
@@ -52,7 +53,7 @@ async function main() {
   check("band reduction linear mean", Math.abs(rb[3] - (10 * Math.log10((1e-6 + 1e-10) / 2))) < 1e-3, rb[3]);
 
   // ── DP ──
-  const line = Array.from({ length: 101 }, (_, i) => ({ lat: -33.9 + i * 1e-5, lon: 18.4 + (i % 2 ? 1e-7 : 0) }));
+  const line: { lat: number; lon: number; keep?: boolean }[] = Array.from({ length: 101 }, (_, i) => ({ lat: -33.9 + i * 1e-5, lon: 18.4 + (i % 2 ? 1e-7 : 0) }));
   const kept = simplify(line, 2);
   check("DP: straight jittery line → 2 points", kept.length === 2, kept.length);
   const corner = [...line.slice(0, 50), ...Array.from({ length: 50 }, (_, i) => ({ lat: line[49].lat, lon: 18.4 + (i + 1) * 1e-5 }))];
@@ -92,6 +93,30 @@ async function main() {
   let threw = false;
   try { decodeChunk(raw.slice(0, raw.length - 10)); } catch (_) { threw = true; }
   check("truncated chunk throws", threw);
+
+  // ── processor (worker pipeline, inline) ──
+  {
+    const P = { ...DEFAULT_PARAMS, ranges: [{ startMHz: 400, stopMHz: 500 }], reduction: "subbands" as const, subBands: 4, distM: 10, timeS: 30, changeDb: 3 };
+    const pc = new ProcessorClient(null);
+    check("no worker URL → inline fallback", !pc.usingWorker);
+    await pc.init({ surveyKey: "k", params: P, cal: CAL });
+    const grid = () => new Float32Array(100).map((_, i) => (i === 50 ? -40 : -90));
+    const g1 = grid();
+    const r1 = await pc.sample([g1], { t: 0, lat: -33.9, lon: 18.4, accM: 3 }, 0);
+    check("first sample kept with trail", r1.kept && !!r1.trail);
+    const r2 = await pc.sample([grid()], { t: 1000, lat: -33.9, lon: 18.4, accM: 3 }, 1000);
+    check("same place/level dropped", !r2.kept, r2);
+    const c = await pc.flush();
+    const d = c && decodeChunk(await gunzip(c.bytes));
+    check("flush → gzip chunk, dBm header, 1 row × 8 values", !!d && d.header.unit === "dBm" && d.rows.length === 1 && d.header.nValues === 8, d?.header);
+    check("chunk hash matches", !!c && c.sha256 === (await sha256Hex(c.bytes)));
+    const st = { p: null as SurveyProcessor | null };
+    await handle(st, { id: 1, op: "init", init: { surveyKey: "k", params: P, cal: CAL } });
+    const snap = await handle(st, { id: 2, op: "snapshot", grids: [grid()], fix: null, now: 5, ranges: P.ranges, why: "button" });
+    check("snapshot reply transfers its chunk buffer", snap.transfer.length === 1 && snap.reply.result.snapshot === true);
+    const dd = decodeChunk(await gunzip(snap.reply.result.bytes));
+    check("snapshot keeps all 100 bins in dBm", dd.header.nValues === 100 && Math.abs(dd.rows[0].values[50] - (-40 - 30 - 2 + 1.5)) <= 0.25, dd.rows[0].values[50]);
+  }
 
   // ── retention ──
   const now = Date.UTC(2026, 9, 13);

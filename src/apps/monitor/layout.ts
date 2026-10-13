@@ -1,4 +1,4 @@
-// Layout model for the proposal UI (docs/proposal/PROPOSAL.md §1, §11.1, Appendix A):
+// Layout model for the proposal UI (proposal/PROPOSAL.md §1, §11.1, Appendix A):
 // tab routes and hash aliases, one-shot storage migration, the shared tuning
 // state (tuned vs view, DT follow/lock, per-source memory, start-up frequency)
 // and unit badges. Pure logic; the DOM wiring lives in thesis-view.html / monitor.ts.
