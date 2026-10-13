@@ -33,6 +33,7 @@ type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
 type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
 let remote: RemoteClient = owrx;
 import { dt, dtPlay, formatBearing, norm } from "./dt.js";
+import { triangulate, ellipsePoints } from "../../df/triangulate.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
   Calibration,
@@ -3806,8 +3807,44 @@ export function initMonitor() {
   dirty = true;
 }
 
-// DT extras (bound later phases); placeholder keeps bindDt() simple.
-function bindDtExtras() {}
+// ── DT triangulation ────────────────────────────────────────────
+let dtEst: ReturnType<typeof triangulate> = null;
+function dtTriangulate() {
+  const use = dt.st.fixes.filter((f) => Number.isFinite(f.bearing) && Number.isFinite(f.lat));
+  // Loop nulls are ambiguous by 180°: pick the reciprocal that agrees best with the peak fixes (or skip if alone).
+  const peaks = use.filter((f) => f.mode !== "null");
+  const list = use.map((f) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, sigma: Math.max(f.sigma, (f.gpsAccM ?? 0) > 50 ? 10 : 0) }));
+  if (peaks.length >= 2 && peaks.length < use.length) {
+    const base = triangulate(list.filter((_, i) => use[i].mode !== "null"));
+    if (base) use.forEach((f, i) => {
+      if (f.mode !== "null") return;
+      const toEst = (Math.atan2((base.lon - f.lon) * Math.cos((f.lat * Math.PI) / 180), base.lat - f.lat) * 180) / Math.PI;
+      if (Math.abs(((toEst - f.bearing + 540) % 360) - 180) > 90) list[i].bearing = norm(f.bearing + 180);
+    });
+  }
+  dtEst = list.length >= 2 ? triangulate(list) : null;
+  const el = document.getElementById("dtEst");
+  if (dtEst && el) {
+    const e = dtEst.ellipse95;
+    el.innerHTML = `<b>${dtEst.lat.toFixed(5)}, ${dtEst.lon.toFixed(5)}</b><br>95 % ellipse ${fmtM(e.a)} × ${fmtM(e.b)} (major axis ${e.angle.toFixed(0)}°) · ${dtEst.used} bearings · rms miss ${fmtM(dtEst.rms)}${dtEst.cockedHat ? " · cocked hat shown" : ""}`;
+    liveMap?.setEstimate({ lat: dtEst.lat, lon: dtEst.lon, ellipse: ellipsePoints(dtEst.lat, dtEst.lon, e), cockedHat: dtEst.cockedHat, label: `Estimate ±${fmtM(e.a)} (95 %)` });
+  } else {
+    if (el) el.textContent = list.length < 2 ? "Save fixes from at least two places (ideally 60–120° apart) to locate the transmitter." : "Bearings don't intersect in front of both stations — re-check one of them.";
+    liveMap?.setEstimate(null);
+  }
+}
+const fmtM = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
+
+function bindDtExtras() {
+  dtAfterFixes = dtTriangulate;
+  $("btnDtFitMap").addEventListener("click", () => {
+    const pts: [number, number][] = dt.st.fixes.map((f) => [f.lat, f.lon]);
+    if (dtEst) pts.push([dtEst.lat, dtEst.lon]);
+    liveMap?.fitTo(pts);
+  });
+  bindDtField();
+}
+function bindDtField() {}
 
 /** RSSI-vs-position track for the DT heatmap (filled in a later phase). */
 function dtTrackSample() {}

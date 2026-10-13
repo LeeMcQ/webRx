@@ -61,6 +61,41 @@ near("Johannesburg declination 2026.8 (NOAA calc ≈ −20.8°)", jhb, -20.8, 0.
 const cpt = magField(-33.9249, 18.4241, 0, 2026.8).declination;
 near("Cape Town declination 2026.8 (≈ −26.5°)", cpt, -26.5, 1.0);
 
+// ── triangulation: analytic case ──
+import { triangulate, intersect2, ellipseFromCov, toEnu, destination } from "../src/df/triangulate.js";
+import { fspl, distanceForLoss, distanceHint } from "../src/df/pathloss.js";
+{
+  const lat0 = -26.2, lon0 = 28.05;
+  // Tx 1 km north-east-ish at ENU (600, 800); stations at (0,0) and (1200,0)
+  const tx: [number, number] = [600, 800];
+  const st: [number, number][] = [[0, 0], [1200, 0], [600, -400]];
+  const brg = (p: [number, number]) => ((Math.atan2(tx[0] - p[0], tx[1] - p[1]) * 180) / Math.PI + 360) % 360;
+  const ll = (p: [number, number]) => [lat0 + p[1] / 6371008.8 * 180 / Math.PI, lon0 + p[0] / (6371008.8 * Math.cos(lat0 * Math.PI / 180)) * 180 / Math.PI];
+  const x = intersect2(st[0], brg(st[0]), st[1], brg(st[1]))!;
+  near("intersect2 E", x[0], 600, 1e-6); near("intersect2 N", x[1], 800, 1e-6);
+  check("intersect2 rejects diverging", intersect2([0, 0], 270, [100, 0], 90) === null);
+  const sol = triangulate(st.map((p) => { const [la, lo] = ll(p); return { lat: la, lon: lo, bearing: brg(p), sigma: 3 }; }))!;
+  const [e, n] = toEnu(lat0, lon0, sol.lat, sol.lon);
+  near("WLS exact bearings → Tx E", e, 600, 0.5); near("WLS exact bearings → Tx N", n, 800, 0.5);
+  check("cocked hat degenerates to a point", sol.cockedHat!.every(([a, b]) => Math.hypot(...toEnu(sol.lat, sol.lon, a, b)) < 0.5));
+  // 2 perpendicular bearings, equal range r and σ: covariance is isotropic (rσ)² → 95 % radius √5.991·rσ
+  const r = 1000, sg = 2;
+  const two = triangulate([{ lat: lat0 - r / 111195, lon: lon0, bearing: 0, sigma: sg }, { lat: lat0, lon: lon0 - r / (111195 * Math.cos(lat0 * Math.PI / 180)), bearing: 90, sigma: sg }])!;
+  near("ellipse a = √5.991·r·σ", two.ellipse95.a, Math.sqrt(5.991) * r * sg * Math.PI / 180, 1.5);
+  near("ellipse b = a (isotropic)", two.ellipse95.b, two.ellipse95.a, 1.5);
+  const el = ellipseFromCov(100, 0, 25, 1);
+  near("ellipse eig a", el.a, 10, 1e-9); near("ellipse eig b", el.b, 5, 1e-9); near("ellipse major axis east = 90°", el.angle, 90, 1e-9);
+  near("ellipse rotated 45°", ellipseFromCov(50, 50, 50, 1).angle, 45, 1e-9);
+  const [dl, dn] = destination(0, 0, 90, 111195);
+  near("destination 1° east on equator", dn, 1, 1e-3); near("destination lat stays 0", dl, 0, 1e-9);
+  // path loss
+  near("FSPL 1 km @ 100 MHz = 72.4 dB", fspl(1000, 100e6), 72.45, 0.05);
+  near("FSPL 1 km @ 433.92 MHz = 85.2 dB", fspl(1000, 433.92e6), 85.2, 0.1);
+  near("inverse FSPL n=2", distanceForLoss(fspl(2500, 145e6), 145e6, 2), 2500, 1e-6);
+  near("log-distance n=3 shorter", distanceForLoss(fspl(1000, 145e6), 145e6, 3), 10 ** ((fspl(1000, 145e6) - fspl(1, 145e6)) / 30), 1e-6);
+  near("distanceHint 30 dBm EIRP, -55 dBm rx @146 MHz n=2", distanceHint(-55, 146e6, 30, 0, 2), 10 ** ((85 - fspl(1, 146e6)) / 20), 1e-6);
+}
+
 export function done(label: string) {
   if (failures) { console.log(`\n${failures} failure(s)`); process.exit(1); }
   console.log(`\nAll ${label} tests passed.`);

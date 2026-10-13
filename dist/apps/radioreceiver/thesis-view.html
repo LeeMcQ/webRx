@@ -1051,6 +1051,11 @@
           </div>
           <div class="col">
             <div class="slot" data-slot="map"></div>
+        <section class="card" id="dtTriCard">
+          <h2>Transmitter estimate <span class="spacer"></span><button class="btn ghost" id="btnDtFitMap" type="button">Show on map</button></h2>
+          <p class="hint" id="dtEst" aria-live="polite">Save fixes from at least two places to locate the transmitter.</p>
+          <p class="hint">Weighted least squares in a local east/north plane: each bearing counts by 1/(range·σ)², so sharp, high-contrast bearings matter more. The orange ellipse holds the transmitter with 95 % confidence if the bearing errors are as estimated; with three fixes the red triangle is the classic cocked hat.</p>
+        </section>
         <section class="card">
           <h2>Target &amp; heading</h2>
           <div class="grid2">
