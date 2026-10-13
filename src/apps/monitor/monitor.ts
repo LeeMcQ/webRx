@@ -9,7 +9,7 @@
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
 import { HackRF } from "../../devices/hackrf.js";
-import { ConnectedSdr, SdrKind, SdrProvider } from "../../devices/provider.js";
+import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
 import {
@@ -32,7 +32,7 @@ import { kiwi } from "./kiwi.js";
 type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
 type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
 let remote: RemoteClient = owrx;
-import { dt, formatBearing, norm } from "./dt.js";
+import { dt, dtPlay, formatBearing, norm } from "./dt.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
   Calibration,
@@ -75,6 +75,8 @@ type Settings = {
   dcRemove: boolean;
   peakHold: boolean;
   biasTee: boolean;
+  /** RTL2832U digital AGC (separate from the tuner AGC). */
+  rtlAgc: boolean;
   needFix: boolean;
   /** "distance": a pin every spacingM metres (thesis §3.5); "time": every logEvery seconds. */
   logMode: "distance" | "time";
@@ -99,6 +101,7 @@ const DEFAULTS: Settings = {
   dcRemove: true,
   peakHold: true,
   biasTee: false,
+  rtlAgc: false,
   needFix: false,
   logMode: "distance",
   spacingM: 5,
@@ -415,7 +418,8 @@ async function applyTuning(dev: RtlDevice) {
   const hz = Math.round(cfg.freqMHz * 1e6 + fe.upconvHz);
   if (sdr?.kind === "rtlsdr") {
     // The R820T tuner can't reach HF; use direct sampling (Q branch) below 28.8 MHz.
-    await dev.setDirectSamplingMethod(hz < 28_800_000 ? DirectSampling.Q : DirectSampling.Off);
+    // The RTL-SDR Blog V4 (R828D) has a built-in HF upconverter: never use direct sampling there.
+    await dev.setDirectSamplingMethod(!sdr.isRtlBlogV4 && hz < 28_800_000 ? DirectSampling.Q : DirectSampling.Off);
   }
   return dev.setCenterFrequency(hz);
 }
@@ -496,7 +500,13 @@ function processBlock(bytes: Uint8Array) {
   }
   ++frames;
   lastStats = computeStats();
-  if (isSdrMode()) dt.push(levelAt(dtFreqHz(), dt.st.bwHz), gps.fix?.headingDeg);
+  if (isSdrMode()) {
+    // DT uses the raw (un-averaged) frame so the level lines up in time with the heading.
+    dt.overload = rawMaxDbfs() > -3;
+    if (gps.fix) dt.pos = { lat: gps.fix.lat, lon: gps.fix.lon, altM: (gps.fix as any).altM };
+    dt.push(levelAt(dtFreqHz(), dt.st.bwHz, raw, cfg.cal), Date.now());
+    dtTrackSample();
+  }
   analyser.ingest(spec);
   if (recorder.active) recorder.offer(captureFrame);
   const now = performance.now();
@@ -526,18 +536,25 @@ function computeStats() {
 }
 
 /** Mean power (dB, linear average) of the averaged spectrum in [f - bw/2, f + bw/2]. */
-function levelAt(freqHz: number, bw: number): number {
-  const n = spec.length;
+function levelAt(freqHz: number, bw: number, arr: Float32Array = spec, add = 0): number {
+  const n = arr.length;
   if (!n) return NaN;
   const lo = cfg.freqMHz * 1e6 - cfg.sampleRate / 2;
   const k0 = Math.max(0, Math.floor(((freqHz - bw / 2 - lo) / cfg.sampleRate) * n));
   const k1 = Math.min(n - 1, Math.ceil(((freqHz + bw / 2 - lo) / cfg.sampleRate) * n));
   let sum = 0, cnt = 0;
   for (let k = k0; k <= k1; ++k) {
-    const v = spec[k];
+    const v = arr[k] + add;
     if (Number.isFinite(v)) { sum += Math.pow(10, v / 10); ++cnt; }
   }
   return cnt ? 10 * Math.log10(sum / cnt) : NaN;
+}
+
+/** Highest raw FFT bin (dBFS, before calibration) — near 0 dBFS means the ADC is clipping. */
+function rawMaxDbfs(): number {
+  let m = -Infinity;
+  for (let k = 0; k < raw.length; ++k) if (raw[k] > m) m = raw[k];
+  return m;
 }
 
 function tunedHz(): number {
@@ -2147,23 +2164,95 @@ function bindListen() {
 //  DT — directional tracking (polar max-hold per bearing)
 // ═══════════════════════════════════════════════════════════════════
 
+function dtActive() {
+  return pb ? dtPlay : dt;
+}
+
+/** Gain state as recorded with a fix; DF needs a fixed gain with every AGC off. */
+function gainState(): { text: string; agc: boolean } {
+  if (sdr?.kind === "hackrf" && device instanceof HackRF) {
+    const g = device.currentLnaVga();
+    return { text: `LNA ${g.lna} / VGA ${g.vga} dB${cfg.amp ? " + amp 14" : ""}`, agc: false };
+  }
+  const agc = cfg.gain === null || cfg.rtlAgc;
+  return { text: cfg.gain === null ? "tuner AGC" : `${cfg.gain} dB${cfg.rtlAgc ? " + RTL AGC" : ""}`, agc };
+}
+
+/** DF needs repeatable levels: switch tuner AGC and RTL AGC off, keeping the current gain or 30 dB. */
+async function dtLockGain(quiet = false) {
+  const before = gainState();
+  if (!before.agc) return;
+  if (cfg.gain === null) cfg.gain = 30;
+  cfg.rtlAgc = false;
+  saveSettings();
+  const g = $<HTMLInputElement>("gain");
+  if (g) { g.value = String(cfg.gain); g.disabled = false; }
+  const ga = $<HTMLInputElement>("gainAuto");
+  if (ga) ga.checked = false;
+  const r = $<HTMLInputElement>("rtlAgc");
+  if (r) r.checked = false;
+  if (device) {
+    await ctl(() => device!.setGain(cfg.gain)).catch(() => {});
+    if (sdr?.kind === "rtlsdr") await setRtlAgc(device, false).catch(() => false);
+  }
+  if (!quiet) log(`DT: gain fixed at ${gainState().text} for repeatable bearings`, "ok");
+}
+
 function renderDt() {
   const pane = document.getElementById("pane-dt");
   if (!pane || pane.hidden) return;
+  const d = dtActive();
   const units = cfg.cal ? "dBm" : "dBFS";
-  dt.draw($<HTMLCanvasElement>("dtCanvas"), units);
-  $("dtHeading").textContent = dt.heading !== undefined ? formatBearing(dt.heading) : "—";
-  $("dtLevel").textContent = dt.level !== undefined ? `${dt.level.toFixed(1)} ${units}` : "—";
-  const b = dt.best();
-  $("dtBest").textContent = b ? formatBearing(b.bearing) : "—";
-  $("dtCoverage").textContent = `${dt.coverage()}° / 360°`;
+  const sun = document.body.classList.contains("sun");
+  d.draw($<HTMLCanvasElement>("dtCanvas"), units, sun);
+  const north = d.st.source === "manual" ? "T" : d.northRef();
+  $("dtHeading").textContent = d.heading !== undefined ? formatBearing(d.heading, north) : "—";
+  $("dtLevel").textContent = d.level !== undefined ? `${d.level.toFixed(1)} ${units}` : "—";
+  const f = d.fit();
+  $("dtBest").textContent = f ? `${formatBearing(f.bearing, north)}${d.st.mode === "null" ? ` / ${formatBearing(f.bearing + 180, north)}` : ""}` : "—";
+  $("dtBeam").textContent = f ? `${f.beamwidth.toFixed(0)}° · ±${f.sigma.toFixed(0)}°` : "—";
+  $("dtSnr").textContent = f ? `${f.snrDb.toFixed(1)} dB${f.frontBackDb !== null ? ` · F/B ${f.frontBackDb.toFixed(0)}` : ""}` : "—";
+  $("dtCoverage").textContent = `${d.coverage()}° / 360°`;
   $("dtFixCount").textContent = String(dt.st.fixes.length);
-  $("dtGuide").textContent = running ? dt.guidance() : "Press Start, then turn slowly through a full circle.";
+  const dec = d.declination();
+  $("dtDecl").textContent = d.st.declMode === "off" ? "off (°M)" : `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}°${d.st.declMode === "auto" ? (d.pos ? " WMM" : " (no GPS)") : " manual"}`;
+  const gs = gainState();
+  const gEl = $("dtGain");
+  gEl.textContent = gs.text;
+  gEl.classList.toggle("bad", gs.agc);
+  $("btnDtLockGain").hidden = !gs.agc;
+  $("dtBias").textContent = cfg.biasTee ? "ON (DC on antenna)" : "off";
+  $("dtOverload").hidden = !d.overload;
+  const warn = [...(f?.warnings ?? [])];
+  if (gs.agc && isSdrMode()) warn.unshift("AGC is on — levels move with signal strength; lock the gain.");
+  $("dtWarn").textContent = warn.join(" · ");
+  $("dtGuide").textContent = pb ? "Playing back a recording (not saved to the live plot)." : running ? d.guidance() : (d.problem ?? "Press Start (or Sweep capture), then turn slowly through a full circle.");
   $("dtTarget").textContent = `${freqLabel(dtFreqHz())} · ${dt.st.bwHz / 1000} kHz`;
+  dtRenderExtras?.(f, units);
 }
+/** Hook for later DT features (tone, hints, capture). */
+let dtRenderExtras: ((f: ReturnType<typeof dt.fit>, units: string) => void) | null = null;
 
 function renderDtFixes() {
-  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, label: `Fix ${i + 1}: ${formatBearing(f.bearing)} · ${f.level.toFixed(1)} dB · ${freqLabel(f.freqHz)}` })));
+  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, sigma: f.sigma, ambiguous: f.mode === "null", label: `Fix ${i + 1}: ${formatBearing(f.bearing, f.north)} ±${f.sigma}° · ${Number.isFinite(f.level) ? f.level.toFixed(1) : "—"} ${f.units} · ${freqLabel(f.freqHz)}` })));
+  dtAfterFixes?.();
+}
+let dtAfterFixes: (() => void) | null = null;
+
+function dtSaveFix() {
+  const f = gps.fix;
+  if (!f) return log("Save fix needs a GPS position (MT tab → Connect GPS)", "wn");
+  const ready = dt.ready();
+  if (!ready.ok) log(`DT: ${ready.why} — saving anyway with lower confidence`, "wn");
+  const gs = gainState();
+  const fix = dt.addFix({ lat: f.lat, lon: f.lon, gpsAccM: (f as any).accuracyM, units: cfg.cal ? "dBm" : "dBFS", gain: gs.text, agc: gs.agc, headingSource: dt.st.source === "manual" ? "manual" : `compass-${compass.status.source ?? "?"}`, freqHz: dtFreqHz(), station: dt.st.session });
+  if (!fix) return log("No bearing measured yet — press Start and turn through a circle", "wn");
+  if (!ready.ok) { fix.sigma = +(fix.sigma * 1.5).toFixed(1); dt.save(true); }
+  log(`DT fix ${dt.st.fixes.length}: ${formatBearing(fix.bearing, fix.north)} ±${fix.sigma}° (HPBW ${fix.beamwidth}°) at ${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`, "ok");
+  renderDtFixes();
+  dt.reset();
+  dirty = true;
+  return fix;
 }
 
 function bindDt() {
@@ -2175,7 +2264,6 @@ function bindDt() {
     dt.st.freqHz = Number.isFinite(v) && v > 0 ? v * 1e6 : null;
     if (dt.st.freqHz && Math.abs(dt.st.freqHz - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
     dt.reset();
-    dt.save(true);
     dirty = true;
   });
   const bw = $<HTMLInputElement>("dtBw");
@@ -2192,7 +2280,7 @@ function bindDt() {
   src.value = dt.st.source;
   src.addEventListener("change", () => {
     dt.st.source = src.value as any;
-    dt.save(true);
+    dt.reset();
     showMan();
     if (dt.st.source === "compass" && compass.status.state !== "on") $("btnCompass").click();
   });
@@ -2204,43 +2292,65 @@ function bindDt() {
   });
   $("dtManualVal").textContent = `${man.value}°`;
   const off = $<HTMLInputElement>("dtOffset");
-  off.value = String(dt.st.northOffset);
+  off.value = String(dt.st.mountOffset);
   off.addEventListener("change", () => {
     const v = parseFloat(off.value);
-    dt.st.northOffset = Number.isFinite(v) ? v : 0;
-    dt.save(true);
+    dt.st.mountOffset = Number.isFinite(v) ? v : 0;
+    dt.reset();
   });
+  const dm = $<HTMLSelectElement>("dtDeclMode"), dv = $<HTMLInputElement>("dtDeclManual");
+  dm.value = dt.st.declMode;
+  dv.value = String(dt.st.manualDecl);
+  const showDecl = () => ($("dtDeclManualField").hidden = dt.st.declMode !== "manual");
+  dm.addEventListener("change", () => { dt.st.declMode = dm.value as any; dt.reset(); showDecl(); dirty = true; });
+  dv.addEventListener("change", () => { const v = parseFloat(dv.value); dt.st.manualDecl = Number.isFinite(v) ? v : 0; dt.reset(); dirty = true; });
+  showDecl();
+  const md = $<HTMLSelectElement>("dtMode");
+  md.value = dt.st.mode;
+  md.addEventListener("change", () => { dt.st.mode = md.value as any; dt.save(true); dirty = true; });
+  const lag = $<HTMLInputElement>("dtLag");
+  lag.value = String(dt.st.lagMs);
+  lag.addEventListener("change", () => { const v = parseFloat(lag.value); dt.st.lagMs = Number.isFinite(v) ? Math.max(0, Math.min(1000, v)) : 0; dt.reset(); });
   showMan();
   $("btnDtReset").addEventListener("click", () => {
     dt.reset();
     log("DT polar plot cleared");
     dirty = true;
   });
-  $("btnDtFix").addEventListener("click", () => {
-    const f = gps.fix;
-    if (!f) return log("Save fix needs a GPS position (MT tab → Connect GPS)", "wn");
-    const fix = dt.addFix(f.lat, f.lon, dtFreqHz());
-    if (!fix) return log("No bearing measured yet — press Start and turn through a circle", "wn");
-    log(`DT fix ${dt.st.fixes.length}: ${formatBearing(fix.bearing)} at ${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`, "ok");
-    renderDtFixes();
-    dt.reset();
-    dirty = true;
-  });
+  $("btnDtFix").addEventListener("click", () => dtSaveFix());
   $("btnDtClearFixes").addEventListener("click", () => {
+    if (dt.st.fixes.length && !confirm(`Delete all ${dt.st.fixes.length} fixes in “${dt.st.session}”?`)) return;
     dt.clearFixes();
     renderDtFixes();
     dirty = true;
   });
+  $("btnDtLockGain").addEventListener("click", () => dtLockGain().then(() => (dirty = true)));
   $("btnDtCompass").addEventListener("click", () => $("btnCompass").click());
+  // Figure-8 calibration prompt when the platform says accuracy is poor or the needle is jittery.
+  let jitter: number[] = [];
+  compass.addEventListener("change", () => {
+    dt.trackHeading();
+    const s = compass.status;
+    if (s.heading !== undefined) { jitter.push(s.heading); if (jitter.length > 20) jitter.shift(); }
+    let spread = 0;
+    if (jitter.length >= 10 && !running) {
+      const m = jitter[jitter.length - 1];
+      spread = Math.max(...jitter.map((x) => Math.abs(((x - m + 540) % 360) - 180)));
+    }
+    const poor = (s.accuracy !== undefined && s.accuracy > 15) || spread > 12;
+    $("dtCalib").hidden = !poor;
+    $("dtRelative").hidden = s.source !== "relative";
+  });
   setTimeout(renderDtFixes, 500);
   window.addEventListener("webrx:tab", () => (dirty = true));
   setInterval(() => {
     // keep the needle moving when the stream is stopped
     if (!running) {
-      dt.heading = dt.readHeading(gps.fix?.headingDeg);
+      dt.trackHeading();
       dirty = true;
     }
   }, 250);
+  bindDtExtras();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2248,7 +2358,7 @@ function bindDt() {
 // ═══════════════════════════════════════════════════════════════════
 
 /** Playback state: when set, displays show the recorded frame instead of the live stream. */
-let pb: { centreHz: number; rateHz: number; stash: (number | null)[]; hdg?: number; cur?: [number, number]; route?: () => void } | null = null;
+let pb: { centreHz: number; rateHz: number; hdg?: number; cur?: [number, number]; route?: () => void } | null = null;
 
 let fpsCount = 0, fpsAt = performance.now(), fps = 0;
 function srcStats(): string[] {
@@ -2536,7 +2646,7 @@ function captureFrame(): sess.Frame {
     acc: f?.accuracyM,
     spd: f?.speedKmh,
     crs: f?.headingDeg,
-    hdg: dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined),
+    hdg: dt.heading,
     peak: lastStats?.peak,
     peakHz: lastStats?.peakHz,
     band: lastStats?.band,
@@ -2638,8 +2748,9 @@ async function startPlayback(m: sess.SessionMeta) {
   if (running) await stop();
   const frames = await sess.loadFrames(m.id);
   if (!frames.length) return log("This session has no frames", "wn");
-  if (!pb) pb = { centreHz: frames[0].c, rateHz: frames[0].r, stash: dt.st.bins.slice() };
-  dt.st.bins = new Array(360).fill(null);
+  if (!pb) pb = { centreHz: frames[0].c, rateHz: frames[0].r };
+  dtPlay.reset();
+  dtPlay.st = { ...dtPlay.st, freqHz: dt.st.freqHz, bwHz: dt.st.bwHz, mode: dt.st.mode, samples: [], fixes: [] };
   analyser.clearHolds();
   timeline.length = 0;
   const pts = frames.filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon)).map((f) => ({ lat: f.lat!, lon: f.lon!, level: f.band }));
@@ -2662,8 +2773,6 @@ async function startPlayback(m: sess.SessionMeta) {
 function stopPlayback() {
   if (!pb) return;
   player.stop();
-  dt.st.bins = pb.stash;
-  dt.save(true);
   pb = null;
   liveMap?.setPlayback(null);
   $("player").hidden = true;
@@ -2699,13 +2808,11 @@ function showFrame(f: sess.Frame) {
   analyser.ingest(spec);
   // DT: feed the recorded heading with the level at the DT target (or the recorded DT level).
   const lvl = Number.isFinite(f.dt as number) ? (f.dt as number) : levelAt(dtFreqHz(), dt.st.bwHz);
+  // Recorded headings are already corrected; replay into the separate playback instance only.
   if (f.hdg !== undefined && Number.isFinite(lvl)) {
-    const src0 = dt.st.source, man = dt.st.manual;
-    dt.st.source = "manual";
-    dt.st.manual = f.hdg - dt.st.northOffset;
-    dt.push(lvl);
-    dt.st.source = src0;
-    dt.st.manual = man;
+    dtPlay.heading = f.hdg;
+    dtPlay.level = lvl;
+    dtPlay.addSample({ h: f.hdg, db: lvl, t: Date.now() });
   }
   pb.hdg = f.hdg;
   if (Number.isFinite(f.lat) && Number.isFinite(f.lon)) {
@@ -3698,3 +3805,9 @@ export function initMonitor() {
   requestAnimationFrame(frame);
   dirty = true;
 }
+
+// DT extras (bound later phases); placeholder keeps bindDt() simple.
+function bindDtExtras() {}
+
+/** RSSI-vs-position track for the DT heatmap (filled in a later phase). */
+function dtTrackSample() {}

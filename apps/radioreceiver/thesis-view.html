@@ -484,7 +484,7 @@
       .wfrssi { font: 600 var(--t13) var(--mono); color: var(--c); } .wfmeta { grid-column: 1 / -1; font: var(--t12) var(--mono); color: var(--muted); overflow-wrap: anywhere; }
       .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       .nettable th { text-align: left; font-weight: 500; color: var(--muted); }
-      #pane-rf, #pane-wf { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
+      #pane-rf, #pane-wf, #pane-dt { padding-bottom: calc(56px + var(--s4) + env(safe-area-inset-bottom, 0px)); }
       #btnRfWifi[aria-disabled="true"], #btnRfCell[aria-disabled="true"] { opacity: .5; cursor: not-allowed; } .bandrow[aria-disabled="true"] small { color: var(--muted); }
       @media (min-width: 1000px), (max-height: 500px) and (orientation: landscape) { .tab b.gear { display: none; } }
       .slot { min-width: 0; }
@@ -496,6 +496,10 @@
       .tune-steps .btn { flex: 1 1 64px; font: 600 var(--t13) var(--mono); padding: 0 var(--s2); }
       #spectrum { cursor: crosshair; }
       .dt-wrap { display: grid; place-items: center; }
+      .dt-alert { margin: var(--s2) 0; padding: var(--s2) var(--s3); border-radius: 10px; background: rgba(239,68,68,.15); color: #fca5a5; font-weight: 600; }
+      .dt-alert.info { background: rgba(245,158,11,.15); color: #fcd34d; }
+      .dt-warn { color: #fcd34d; min-height: 1em; }
+      .dt-stats b.bad { color: #f87171; }
       #dtCanvas { width: min(100%, 420px); aspect-ratio: 1; height: auto; background: transparent; border-radius: 50%; }
       .dt-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s2); margin: var(--s3) 0; }
       .dt-guide { min-height: 2.8em; font-size: var(--t15); color: var(--text); }
@@ -1022,11 +1026,21 @@
           <div class="dt-stats">
             <div class="stat"><small>Heading</small><b id="dtHeading">—</b></div>
             <div class="stat"><small>Level</small><b id="dtLevel">—</b></div>
-            <div class="stat"><small>Best bearing</small><b id="dtBest">—</b></div>
+            <div class="stat"><small>Bearing</small><b id="dtBest">—</b></div>
+            <div class="stat"><small>HPBW · σ</small><b id="dtBeam">—</b></div>
+            <div class="stat"><small>Contrast</small><b id="dtSnr">—</b></div>
             <div class="stat"><small>Coverage</small><b id="dtCoverage">—</b></div>
+            <div class="stat"><small>Declination</small><b id="dtDecl">—</b></div>
+            <div class="stat"><small>Gain</small><b id="dtGain">—</b></div>
+            <div class="stat"><small>Antenna power</small><b id="dtBias">—</b></div>
             <div class="stat"><small>Fixes</small><b id="dtFixCount">0</b></div>
           </div>
+          <div class="dt-alert" id="dtOverload" hidden role="alert">Overload: the ADC is near full scale. Add an offset attenuator, lower the gain, or step back — bearings are unreliable.</div>
+          <div class="dt-alert info" id="dtCalib" hidden>Compass looks unreliable — wave the phone in a figure-8 for a few seconds, away from the Yagi's metal and the car.</div>
+          <div class="dt-alert" id="dtRelative" hidden>This browser's compass has no north reference. Use the Manual heading source.</div>
           <p class="hint dt-guide" id="dtGuide" aria-live="polite"></p>
+          <p class="hint dt-warn" id="dtWarn" aria-live="polite"></p>
+          <button class="btn ghost" id="btnDtLockGain" type="button" hidden>Lock gain (AGC off)</button>
           <div class="btns">
             <button class="btn primary" id="btnDtFix" type="button"><svg class="i" aria-hidden="true"><use href="#i-gps"/></svg>Save fix</button>
             <button class="btn ghost" id="btnDtReset" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear plot</button>
@@ -1052,13 +1066,25 @@
               <label for="dtSource">Heading source</label>
               <select id="dtSource">
                 <option value="compass">Phone compass</option>
-                <option value="course">GPS course (moving)</option>
                 <option value="manual">Manual (type the bearing)</option>
               </select>
             </div>
             <div class="field">
-              <label for="dtOffset">North / mount offset (°)</label>
+              <label for="dtOffset">Mount offset (°) <small>boom vs phone top</small></label>
               <input id="dtOffset" type="number" step="0.5" inputmode="decimal" />
+            </div>
+            <div class="field">
+              <label for="dtDeclMode">Magnetic → true north</label>
+              <select id="dtDeclMode"><option value="auto">Auto (WMM2025 from GPS)</option><option value="manual">Manual declination</option><option value="off">Off (magnetic °M)</option></select>
+            </div>
+            <div class="field" id="dtDeclManualField"><label for="dtDeclManual">Declination (°, E +)</label><input id="dtDeclManual" type="number" step="0.1" inputmode="decimal" /></div>
+            <div class="field">
+              <label for="dtMode">Antenna</label>
+              <select id="dtMode"><option value="peak">Yagi / LPDA — peak</option><option value="null">Loop / body shield — null (180° ambiguity)</option></select>
+            </div>
+            <div class="field">
+              <label for="dtLag">Level lag (ms)</label>
+              <input id="dtLag" type="number" min="0" max="1000" step="10" inputmode="numeric" />
             </div>
             <div class="field full" id="dtManualField">
               <label for="dtManual">Manual bearing <span id="dtManualVal"></span></label>
@@ -1066,7 +1092,7 @@
             </div>
             <div class="field full"><button class="btn ghost" id="btnDtCompass" type="button"><svg class="i" aria-hidden="true"><use href="#i-compass"/></svg>Turn on compass</button></div>
           </div>
-          <p class="hint">Bearings need a directional antenna (Yagi, loop, or your body as a shield); a whip gives an almost round plot. The phone compass reads magnetic north — add the local declination (about −25° in the Western Cape) to the offset for true bearings. Each fix is drawn as a line on the map.</p>
+          <p class="hint">Bearings need a directional antenna (Yagi/LPDA: peak; loop or body-shield: null). The bearing is the centre of the −3 dB lobe measured in linear power, so sweep slowly past the peak both ways. The phone compass reads magnetic north; Auto adds the WMM2025 declination at your GPS position (around −20° in Gauteng, −25° in the Western Cape). Use Mount offset if the phone is not aligned with the boom. Keep gain fixed (no AGC). Each fix is drawn on the map as a line with a ±σ cone.</p>
         </section>
           </div>
         </div>

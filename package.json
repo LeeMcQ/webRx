@@ -20,7 +20,8 @@
     "test:map": "node bench/run.mjs map.test",
     "test:sampling": "node bench/run.mjs sampling.test",
     "test:coverage": "node bench/run.mjs coverage.test",
-    "test:wifi": "node bench/run.mjs wifi.test"
+    "test:wifi": "node bench/run.mjs wifi.test",
+    "test:df": "node bench/run.mjs df.test"
   },
   "devDependencies": {
     "browser-sync": "^3.0.3",

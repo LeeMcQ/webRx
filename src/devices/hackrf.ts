@@ -10,6 +10,7 @@
 // 8-bit pairs exactly like an RTL-SDR (int8 XOR 0x80 → uint8).
 
 import { RadioError, RadioErrorType } from "@jtarrio/webrtlsdr/errors.js";
+import { SWEEP_BLOCK_BYTES, SWEEP_SAMPLE_RATE, SweepSlice, blockToSlices, initSweepPayload, parseSweepTransfer } from "./sweep.js";
 import {
   DirectSampling,
   RtlDevice,
@@ -41,11 +42,13 @@ const enum Req {
   SET_LNA_GAIN = 19,
   SET_VGA_GAIN = 20,
   ANTENNA_ENABLE = 23,
+  INIT_SWEEP = 26,
 }
 
 const enum Mode {
   OFF = 0,
   RECEIVE = 1,
+  RX_SWEEP = 5,
 }
 
 const BOARD_NAMES: Record<number, string> = {
@@ -72,6 +75,13 @@ export function computeBasebandFilterBw(bandwidthHz: number): number {
 }
 
 /** Splits a 0–50 gain setting across the LNA (0–40 dB, 8 dB steps) and VGA (0–62 dB, 2 dB steps). */
+export const HACKRF_LNA_STEPS = [0, 8, 16, 24, 32, 40];
+export const HACKRF_BASEBAND_FILTERS = BASEBAND_FILTERS;
+/** Clamp to the hardware steps: LNA 0–40 dB in 8 dB, VGA 0–62 dB in 2 dB. */
+export function clampLnaVga(lna: number, vga: number): { lna: number; vga: number } {
+  return { lna: Math.max(0, Math.min(40, 8 * Math.round(lna / 8))), vga: Math.max(0, Math.min(62, 2 * Math.round(vga / 2))) };
+}
+
 export function splitGain(gain: number): { lna: number; vga: number } {
   const g = Math.max(0, Math.min(50, gain)) / 50;
   return {
@@ -136,6 +146,13 @@ export class HackRF implements RtlDevice {
   private biasTee = false;
   private ampEnabled = false;
   private directSampling = DirectSampling.Off;
+  /** Explicit LNA/VGA (overrides the combined gain slider when set). */
+  private lnaVga: { lna: number; vga: number } | null = null;
+  /** Manual baseband filter (Hz); null = automatic from the sample rate. */
+  private basebandHz: number | null = null;
+  private sweepGen = 0;
+  sweeping = false;
+  private preSweepRate = 2_048_000;
 
   // Streaming state
   private streaming = false;
@@ -219,7 +236,8 @@ export class HackRF implements RtlDevice {
     buf.setUint32(4, divider, true);
     await this.ctrlOut(Req.SAMPLE_RATE_SET, 0, 0, buf.buffer);
     const bw = computeBasebandFilterBw(Math.floor((0.75 * freqHz) / divider));
-    await this.ctrlOut(Req.BASEBAND_FILTER_BANDWIDTH_SET, bw & 0xffff, bw >>> 16);
+    const bwSel = this.basebandHz ?? bw;
+    await this.ctrlOut(Req.BASEBAND_FILTER_BANDWIDTH_SET, bwSel & 0xffff, bwSel >>> 16);
     this.sampleRate = freqHz / divider;
     this.maxBuffered = Math.max(4 * TRANSFER_BYTES, Math.ceil(this.sampleRate)); // ~0.5 s of IQ bytes
     return this.sampleRate;
@@ -322,6 +340,65 @@ export class HackRF implements RtlDevice {
 
   isAmpEnabled(): boolean {
     return this.ampEnabled;
+  }
+
+  /** Sets LNA (0–40/8 dB) and VGA (0–62/2 dB) directly. Pass null to go back to the combined slider. */
+  async setLnaVga(v: { lna: number; vga: number } | null): Promise<{ lna: number; vga: number }> {
+    this.lnaVga = v ? clampLnaVga(v.lna, v.vga) : null;
+    await this.applyGain();
+    return this.currentLnaVga();
+  }
+
+  currentLnaVga(): { lna: number; vga: number } {
+    return this.lnaVga ?? (this.gain === null ? { lna: 16, vga: 20 } : splitGain(this.gain));
+  }
+
+  /** Manual MAX2837 baseband filter (snapped to a supported value) or null for automatic. */
+  async setBasebandFilter(hz: number | null): Promise<number> {
+    this.basebandHz = hz === null ? null : computeBasebandFilterBw(hz);
+    const bw = this.basebandHz ?? computeBasebandFilterBw(Math.round(this.sampleRate * 0.75));
+    await this.ctrlOut(Req.BASEBAND_FILTER_BANDWIDTH_SET, bw & 0xffff, bw >>> 16);
+    return bw;
+  }
+
+  /**
+   * Starts sweep mode (receive only) over the given MHz ranges, like hackrf_sweep:
+   * 20 MS/s, 15 MHz baseband filter, 20 MHz steps, interleaved style. Normal
+   * streaming is stopped first; call stopSweep() then resetBuffer() to go back.
+   */
+  async startSweep(rangesMHz: [number, number][], onSlice: (s: SweepSlice) => void, fftSize = 256): Promise<void> {
+    this.stopStreaming(new RadioError("Sweep started", RadioErrorType.UsbTransferError));
+    this.failure = null;
+    await this.setMode(Mode.OFF);
+    this.preSweepRate = this.sampleRate;
+    await this.setSampleRate(SWEEP_SAMPLE_RATE);
+    await this.ctrlOut(Req.BASEBAND_FILTER_BANDWIDTH_SET, 15_000_000 & 0xffff, 15_000_000 >>> 16);
+    await this.applyGain();
+    const numBytes = SWEEP_BLOCK_BYTES * 16; // 16 blocks per retune, as hackrf_sweep
+    const p = initSweepPayload(rangesMHz, numBytes);
+    await this.ctrlOut(Req.INIT_SWEEP, p.value, p.index, p.data.buffer as ArrayBuffer);
+    await this.setMode(Mode.RX_SWEEP);
+    this.sweeping = true;
+    const gen = ++this.sweepGen;
+    const loop = async () => {
+      while (this.sweeping && gen === this.sweepGen) {
+        const r = await this.device.transferIn(RX_ENDPOINT, TRANSFER_BYTES);
+        if (gen !== this.sweepGen) return;
+        if (r.status !== "ok" || !r.data) throw new Error(`USB transfer status: ${r.status}`);
+        for (const b of parseSweepTransfer(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength))) {
+          for (const s of blockToSlices(b, fftSize)) onSlice(s);
+        }
+      }
+    };
+    for (let i = 0; i < 2; ++i) loop().catch((e) => { if (gen === this.sweepGen) { this.sweeping = false; this.fail(e); } });
+  }
+
+  async stopSweep(): Promise<void> {
+    if (!this.sweeping) return;
+    this.sweeping = false;
+    ++this.sweepGen;
+    await this.setMode(Mode.OFF);
+    await this.setSampleRate(this.preSweepRate);
   }
 
   // ── streaming ──────────────────────────────────────────────
@@ -434,8 +511,8 @@ export class HackRF implements RtlDevice {
   }
 
   private async applyGain() {
-    // "Auto" (null) uses libhackrf's recommended starting point: LNA 16 dB, VGA 20 dB.
-    const { lna, vga } = this.gain === null ? { lna: 16, vga: 20 } : splitGain(this.gain);
+    // HackRF has no AGC. "Default" (null) is libhackrf's fixed starting point: LNA 16 dB, VGA 20 dB.
+    const { lna, vga } = this.lnaVga ?? (this.gain === null ? { lna: 16, vga: 20 } : splitGain(this.gain));
     await this.ctrlInExpectOk(Req.SET_LNA_GAIN, lna);
     await this.ctrlInExpectOk(Req.SET_VGA_GAIN, vga);
   }
