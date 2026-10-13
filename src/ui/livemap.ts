@@ -7,7 +7,8 @@
 // • Logged measurements as dots coloured by signal level (drive-test style).
 // • Street and satellite base maps, follow mode, centre and clear buttons.
 
-import * as L from "leaflet";
+import L from "./leaflet-global.js";
+import "leaflet.heat";
 import "leaflet/dist/leaflet.css";
 
 export type MapFix = {
@@ -220,16 +221,55 @@ export class LiveMap {
   private bearings = L.layerGroup();
 
   /** DT bearing fixes: a line from each fix position along its best bearing. */
-  setBearings(list: { lat: number; lon: number; bearing: number; label?: string }[], lengthM = 3000) {
+  private dfLayer = L.layerGroup();
+  private heat: any = null;
+
+  /** Bearing fixes as a line plus a ±σ cone (great-circle), optionally the 180° reciprocal for loop nulls. */
+  setBearings(list: { lat: number; lon: number; bearing: number; sigma?: number; label?: string; ambiguous?: boolean }[], lengthM = 3000) {
     if (!this.map.hasLayer(this.bearings)) this.bearings.addTo(this.map);
     this.bearings.clearLayers();
     for (const f of list) {
       const p = L.latLng(f.lat, f.lon);
-      L.polyline([p, this.offset(p, f.bearing, lengthM)], { color: "#22c55e", weight: 3, dashArray: "8 6", opacity: 0.9 })
-        .bindTooltip(f.label ?? `${Math.round(f.bearing)}°`)
-        .addTo(this.bearings);
+      for (const b of f.ambiguous ? [f.bearing, f.bearing + 180] : [f.bearing]) {
+        const sig = Math.max(1, f.sigma ?? 0);
+        if (f.sigma) {
+          const pts = [p];
+          for (let a = -sig; a <= sig + 1e-9; a += sig / 4) pts.push(this.offset(p, b + a, lengthM));
+          L.polygon(pts, { color: "#22c55e", weight: 0, fillOpacity: 0.12, interactive: false }).addTo(this.bearings);
+        }
+        L.polyline([p, this.offset(p, b, lengthM)], { color: "#22c55e", weight: 3, dashArray: f.ambiguous && b !== f.bearing ? "2 8" : "8 6", opacity: 0.9 })
+          .bindTooltip(f.label ?? `${Math.round(f.bearing)}°`)
+          .addTo(this.bearings);
+      }
       L.circleMarker(p, { radius: 5, color: "#fff", weight: 2, fillColor: "#22c55e", fillOpacity: 1 }).addTo(this.bearings);
     }
+  }
+
+  /** Triangulated estimate, its 95 % error ellipse and the cocked-hat triangle. */
+  setEstimate(est: { lat: number; lon: number; ellipse: [number, number][]; cockedHat?: [number, number][] | null; label: string } | null) {
+    if (!this.map.hasLayer(this.dfLayer)) this.dfLayer.addTo(this.map);
+    this.dfLayer.clearLayers();
+    if (!est) return;
+    L.polygon(est.ellipse, { color: "#f59e0b", weight: 2, fillOpacity: 0.12 }).bindTooltip("95 % error ellipse").addTo(this.dfLayer);
+    if (est.cockedHat) L.polygon(est.cockedHat, { color: "#ef4444", weight: 2, dashArray: "4 4", fillOpacity: 0.08 }).bindTooltip("Cocked hat").addTo(this.dfLayer);
+    L.circleMarker([est.lat, est.lon], { radius: 7, color: "#000", weight: 2, fillColor: "#f59e0b", fillOpacity: 1 }).bindTooltip(est.label, { permanent: false }).addTo(this.dfLayer);
+  }
+
+  /** RSSI heatmap from (lat, lon, level 0..1) points; null hides it. */
+  setHeat(points: [number, number, number][] | null) {
+    if (!points || !points.length) {
+      if (this.heat) { this.map.removeLayer(this.heat); this.heat = null; }
+      return;
+    }
+    const heatFn = (L as any).heatLayer;
+    if (typeof heatFn !== "function") return;
+    if (!this.heat) this.heat = heatFn(points, { radius: 22, blur: 18, maxZoom: 18, minOpacity: 0.3 }).addTo(this.map);
+    else this.heat.setLatLngs(points);
+  }
+
+  /** Fit the view to these points (fixes + estimate). */
+  fitTo(pts: [number, number][]) {
+    if (pts.length) this.map.fitBounds(L.latLngBounds(pts.map(([a, b]) => L.latLng(a, b))).pad(0.2));
   }
 
   private drawCone() {

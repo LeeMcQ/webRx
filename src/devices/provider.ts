@@ -9,6 +9,14 @@ import { RadioError, RadioErrorType } from "@jtarrio/webrtlsdr/errors.js";
 import { RTL2832U } from "@jtarrio/webrtlsdr/rtlsdr/rtl2832u.js";
 import { RtlDevice, RtlDeviceProvider } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
 import { HACKRF_USB_FILTERS, HackRF, isHackRF } from "./hackrf.js";
+import { firmwareOlderThan } from "./sweep.js";
+
+/** Same rule as webrtlsdr's R828D (EEPROM manufacturer/product strings) plus its own flag. */
+export function isBlogV4(dev: Pick<USBDevice, "manufacturerName" | "productName">, rtl?: unknown): boolean {
+  const t = (rtl as any)?.tuner;
+  if (t && typeof t.isRtlSdrBlogV4 === "boolean") return t.isRtlSdrBlogV4;
+  return dev.manufacturerName === "RTLSDRBlog" && dev.productName === "Blog V4";
+}
 
 export type SdrKind = "auto" | "rtlsdr" | "hackrf";
 
@@ -61,7 +69,21 @@ export type ConnectedSdr = {
   maxFrequency: number;
   /** The open device. */
   device: RtlDevice;
+  /** USB serial number (per-device calibration key), when the device reports one. */
+  serial?: string;
+  /** RTL-SDR Blog V4 (R828D with built-in HF upconverter): never use direct sampling. */
+  isRtlBlogV4?: boolean;
+  /** Firmware older than the recommended minimum (HackRF). */
+  firmwareWarning?: string;
 };
+
+/** Stable key for per-device settings, e.g. "hackrf:0000000000000000a06063c8234e925f". */
+export function deviceKey(s: Pick<ConnectedSdr, "kind" | "serial" | "name">): string {
+  return `${s.kind}:${s.serial || s.name}`;
+}
+
+/** R820T/R828D tuner upper limit; above ~1766 MHz the PLL does not lock reliably. */
+export const RTL_MAX_FREQUENCY = 1_766_000_000;
 
 export type SdrProviderOptions = {
   /** Which family to look for. Read every time a device is requested. */
@@ -144,6 +166,8 @@ export class SdrProvider implements RtlDeviceProvider {
         minFrequency: 1_000_000,
         maxFrequency: 6_000_000_000,
         device: hackrf,
+        serial: dev.serialNumber || undefined,
+        firmwareWarning: firmwareOlderThan(hackrf.info.firmware) ? `Firmware ${hackrf.info.firmware} is older than 2023.01.1 — sweep mode and some settings may not work; update with hackrf_spiflash.` : undefined,
       };
     } else {
       // Start from a clean session: a claim left over from an earlier failed
@@ -159,11 +183,26 @@ export class SdrProvider implements RtlDeviceProvider {
         name: dev.productName || "RTL-SDR",
         detail: dev.manufacturerName || undefined,
         minFrequency: 0,
-        maxFrequency: 1_800_000_000,
+        maxFrequency: RTL_MAX_FREQUENCY,
         device: rtl,
+        serial: dev.serialNumber || undefined,
+        isRtlBlogV4: isBlogV4(dev, rtl),
       };
     }
     this.options.onConnect?.(this.current);
     return this.current.device;
   }
+}
+
+/**
+ * RTL2832U digital AGC (demod reg 0x19). webrtlsdr only toggles it in direct
+ * sampling; this exposes it for any mode. Keep it OFF for DF and calibrated
+ * measurements — it changes the level with signal strength.
+ */
+export async function setRtlAgc(rtl: RtlDevice, on: boolean): Promise<boolean> {
+  const r = rtl as any;
+  if (typeof r._enableRtlAgc !== "function") return false;
+  await r._enableRtlAgc(on);
+  r.__rtlAgc = on;
+  return true;
 }

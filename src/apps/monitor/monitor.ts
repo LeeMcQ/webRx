@@ -8,8 +8,9 @@
 
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
-import { HackRF } from "../../devices/hackrf.js";
-import { ConnectedSdr, SdrKind, SdrProvider } from "../../devices/provider.js";
+import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices/hackrf.js";
+import { SweepGrid } from "../../devices/sweep.js";
+import { ConnectedSdr, SdrKind, SdrProvider, deviceKey, setRtlAgc } from "../../devices/provider.js";
 import { formatRate, sampleRatesFor } from "../../devices/rates.js";
 import { DspExports, Scratch, dsp, dspStatus, f32View, u8View } from "../../dsp/wasm.js";
 import {
@@ -33,7 +34,10 @@ import { avgStep, enbwBins, sUnits, cleanDirEntry, NO_RETRY, backoffMs, type Dir
 type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
 type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
 let remote: RemoteClient = owrx;
-import { dt, formatBearing, norm } from "./dt.js";
+import { dt, dtPlay, formatBearing, norm } from "./dt.js";
+import { triangulate, ellipsePoints } from "../../df/triangulate.js";
+import { fixesToCsv, fixesToGpx, fixesToKml, encodeSession, decodeSession, importKraken, type FixRecord } from "../../df/io.js";
+import { distanceHint } from "../../df/pathloss.js";
 import { DistanceFormula, PowerAverager, SpatialSampler, bandBins, haversineM, spectrumLevels } from "../../sampling/spatial.js";
 import {
   Calibration,
@@ -76,6 +80,13 @@ type Settings = {
   dcRemove: boolean;
   peakHold: boolean;
   biasTee: boolean;
+  /** RTL2832U digital AGC (separate from the tuner AGC). */
+  rtlAgc: boolean;
+  /** HackRF LNA/VGA (dB); null = use the combined gain slider. */
+  hrfLna: number | null;
+  hrfVga: number | null;
+  /** HackRF manual baseband filter (Hz); null = automatic (≈0.75 × sample rate). */
+  hrfBaseband: number | null;
   needFix: boolean;
   /** "distance": a pin every spacingM metres (thesis §3.5); "time": every logEvery seconds. */
   logMode: "distance" | "time";
@@ -100,6 +111,10 @@ const DEFAULTS: Settings = {
   dcRemove: true,
   peakHold: true,
   biasTee: false,
+  rtlAgc: false,
+  hrfLna: null,
+  hrfVga: null,
+  hrfBaseband: null,
   needFix: false,
   logMode: "distance",
   spacingM: 5,
@@ -331,7 +346,10 @@ async function connect(): Promise<boolean> {
     document.body.dataset.rxName = sdr?.name ?? "SDR";
     window.dispatchEvent(new CustomEvent("webrx:rxrange"));
     setChip("dotSource", "txtSource", `${sdr?.name ?? "SDR"} ready`, "ok");
-    log(`${sdr?.name ?? "SDR"} connected${sdr?.detail ? ` (${sdr.detail})` : ""}`, "ok");
+    log(`${sdr?.name ?? "SDR"} connected${sdr?.detail ? ` (${sdr.detail})` : ""}${sdr?.serial ? ` · S/N ${sdr.serial}` : ""}${sdr?.isRtlBlogV4 ? " · RTL-SDR Blog V4 (HF via built-in upconverter)" : ""}`, "ok");
+    if (sdr?.firmwareWarning) log(sdr.firmwareWarning, "wn");
+    loadFeForDevice();
+    hwUi();
     updateSourceUi();
     return true;
   } catch (e: any) {
@@ -414,14 +432,34 @@ async function stop() {
 }
 
 const FE_KEY = "webrx.frontend.v1";
-let fe: { upconvHz: number; ppm: number } = { upconvHz: 0, ppm: 0 };
+/** Per-device front-end calibration, keyed by USB serial number ("kind:serial"). */
+const FE_DEV_KEY = "webrx.frontend.devices.v1";
+let fe: { upconvHz: number; ppm: number; cal?: number } = { upconvHz: 0, ppm: 0 };
 try {
   fe = { ...fe, ...JSON.parse(localStorage.getItem(FE_KEY) || "{}") };
 } catch (_) {}
+function feDevices(): Record<string, typeof fe> {
+  try { return JSON.parse(localStorage.getItem(FE_DEV_KEY) || "{}"); } catch (_) { return {}; }
+}
 function saveFe() {
   try {
     localStorage.setItem(FE_KEY, JSON.stringify(fe));
+    if (sdr) {
+      const m = feDevices();
+      m[deviceKey(sdr)] = { ...fe, cal: cfg.cal };
+      localStorage.setItem(FE_DEV_KEY, JSON.stringify(m));
+    }
   } catch (_) {}
+}
+/** On connect: load this dongle's own ppm / upconverter / calibration offset if we have them. */
+function loadFeForDevice() {
+  if (!sdr) return;
+  const m = feDevices()[deviceKey(sdr)];
+  if (m) {
+    fe = { upconvHz: m.upconvHz ?? 0, ppm: m.ppm ?? 0 };
+    if (typeof m.cal === "number") cfg.cal = m.cal;
+    log(`Loaded calibration for ${sdr.name}${sdr.serial ? ` (S/N ${sdr.serial})` : ""}: ${fe.ppm} ppm, offset ${cfg.cal} dB`, "ok");
+  } else saveFe();
 }
 
 async function applyTuning(dev: RtlDevice) {
@@ -430,7 +468,8 @@ async function applyTuning(dev: RtlDevice) {
   const hz = Math.round(cfg.freqMHz * 1e6 + fe.upconvHz);
   if (sdr?.kind === "rtlsdr") {
     // The R820T tuner can't reach HF; use direct sampling (Q branch) below 28.8 MHz.
-    await dev.setDirectSamplingMethod(hz < 28_800_000 ? DirectSampling.Q : DirectSampling.Off);
+    // The RTL-SDR Blog V4 (R828D) has a built-in HF upconverter: never use direct sampling there.
+    await dev.setDirectSamplingMethod(!sdr.isRtlBlogV4 && hz < 28_800_000 ? DirectSampling.Q : DirectSampling.Off);
   }
   return dev.setCenterFrequency(hz);
 }
@@ -449,7 +488,11 @@ async function sdrLoop(my: number) {
   await ctl(() => applyTuning(dev));
   await ctl(() => dev.setGain(cfg.gain));
   await ctl(() => dev.enableBiasTee(cfg.biasTee));
-  if (dev instanceof HackRF) await ctl(() => dev.setAmpEnabled(cfg.amp));
+  if (dev instanceof HackRF) {
+    await ctl(() => dev.setAmpEnabled(cfg.amp));
+    await ctl(() => dev.setLnaVga(cfg.hrfLna === null || cfg.hrfVga === null ? null : { lna: cfg.hrfLna, vga: cfg.hrfVga }));
+    if (cfg.hrfBaseband) await ctl(() => dev.setBasebandFilter(cfg.hrfBaseband));
+  } else if (sdr?.kind === "rtlsdr") await ctl(() => setRtlAgc(dev, cfg.rtlAgc));
   await ctl(() => dev.resetBuffer());
   resetSpectrum();
   updateReadout();
@@ -509,7 +552,13 @@ function processBlock(bytes: Uint8Array) {
   for (let k = 0; k < n; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   lastStats = computeStats();
-  if (isSdrMode()) dt.push(levelAt(dtFreqHz(), dt.st.bwHz), gps.fix?.headingDeg);
+  if (isSdrMode()) {
+    // DT uses the raw (un-averaged) frame so the level lines up in time with the heading.
+    dt.overload = rawMaxDbfs() > -3;
+    if (gps.fix) dt.pos = { lat: gps.fix.lat, lon: gps.fix.lon, altM: (gps.fix as any).altM };
+    dt.push(levelAt(dtFreqHz(), dt.st.bwHz, raw, cfg.cal), Date.now());
+    dtTrackSample();
+  }
   analyser.ingest(spec);
   if (recorder.active) recorder.offer(captureFrame);
   const now = performance.now();
@@ -540,18 +589,25 @@ function computeStats() {
 }
 
 /** Mean power (dB, linear average) of the averaged spectrum in [f - bw/2, f + bw/2]. */
-function levelAt(freqHz: number, bw: number): number {
-  const n = spec.length;
+function levelAt(freqHz: number, bw: number, arr: Float32Array = spec, add = 0): number {
+  const n = arr.length;
   if (!n) return NaN;
   const lo = cfg.freqMHz * 1e6 - cfg.sampleRate / 2;
   const k0 = Math.max(0, Math.floor(((freqHz - bw / 2 - lo) / cfg.sampleRate) * n));
   const k1 = Math.min(n - 1, Math.ceil(((freqHz + bw / 2 - lo) / cfg.sampleRate) * n));
   let sum = 0, cnt = 0;
   for (let k = k0; k <= k1; ++k) {
-    const v = spec[k];
+    const v = arr[k] + add;
     if (Number.isFinite(v)) { sum += Math.pow(10, v / 10); ++cnt; }
   }
   return cnt ? 10 * Math.log10(sum / cnt) : NaN;
+}
+
+/** Highest raw FFT bin (dBFS, before calibration) — near 0 dBFS means the ADC is clipping. */
+function rawMaxDbfs(): number {
+  let m = -Infinity;
+  for (let k = 0; k < raw.length; ++k) if (raw[k] > m) m = raw[k];
+  return m;
 }
 
 function tunedHz(): number {
@@ -1977,6 +2033,10 @@ function bind() {
   });
   bindCheck("dcRemove", "dcRemove");
   bindCheck("peakHold", "peakHold", () => peak.fill(-200));
+  $<HTMLInputElement>("biasTee").addEventListener("click", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.checked && !confirm("Antenna power puts DC (RTL-SDR ≈4.5 V / HackRF 3.3 V, ~50 mA) on the antenna connector. Only enable it for a powered LNA or active antenna — it can damage a DC-shorted antenna, filter or test equipment. Continue?")) { e.preventDefault(); }
+  });
   bindCheck("biasTee", "biasTee", () => {
     const dev = device;
     if (dev) ctl(() => dev.enableBiasTee(cfg.biasTee)).then(() => log(`Antenna power ${cfg.biasTee ? "on" : "off"}`, "wn"));
@@ -2001,6 +2061,7 @@ function bind() {
   $("mBtnStop")?.addEventListener("click", () => stop());
   bindListen();
   bindDt();
+  bindHardware();
   $("btnSnap").addEventListener("click", snapshot);
   $("btnCSV").addEventListener("click", () => exportCsv("download"));
   $("btnShare").hidden = !canShareFiles();
@@ -2161,23 +2222,95 @@ function bindListen() {
 //  DT — directional tracking (polar max-hold per bearing)
 // ═══════════════════════════════════════════════════════════════════
 
+function dtActive() {
+  return pb ? dtPlay : dt;
+}
+
+/** Gain state as recorded with a fix; DF needs a fixed gain with every AGC off. */
+function gainState(): { text: string; agc: boolean } {
+  if (sdr?.kind === "hackrf" && device instanceof HackRF) {
+    const g = device.currentLnaVga();
+    return { text: `LNA ${g.lna} / VGA ${g.vga} dB${cfg.amp ? " + amp 14" : ""}`, agc: false };
+  }
+  const agc = cfg.gain === null || cfg.rtlAgc;
+  return { text: cfg.gain === null ? "tuner AGC" : `${cfg.gain} dB${cfg.rtlAgc ? " + RTL AGC" : ""}`, agc };
+}
+
+/** DF needs repeatable levels: switch tuner AGC and RTL AGC off, keeping the current gain or 30 dB. */
+async function dtLockGain(quiet = false) {
+  const before = gainState();
+  if (!before.agc) return;
+  if (cfg.gain === null) cfg.gain = 30;
+  cfg.rtlAgc = false;
+  saveSettings();
+  const g = $<HTMLInputElement>("gain");
+  if (g) { g.value = String(cfg.gain); g.disabled = false; }
+  const ga = $<HTMLInputElement>("gainAuto");
+  if (ga) ga.checked = false;
+  const r = $<HTMLInputElement>("rtlAgc");
+  if (r) r.checked = false;
+  if (device) {
+    await ctl(() => device!.setGain(cfg.gain)).catch(() => {});
+    if (sdr?.kind === "rtlsdr") await setRtlAgc(device, false).catch(() => false);
+  }
+  if (!quiet) log(`DT: gain fixed at ${gainState().text} for repeatable bearings`, "ok");
+}
+
 function renderDt() {
   const pane = document.getElementById("pane-dt");
   if (!pane || pane.hidden) return;
+  const d = dtActive();
   const units = cfg.cal ? "dBm" : "dBFS";
-  dt.draw($<HTMLCanvasElement>("dtCanvas"), units);
-  $("dtHeading").textContent = dt.heading !== undefined ? formatBearing(dt.heading) : "—";
-  $("dtLevel").textContent = dt.level !== undefined ? `${dt.level.toFixed(1)} ${units}` : "—";
-  const b = dt.best();
-  $("dtBest").textContent = b ? formatBearing(b.bearing) : "—";
-  $("dtCoverage").textContent = `${dt.coverage()}° / 360°`;
+  const sun = document.body.classList.contains("sun");
+  d.draw($<HTMLCanvasElement>("dtCanvas"), units, sun);
+  const north = d.st.source === "manual" ? "T" : d.northRef();
+  $("dtHeading").textContent = d.heading !== undefined ? formatBearing(d.heading, north) : "—";
+  $("dtLevel").textContent = d.level !== undefined ? `${d.level.toFixed(1)} ${units}` : "—";
+  const f = d.fit();
+  $("dtBest").textContent = f ? `${formatBearing(f.bearing, north)}${d.st.mode === "null" ? ` / ${formatBearing(f.bearing + 180, north)}` : ""}` : "—";
+  $("dtBeam").textContent = f ? `${f.beamwidth.toFixed(0)}° · ±${f.sigma.toFixed(0)}°` : "—";
+  $("dtSnr").textContent = f ? `${f.snrDb.toFixed(1)} dB${f.frontBackDb !== null ? ` · F/B ${f.frontBackDb.toFixed(0)}` : ""}` : "—";
+  $("dtCoverage").textContent = `${d.coverage()}° / 360°`;
   $("dtFixCount").textContent = String(dt.st.fixes.length);
-  $("dtGuide").textContent = running ? dt.guidance() : "Press Start, then turn slowly through a full circle.";
+  const dec = d.declination();
+  $("dtDecl").textContent = d.st.declMode === "off" ? "off (°M)" : `${dec >= 0 ? "+" : ""}${dec.toFixed(1)}°${d.st.declMode === "auto" ? (d.pos ? " WMM" : " (no GPS)") : " manual"}`;
+  const gs = gainState();
+  const gEl = $("dtGain");
+  gEl.textContent = gs.text;
+  gEl.classList.toggle("bad", gs.agc);
+  $("btnDtLockGain").hidden = !gs.agc;
+  $("dtBias").textContent = cfg.biasTee ? "ON (DC on antenna)" : "off";
+  $("dtOverload").hidden = !d.overload;
+  const warn = [...(f?.warnings ?? [])];
+  if (gs.agc && isSdrMode()) warn.unshift("AGC is on — levels move with signal strength; lock the gain.");
+  $("dtWarn").textContent = warn.join(" · ");
+  $("dtGuide").textContent = pb ? "Playing back a recording (not saved to the live plot)." : running ? d.guidance() : (d.problem ?? "Press Start (or Sweep capture), then turn slowly through a full circle.");
   $("dtTarget").textContent = `${freqLabel(dtFreqHz())} · ${dt.st.bwHz / 1000} kHz`;
+  dtRenderExtras?.(f, units);
 }
+/** Hook for later DT features (tone, hints, capture). */
+let dtRenderExtras: ((f: ReturnType<typeof dt.fit>, units: string) => void) | null = null;
 
 function renderDtFixes() {
-  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, label: `Fix ${i + 1}: ${formatBearing(f.bearing)} · ${f.level.toFixed(1)} dB · ${freqLabel(f.freqHz)}` })));
+  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, sigma: f.sigma, ambiguous: f.mode === "null", label: `Fix ${i + 1}: ${formatBearing(f.bearing, f.north)} ±${f.sigma}° · ${Number.isFinite(f.level) ? f.level.toFixed(1) : "—"} ${f.units} · ${freqLabel(f.freqHz)}` })));
+  dtAfterFixes?.();
+}
+let dtAfterFixes: (() => void) | null = null;
+
+function dtSaveFix() {
+  const f = gps.fix;
+  if (!f) return log("Save fix needs a GPS position (MT tab → Connect GPS)", "wn");
+  const ready = dt.ready();
+  if (!ready.ok) log(`DT: ${ready.why} — saving anyway with lower confidence`, "wn");
+  const gs = gainState();
+  const fix = dt.addFix({ lat: f.lat, lon: f.lon, gpsAccM: (f as any).accuracyM, units: cfg.cal ? "dBm" : "dBFS", gain: gs.text, agc: gs.agc, headingSource: dt.st.source === "manual" ? "manual" : `compass-${compass.status.source ?? "?"}`, freqHz: dtFreqHz(), station: dt.st.session });
+  if (!fix) return log("No bearing measured yet — press Start and turn through a circle", "wn");
+  if (!ready.ok) { fix.sigma = +(fix.sigma * 1.5).toFixed(1); dt.save(true); }
+  log(`DT fix ${dt.st.fixes.length}: ${formatBearing(fix.bearing, fix.north)} ±${fix.sigma}° (HPBW ${fix.beamwidth}°) at ${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`, "ok");
+  renderDtFixes();
+  dt.reset();
+  dirty = true;
+  return fix;
 }
 
 function bindDt() {
@@ -2189,7 +2322,6 @@ function bindDt() {
     dt.st.freqHz = Number.isFinite(v) && v > 0 ? v * 1e6 : null;
     if (dt.st.freqHz && Math.abs(dt.st.freqHz - cfg.freqMHz * 1e6) > cfg.sampleRate * 0.45) log("DT target is outside the current span — tune the centre closer", "wn");
     dt.reset();
-    dt.save(true);
     dirty = true;
   });
   const bw = $<HTMLInputElement>("dtBw");
@@ -2206,7 +2338,7 @@ function bindDt() {
   src.value = dt.st.source;
   src.addEventListener("change", () => {
     dt.st.source = src.value as any;
-    dt.save(true);
+    dt.reset();
     showMan();
     if (dt.st.source === "compass" && compass.status.state !== "on") $("btnCompass").click();
   });
@@ -2218,43 +2350,65 @@ function bindDt() {
   });
   $("dtManualVal").textContent = `${man.value}°`;
   const off = $<HTMLInputElement>("dtOffset");
-  off.value = String(dt.st.northOffset);
+  off.value = String(dt.st.mountOffset);
   off.addEventListener("change", () => {
     const v = parseFloat(off.value);
-    dt.st.northOffset = Number.isFinite(v) ? v : 0;
-    dt.save(true);
+    dt.st.mountOffset = Number.isFinite(v) ? v : 0;
+    dt.reset();
   });
+  const dm = $<HTMLSelectElement>("dtDeclMode"), dv = $<HTMLInputElement>("dtDeclManual");
+  dm.value = dt.st.declMode;
+  dv.value = String(dt.st.manualDecl);
+  const showDecl = () => ($("dtDeclManualField").hidden = dt.st.declMode !== "manual");
+  dm.addEventListener("change", () => { dt.st.declMode = dm.value as any; dt.reset(); showDecl(); dirty = true; });
+  dv.addEventListener("change", () => { const v = parseFloat(dv.value); dt.st.manualDecl = Number.isFinite(v) ? v : 0; dt.reset(); dirty = true; });
+  showDecl();
+  const md = $<HTMLSelectElement>("dtMode");
+  md.value = dt.st.mode;
+  md.addEventListener("change", () => { dt.st.mode = md.value as any; dt.save(true); dirty = true; });
+  const lag = $<HTMLInputElement>("dtLag");
+  lag.value = String(dt.st.lagMs);
+  lag.addEventListener("change", () => { const v = parseFloat(lag.value); dt.st.lagMs = Number.isFinite(v) ? Math.max(0, Math.min(1000, v)) : 0; dt.reset(); });
   showMan();
   $("btnDtReset").addEventListener("click", () => {
     dt.reset();
     log("DT polar plot cleared");
     dirty = true;
   });
-  $("btnDtFix").addEventListener("click", () => {
-    const f = gps.fix;
-    if (!f) return log("Save fix needs a GPS position (MT tab → Connect GPS)", "wn");
-    const fix = dt.addFix(f.lat, f.lon, dtFreqHz());
-    if (!fix) return log("No bearing measured yet — press Start and turn through a circle", "wn");
-    log(`DT fix ${dt.st.fixes.length}: ${formatBearing(fix.bearing)} at ${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`, "ok");
-    renderDtFixes();
-    dt.reset();
-    dirty = true;
-  });
+  $("btnDtFix").addEventListener("click", () => dtSaveFix());
   $("btnDtClearFixes").addEventListener("click", () => {
+    if (dt.st.fixes.length && !confirm(`Delete all ${dt.st.fixes.length} fixes in “${dt.st.session}”?`)) return;
     dt.clearFixes();
     renderDtFixes();
     dirty = true;
   });
+  $("btnDtLockGain").addEventListener("click", () => dtLockGain().then(() => (dirty = true)));
   $("btnDtCompass").addEventListener("click", () => $("btnCompass").click());
+  // Figure-8 calibration prompt when the platform says accuracy is poor or the needle is jittery.
+  let jitter: number[] = [];
+  compass.addEventListener("change", () => {
+    dt.trackHeading();
+    const s = compass.status;
+    if (s.heading !== undefined) { jitter.push(s.heading); if (jitter.length > 20) jitter.shift(); }
+    let spread = 0;
+    if (jitter.length >= 10 && !running) {
+      const m = jitter[jitter.length - 1];
+      spread = Math.max(...jitter.map((x) => Math.abs(((x - m + 540) % 360) - 180)));
+    }
+    const poor = (s.accuracy !== undefined && s.accuracy > 15) || spread > 12;
+    $("dtCalib").hidden = !poor;
+    $("dtRelative").hidden = s.source !== "relative";
+  });
   setTimeout(renderDtFixes, 500);
   window.addEventListener("webrx:tab", () => (dirty = true));
   setInterval(() => {
     // keep the needle moving when the stream is stopped
     if (!running) {
-      dt.heading = dt.readHeading(gps.fix?.headingDeg);
+      dt.trackHeading();
       dirty = true;
     }
   }, 250);
+  bindDtExtras();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2262,7 +2416,7 @@ function bindDt() {
 // ═══════════════════════════════════════════════════════════════════
 
 /** Playback state: when set, displays show the recorded frame instead of the live stream. */
-let pb: { centreHz: number; rateHz: number; stash: (number | null)[]; hdg?: number; cur?: [number, number]; route?: () => void } | null = null;
+let pb: { centreHz: number; rateHz: number; hdg?: number; cur?: [number, number]; route?: () => void } | null = null;
 
 let fpsCount = 0, fpsAt = performance.now(), fps = 0;
 function srcStats(): string[] {
@@ -2571,7 +2725,7 @@ function captureFrame(): sess.Frame {
     acc: f?.accuracyM,
     spd: f?.speedKmh,
     crs: f?.headingDeg,
-    hdg: dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined),
+    hdg: dt.heading,
     peak: lastStats?.peak,
     peakHz: lastStats?.peakHz,
     band: lastStats?.band,
@@ -2673,8 +2827,9 @@ async function startPlayback(m: sess.SessionMeta) {
   if (running) await stop();
   const frames = await sess.loadFrames(m.id);
   if (!frames.length) return log("This session has no frames", "wn");
-  if (!pb) pb = { centreHz: frames[0].c, rateHz: frames[0].r, stash: dt.st.bins.slice() };
-  dt.st.bins = new Array(360).fill(null);
+  if (!pb) pb = { centreHz: frames[0].c, rateHz: frames[0].r };
+  dtPlay.reset();
+  dtPlay.st = { ...dtPlay.st, freqHz: dt.st.freqHz, bwHz: dt.st.bwHz, mode: dt.st.mode, samples: [], fixes: [] };
   analyser.clearHolds();
   timeline.length = 0;
   const pts = frames.filter((f) => Number.isFinite(f.lat) && Number.isFinite(f.lon)).map((f) => ({ lat: f.lat!, lon: f.lon!, level: f.band }));
@@ -2697,8 +2852,6 @@ async function startPlayback(m: sess.SessionMeta) {
 function stopPlayback() {
   if (!pb) return;
   player.stop();
-  dt.st.bins = pb.stash;
-  dt.save(true);
   pb = null;
   liveMap?.setPlayback(null);
   $("player").hidden = true;
@@ -2735,13 +2888,11 @@ function showFrame(f: sess.Frame) {
   analyser.ingest(spec);
   // DT: feed the recorded heading with the level at the DT target (or the recorded DT level).
   const lvl = Number.isFinite(f.dt as number) ? (f.dt as number) : levelAt(dtFreqHz(), dt.st.bwHz);
+  // Recorded headings are already corrected; replay into the separate playback instance only.
   if (f.hdg !== undefined && Number.isFinite(lvl)) {
-    const src0 = dt.st.source, man = dt.st.manual;
-    dt.st.source = "manual";
-    dt.st.manual = f.hdg - dt.st.northOffset;
-    dt.push(lvl);
-    dt.st.source = src0;
-    dt.st.manual = man;
+    dtPlay.heading = f.hdg;
+    dtPlay.level = lvl;
+    dtPlay.addSample({ h: f.hdg, db: lvl, t: Date.now() });
   }
   pb.hdg = f.hdg;
   if (Number.isFinite(f.lat) && Number.isFinite(f.lon)) {
@@ -3938,4 +4089,368 @@ export function initMonitor() {
   initWifiAnalyser();
   requestAnimationFrame(frame);
   dirty = true;
+}
+
+// ── DT triangulation ────────────────────────────────────────────
+let dtEst: ReturnType<typeof triangulate> = null;
+function dtTriangulate() {
+  const use = dt.st.fixes.filter((f) => Number.isFinite(f.bearing) && Number.isFinite(f.lat));
+  // Loop nulls are ambiguous by 180°: pick the reciprocal that agrees best with the peak fixes (or skip if alone).
+  const peaks = use.filter((f) => f.mode !== "null");
+  const list = use.map((f) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, sigma: Math.max(f.sigma, (f.gpsAccM ?? 0) > 50 ? 10 : 0) }));
+  if (peaks.length >= 2 && peaks.length < use.length) {
+    const base = triangulate(list.filter((_, i) => use[i].mode !== "null"));
+    if (base) use.forEach((f, i) => {
+      if (f.mode !== "null") return;
+      const toEst = (Math.atan2((base.lon - f.lon) * Math.cos((f.lat * Math.PI) / 180), base.lat - f.lat) * 180) / Math.PI;
+      if (Math.abs(((toEst - f.bearing + 540) % 360) - 180) > 90) list[i].bearing = norm(f.bearing + 180);
+    });
+  }
+  dtEst = list.length >= 2 ? triangulate(list) : null;
+  const el = document.getElementById("dtEst");
+  if (dtEst && el) {
+    const e = dtEst.ellipse95;
+    el.innerHTML = `<b>${dtEst.lat.toFixed(5)}, ${dtEst.lon.toFixed(5)}</b><br>95 % ellipse ${fmtM(e.a)} × ${fmtM(e.b)} (major axis ${e.angle.toFixed(0)}°) · ${dtEst.used} bearings · rms miss ${fmtM(dtEst.rms)}${dtEst.cockedHat ? " · cocked hat shown" : ""}`;
+    liveMap?.setEstimate({ lat: dtEst.lat, lon: dtEst.lon, ellipse: ellipsePoints(dtEst.lat, dtEst.lon, e), cockedHat: dtEst.cockedHat, label: `Estimate ±${fmtM(e.a)} (95 %)` });
+  } else {
+    if (el) el.textContent = list.length < 2 ? "Save fixes from at least two places (ideally 60–120° apart) to locate the transmitter." : "Bearings don't intersect in front of both stations — re-check one of them.";
+    liveMap?.setEstimate(null);
+  }
+}
+const fmtM = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
+
+function bindDtExtras() {
+  dtAfterFixes = dtTriangulate;
+  $("btnDtFitMap").addEventListener("click", () => {
+    const pts: [number, number][] = dt.st.fixes.map((f) => [f.lat, f.lon]);
+    if (dtEst) pts.push([dtEst.lat, dtEst.lon]);
+    liveMap?.fitTo(pts);
+  });
+  bindDtField();
+}
+// ── DT field UX: tone, haptics, sun theme, one-tap capture, export, sessions ──
+let toneCtx: AudioContext | null = null, toneOsc: OscillatorNode | null = null, toneGain: GainNode | null = null;
+function dtTone(level: number | undefined, floor: number | undefined) {
+  if (!dt.st.tone || level === undefined || floor === undefined || !running) { if (toneGain) toneGain.gain.value = 0; return; }
+  if (!toneCtx) {
+    toneCtx = new AudioContext();
+    toneOsc = toneCtx.createOscillator();
+    toneGain = toneCtx.createGain();
+    toneOsc.type = "sine";
+    toneOsc.connect(toneGain).connect(toneCtx.destination);
+    toneGain.gain.value = 0;
+    toneOsc.start();
+  }
+  const above = level - floor;
+  const open = above >= dt.st.squelchDb;
+  // 300 Hz at the squelch, +40 Hz per dB (2.3 kHz at +50 dB): pitch follows signal like a classic DF receiver.
+  toneOsc!.frequency.setTargetAtTime(300 + Math.max(0, Math.min(50, above - dt.st.squelchDb)) * 40, toneCtx.currentTime, 0.03);
+  toneGain!.gain.setTargetAtTime(open ? 0.15 : 0, toneCtx.currentTime, 0.02);
+}
+
+let dtCapture = false;
+async function dtStartCapture() {
+  dt.reset();
+  await dtLockGain(true);
+  dtCapture = true;
+  log("DT sweep capture: turn slowly through a full circle, then back across the peak", "ok");
+  if (!running) await start();
+  dirty = true;
+}
+
+function dtHints(f: ReturnType<typeof dt.fit>, units: string) {
+  const out: string[] = [];
+  if (dt.overload || (f && f.snrDb < 6 && dt.level !== undefined && dt.level > (units === "dBm" ? -40 : -25)))
+    out.push("Very strong and flat: you are close. Use an offset attenuator (tune to LO ± IF / a harmonic), add a step attenuator, or remove the antenna and use the body-shield null.");
+  if (f && f.frontBackDb !== null && f.frontBackDb < 6) out.push(`Front/back only ${f.frontBackDb.toFixed(0)} dB — the strongest return may be a reflection; check ${formatBearing(f.bearing + 180)} too.`);
+  if (f && units === "dBm" && Number.isFinite(f.peakDb)) {
+    const d = distanceHint(f.peakDb, dtFreqHz(), dt.st.eirpDbm, 0, dt.st.plExp);
+    out.push(`Distance hint ≈ ${fmtM(d)} (EIRP ${dt.st.eirpDbm} dBm, n = ${dt.st.plExp}; rough ×/÷3).`);
+  }
+  return out;
+}
+
+function dtDownload(kind: "csv" | "kml" | "gpx") {
+  const name = dt.st.session || "webRx DF";
+  const safe = name.replace(/[^\w.-]+/g, "_");
+  const est = dtEst ? { lat: dtEst.lat, lon: dtEst.lon, ellipse: ellipsePoints(dtEst.lat, dtEst.lon, dtEst.ellipse95) } : undefined;
+  const text = kind === "csv" ? fixesToCsv(dt.st.fixes) : kind === "kml" ? fixesToKml(name, dt.st.fixes, est) : fixesToGpx(name, dt.st.fixes, dtTrack.map((p) => ({ lat: p.lat, lon: p.lon, t: p.t, db: p.db })));
+  const mime = kind === "csv" ? "text/csv" : kind === "kml" ? "application/vnd.google-earth.kml+xml" : "application/gpx+xml";
+  download(new Blob([text], { type: mime }), `${safe}.${kind}`);
+}
+
+const DT_SESS_KEY = "webrx.dt.sessions";
+function dtSessions(): Record<string, FixRecord[]> {
+  try { return JSON.parse(localStorage.getItem(DT_SESS_KEY) || "{}"); } catch (_) { return {}; }
+}
+function dtSaveSessions(m: Record<string, FixRecord[]>) {
+  try { localStorage.setItem(DT_SESS_KEY, JSON.stringify(m)); } catch (_) { log("Could not save DT sessions (storage full?)", "er"); }
+}
+function dtRenderSessions() {
+  const sel = $<HTMLSelectElement>("dtSession");
+  const m = dtSessions();
+  m[dt.st.session] = dt.st.fixes;
+  sel.innerHTML = "";
+  for (const n of Object.keys(m).sort()) { const o = document.createElement("option"); o.value = n; o.textContent = `${n} (${m[n].length})`; sel.appendChild(o); }
+  sel.value = dt.st.session;
+}
+function dtSwitchSession(name: string) {
+  const m = dtSessions();
+  m[dt.st.session] = dt.st.fixes;
+  dtSaveSessions(m);
+  dt.st.session = name;
+  dt.st.fixes = m[name] ?? [];
+  dt.save(true);
+  dtRenderSessions();
+  renderDtFixes();
+  dirty = true;
+}
+
+function bindDtField() {
+  dt.onNewPeak = () => { if (dt.st.haptics && running && navigator.vibrate) navigator.vibrate(25); };
+  const sunOn = localStorage.getItem("webrx.dt.sun") === "1";
+  document.body.classList.toggle("sun", sunOn);
+  const sun = $<HTMLInputElement>("dtSun");
+  sun.checked = sunOn;
+  sun.addEventListener("change", () => { document.body.classList.toggle("sun", sun.checked); localStorage.setItem("webrx.dt.sun", sun.checked ? "1" : "0"); dirty = true; });
+  const tone = $<HTMLInputElement>("dtTone");
+  tone.checked = dt.st.tone;
+  tone.addEventListener("change", () => { dt.st.tone = tone.checked; dt.save(true); if (tone.checked && toneCtx?.state === "suspended") toneCtx.resume(); });
+  const sq = $<HTMLInputElement>("dtSquelch");
+  sq.value = String(dt.st.squelchDb);
+  sq.addEventListener("change", () => { const v = parseFloat(sq.value); dt.st.squelchDb = Number.isFinite(v) ? v : 6; dt.save(true); });
+  const hap = $<HTMLInputElement>("dtHaptics");
+  hap.checked = dt.st.haptics;
+  hap.addEventListener("change", () => { dt.st.haptics = hap.checked; dt.save(true); });
+  const eirp = $<HTMLInputElement>("dtEirp"), ple = $<HTMLInputElement>("dtPlExp");
+  eirp.value = String(dt.st.eirpDbm); ple.value = String(dt.st.plExp);
+  eirp.addEventListener("change", () => { const v = parseFloat(eirp.value); if (Number.isFinite(v)) dt.st.eirpDbm = v; dt.save(true); });
+  ple.addEventListener("change", () => { const v = parseFloat(ple.value); if (Number.isFinite(v) && v >= 1.5 && v <= 6) dt.st.plExp = v; dt.save(true); });
+  $("btnDtCapture").addEventListener("click", () => dtStartCapture());
+  for (const k of ["csv", "kml", "gpx"] as const) $(`btnDtExp${k.toUpperCase()}`).addEventListener("click", () => dtDownload(k));
+  // sessions
+  dtRenderSessions();
+  $<HTMLSelectElement>("dtSession").addEventListener("change", (e) => dtSwitchSession((e.target as HTMLSelectElement).value));
+  $("btnDtNewSession").addEventListener("click", () => {
+    const n = prompt("Name for the new DF session", `Hunt ${Object.keys(dtSessions()).length + 1}`)?.trim();
+    if (n) dtSwitchSession(n);
+  });
+  $("btnDtDelSession").addEventListener("click", () => {
+    if (!confirm(`Delete session “${dt.st.session}” and its fixes?`)) return;
+    const m = dtSessions();
+    delete m[dt.st.session];
+    dtSaveSessions(m);
+    const next = Object.keys(m)[0] ?? "Hunt 1";
+    dt.st.session = next; dt.st.fixes = m[next] ?? [];
+    dt.save(true); dtRenderSessions(); renderDtFixes();
+  });
+  dtRenderExtras = (f, units) => {
+    dtTone(dt.level, f?.floorDb);
+    $("dtHints").textContent = dtHints(f, units).join(" ");
+    if (dtCapture && running) {
+      const r = dt.ready();
+      $("btnDtCapture").textContent = r.ok ? "Captured ✓" : "Capturing…";
+      if (r.ok && gps.fix) {
+        dtCapture = false;
+        const fix = dtSaveFix();
+        if (fix && dt.st.haptics && navigator.vibrate) navigator.vibrate([60, 40, 60]);
+        $("btnDtCapture").textContent = "Sweep capture";
+      }
+    }
+  };
+  bindDtLater();
+}
+function bindDtLater() {
+  // DT keeps only a shortcut to the SA-tab HackRF sweep ("find signal").
+  $("btnDtFind").addEventListener("click", () => {
+    $("tab-sa").click();
+    const c = document.getElementById("sweepCard") as HTMLDetailsElement | null;
+    if (c) { c.open = true; c.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  });
+  bindDtLaterFeatures();
+}
+function bindDtLaterFeatures() {
+  const heat = $<HTMLInputElement>("dtHeat");
+  heat.addEventListener("change", () => { dtHeatOn = heat.checked; dtRenderHeat(); });
+  $("btnDtClearTrack").addEventListener("click", () => { dtTrack.length = 0; dtRenderHeat(); });
+  // Shared session link: fixes travel in the URL (?dts=…), nothing is uploaded anywhere.
+  $("btnDtShare").addEventListener("click", async () => {
+    if (!dt.st.fixes.length) return log("No fixes to share yet", "wn");
+    const url = `${location.origin}${location.pathname}?dts=${encodeSession({ v: 1, name: dt.st.session, fixes: dt.st.fixes })}#dt`;
+    try {
+      if (navigator.share) await navigator.share({ title: `webRx DF: ${dt.st.session}`, url });
+      else { await navigator.clipboard.writeText(url); log("Share link copied — teammates open it to merge your fixes", "ok"); }
+    } catch (_) { prompt("Copy this link", url); }
+  });
+  const merge = (fixes: FixRecord[], from: string) => {
+    const key = (f: FixRecord) => `${f.t}|${f.lat.toFixed(5)}|${f.lon.toFixed(5)}|${f.bearing}`;
+    const have = new Set(dt.st.fixes.map(key));
+    const add = fixes.filter((f) => !have.has(key(f)));
+    dt.st.fixes.push(...add);
+    dt.save(true);
+    renderDtFixes();
+    dtRenderSessions();
+    log(`Imported ${add.length} fix(es) from ${from}${fixes.length - add.length ? ` (${fixes.length - add.length} duplicates skipped)` : ""}`, "ok");
+  };
+  const q = new URLSearchParams(location.search).get("dts");
+  if (q) {
+    const ss = decodeSession(q);
+    if (ss && confirm(`Merge ${ss.fixes.length} shared fixes from “${ss.name}” into “${dt.st.session}”?`)) merge(ss.fixes, `link “${ss.name}”`);
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
+  const file = $<HTMLInputElement>("dtImportFile");
+  $("btnDtImport").addEventListener("click", () => file.click());
+  file.addEventListener("change", async () => {
+    const f = file.files?.[0];
+    file.value = "";
+    if (!f) return;
+    const text = await f.text();
+    try {
+      const ss = text.trim().startsWith("{") ? decodeSession(btoa(unescape(encodeURIComponent(text))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")) : null;
+      const fixes = ss ? ss.fixes : importKraken(text, dtFreqHz());
+      if (!fixes.length) return log("No bearings found in that file (expected webRx JSON, KrakenSDR XML/CSV or DF Aggregator JSON)", "wn");
+      merge(fixes, f.name);
+    } catch (e: any) {
+      log(`Import failed: ${e?.message ?? e}`, "er");
+    }
+  });
+  $("btnDtExpJSON").addEventListener("click", () => download(new Blob([JSON.stringify({ v: 1, name: dt.st.session, fixes: dt.st.fixes }, null, 1)], { type: "application/json" }), `${dt.st.session.replace(/[^\w.-]+/g, "_")}.json`));
+}
+
+// ── Hardware controls (SA tab): RTL AGC, HackRF LNA/VGA/baseband, wideband sweep ──
+function hwUi() {
+  const hk = (sdr?.kind ?? effectiveKind()) === "hackrf";
+  document.querySelectorAll<HTMLElement>(".hw-hackrf").forEach((el) => (el.hidden = !hk));
+  document.querySelectorAll<HTMLElement>(".hw-rtl").forEach((el) => (el.hidden = hk));
+  const lbl = document.getElementById("gainAutoLbl");
+  if (lbl) lbl.textContent = hk ? "Default (LNA 16 / VGA 20, HackRF has no AGC)" : "Tuner AGC";
+  const fw = document.getElementById("hwInfo");
+  if (fw) fw.textContent = sdr ? `${sdr.name}${sdr.detail ? ` · ${sdr.detail}` : ""}${sdr.serial ? ` · S/N ${sdr.serial}` : ""}${sdr.isRtlBlogV4 ? " · Blog V4" : ""}${sdr.firmwareWarning ? " · ⚠ old firmware" : ""}` : "Not connected";
+}
+
+let sweepGrid: SweepGrid | null = null;
+function drawSweep() {
+  const c = document.getElementById("sweepCanvas") as HTMLCanvasElement | null;
+  if (!c || !sweepGrid) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.max(200, c.clientWidth) * dpr, H = 160 * dpr;
+  if (c.width !== W) { c.width = W; c.height = H; }
+  const ctx = c.getContext("2d")!;
+  ctx.clearRect(0, 0, W, H);
+  const d = sweepGrid.db, fin = Array.from(d).filter(Number.isFinite);
+  if (!fin.length) return;
+  const hi = Math.max(...fin), lo = Math.min(...fin);
+  ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = dpr;
+  ctx.beginPath();
+  for (let i = 0; i < d.length; ++i) {
+    if (!Number.isFinite(d[i])) continue;
+    const x = (i / d.length) * W, y = H - ((d[i] - lo) / Math.max(1, hi - lo)) * (H - 10 * dpr) - 5 * dpr;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = "#93a4bf"; ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+  ctx.fillText(`${(sweepGrid.loHz / 1e6).toFixed(0)} MHz`, 4 * dpr, H - 2 * dpr);
+  ctx.textAlign = "right"; ctx.fillText(`${(sweepGrid.hiHz / 1e6).toFixed(0)} MHz · ${sweepGrid.sweeps} sweeps`, W - 4 * dpr, H - 2 * dpr); ctx.textAlign = "left";
+  const list = document.getElementById("sweepPeaks")!;
+  list.innerHTML = "";
+  for (const p of sweepGrid.peaks(6, Math.max(200e3, sweepGrid.binHz * 4))) {
+    const b = document.createElement("button");
+    b.className = "btn ghost"; b.type = "button";
+    b.textContent = `${(p.hz / 1e6).toFixed(3)} MHz · ${p.db.toFixed(0)} dB`;
+    b.title = "Tune here and make it the DT target";
+    b.addEventListener("click", async () => {
+      await stopSweep();
+      dt.st.freqHz = Math.round(p.hz);
+      dt.reset();
+      ($("dtFreq") as HTMLInputElement).value = String(p.hz / 1e6);
+      const sc = $<HTMLInputElement>("saCentre");
+      sc.value = String(+(p.hz / 1e6).toFixed(6));
+      sc.dispatchEvent(new Event("change"));
+      log(`Tuned to sweep peak ${(p.hz / 1e6).toFixed(3)} MHz (also the DT target)`, "ok");
+    });
+    list.appendChild(b);
+  }
+}
+async function stopSweep() {
+  if (device instanceof HackRF && device.sweeping) await device.stopSweep();
+  $("btnSweep").textContent = "Start sweep";
+}
+async function toggleSweep() {
+  if (device instanceof HackRF && device.sweeping) return stopSweep();
+  if (!device) { if (!(await connect())) return; }
+  if (!(device instanceof HackRF)) return log("Wideband sweep needs a HackRF", "wn");
+  if (running) await stop();
+  const nv = (id: string) => parseFloat($<HTMLInputElement>(id).value);
+  const lo = Math.max(1, Math.round(nv("sweepLo"))), hi = Math.min(6000, Math.round(nv("sweepHi")));
+  if (!(hi > lo)) return log("Sweep: stop must be above start", "wn");
+  sweepGrid = new SweepGrid(lo * 1e6, hi * 1e6, 2048);
+  let pending = false;
+  try {
+    await device.startSweep([[lo, hi]], (sl) => {
+      sweepGrid!.add(sl);
+      if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; drawSweep(); }); }
+    });
+    $("btnSweep").textContent = "Stop sweep";
+    log(`HackRF sweep ${lo}–${hi} MHz (receive only, 20 MS/s, 5 MHz slices)`, "ok");
+  } catch (e: any) {
+    log(`Sweep failed: ${e?.message ?? e} — firmware may be too old`, "er");
+  }
+}
+
+function bindHardware() {
+  const ra = document.getElementById("rtlAgc") as HTMLInputElement | null;
+  if (ra) {
+    ra.checked = cfg.rtlAgc;
+    ra.addEventListener("change", () => {
+      cfg.rtlAgc = ra.checked; saveSettings();
+      if (device && sdr?.kind === "rtlsdr") setRtlAgc(device, cfg.rtlAgc).then((ok) => log(ok ? `RTL2832U AGC ${cfg.rtlAgc ? "on" : "off"}` : "This driver can't switch the RTL AGC", ok ? "ok" : "wn"));
+    });
+  }
+  const lna = $<HTMLSelectElement>("hrfLna"), vga = $<HTMLSelectElement>("hrfVga"), bb = $<HTMLSelectElement>("hrfBaseband");
+  lna.innerHTML = `<option value="">slider</option>` + HACKRF_LNA_STEPS.map((v) => `<option value="${v}">${v} dB</option>`).join("");
+  vga.innerHTML = `<option value="">slider</option>` + Array.from({ length: 32 }, (_, i) => i * 2).map((v) => `<option value="${v}">${v} dB</option>`).join("");
+  bb.innerHTML = `<option value="">Auto (0.75 × rate)</option>` + HACKRF_BASEBAND_FILTERS.map((v) => `<option value="${v}">${v / 1e6} MHz</option>`).join("");
+  lna.value = cfg.hrfLna === null ? "" : String(cfg.hrfLna);
+  vga.value = cfg.hrfVga === null ? "" : String(cfg.hrfVga);
+  bb.value = cfg.hrfBaseband === null ? "" : String(cfg.hrfBaseband);
+  const applyLv = () => {
+    cfg.hrfLna = lna.value === "" ? null : Number(lna.value);
+    cfg.hrfVga = vga.value === "" ? null : Number(vga.value);
+    if ((cfg.hrfLna === null) !== (cfg.hrfVga === null)) { if (cfg.hrfLna === null) cfg.hrfLna = 16; else cfg.hrfVga = 20; lna.value = String(cfg.hrfLna); vga.value = String(cfg.hrfVga); }
+    saveSettings();
+    const d = device;
+    if (d instanceof HackRF) ctl(() => d.setLnaVga(cfg.hrfLna === null ? null : { lna: cfg.hrfLna!, vga: cfg.hrfVga! })).then((g) => log(`HackRF LNA ${g.lna} dB · VGA ${g.vga} dB`, "ok"));
+  };
+  lna.addEventListener("change", applyLv);
+  vga.addEventListener("change", applyLv);
+  bb.addEventListener("change", () => {
+    cfg.hrfBaseband = bb.value === "" ? null : Number(bb.value);
+    saveSettings();
+    const d = device;
+    if (d instanceof HackRF) ctl(() => d.setBasebandFilter(cfg.hrfBaseband)).then((bw) => log(`HackRF baseband filter ${bw / 1e6} MHz`, "ok"));
+  });
+  $("btnSweep").addEventListener("click", () => toggleSweep());
+  hwUi();
+}
+
+/** RSSI-vs-position track for the DT heatmap and GPX export. */
+var dtTrack: { lat: number; lon: number; db: number; t: number }[] = [];
+let dtHeatOn = false;
+function dtTrackSample() {
+  const f = gps.fix, lv = dt.level;
+  if (!f || lv === undefined || !running) return;
+  const last = dtTrack[dtTrack.length - 1];
+  const now = Date.now();
+  if (last && now - last.t < 1000 && haversineM(last.lat, last.lon, f.lat, f.lon) < 3) {
+    if (lv > last.db) last.db = lv; // keep the strongest level per spot (antenna pointed at the target)
+    return;
+  }
+  dtTrack.push({ lat: f.lat, lon: f.lon, db: lv, t: now });
+  if (dtTrack.length > 5000) dtTrack.shift();
+  if (dtHeatOn && dtTrack.length % 5 === 0) dtRenderHeat();
+}
+function dtRenderHeat() {
+  if (!dtHeatOn || !dtTrack.length) return liveMap?.setHeat(null);
+  const lv = dtTrack.map((p) => p.db), lo = Math.min(...lv), hi = Math.max(...lv);
+  liveMap?.setHeat(dtTrack.map((p) => [p.lat, p.lon, Math.max(0.05, (p.db - lo) / Math.max(1, hi - lo))]));
 }
