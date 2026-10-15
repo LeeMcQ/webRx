@@ -2,8 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-On2aHoWJFHZLZg7JxBOZgURrGek/L0qagrFSCcRq67M='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-UV2f++MKC7JNHvZ+tMuvokKvvH0jCBnBECSPxyWjqrY='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="webrx-build" content="2add66d-mv9fns0f" />
     <meta name="theme-color" content="#0a101c" />
     <meta name="description" content="RF MMN monitoring: live spectrum, waterfall and GPS-tagged measurement logging with RTL-SDR or HackRF." />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -121,7 +122,7 @@
       .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
       .field label, .lbl { font-size: 11px; color: var(--muted); letter-spacing: .04em; }
       .field.full { grid-column: 1 / -1; }
-      select, input[type="number"], input[type="text"] {
+      select, input:not([type]), input[type="text"], input[type="number"], input[type="url"], input[type="password"], input[type="search"], input[type="email"], input[type="tel"] {
         width: 100%; min-height: 38px; padding: 6px 10px;
         background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
       }
@@ -320,7 +321,10 @@
       .btn.ghost:hover { background: rgba(255,255,255,.06); filter: none; }
       .btn.icon { width: var(--tap); padding: 0; }
       .btn.wide { width: 100%; }
-      select, input[type="number"], input[type="text"] { min-height: var(--tap); border-radius: 10px; padding: 0 var(--s3); font-size: var(--t15); }
+      select, input:not([type]), input[type="text"], input[type="number"], input[type="url"], input[type="password"], input[type="search"], input[type="email"], input[type="tel"] { min-height: var(--tap); border-radius: 10px; padding: 0 var(--s3); font-size: var(--t15); }
+      input[type="search"] { -webkit-appearance: none; appearance: none; }
+      input::placeholder { color: var(--muted); opacity: .7; }
+      .check input { flex: none; }
       .check { min-height: var(--tap); font-size: var(--t15); }
       .check input { width: 20px; height: 20px; }
       input[type="range"] { min-height: 32px; }
@@ -650,7 +654,18 @@
       .scopetools .btn[aria-pressed="true"] { color: #93c5fd; border-color: #1d4ed8; }
       .scope { position: relative; }
       .wfline { position: absolute; width: 0; border-left: 1px dashed rgba(244,114,182,.9); pointer-events: none; z-index: 2; }
-      @media (max-width: 520px) { .vfodigits { font-size: 20px; } .vfometer { order: 9; flex-basis: 100%; } .scopetools { margin-left: 0; } }
+      /* phones: digits get their own full-width row, then − step + on one row */
+      @media (max-width: 520px) {
+        .vfodigits { font-size: 20px; }
+        .vfofreq { order: 0; flex: 1 1 100%; justify-content: center; }
+        #btnVfoDown { order: 1; } #vfoStep { order: 2; flex: 1 1 auto; } #btnVfoUp { order: 3; } .vfotag { order: 4; }
+        .vfometer { order: 9; flex-basis: 100%; } .scopetools { order: 10; margin-left: 0; }
+      }
+      @media (max-width: 360px) {
+        .vfodigits { font-size: 17px; padding: 4px 0; }
+        .vfo .vfodigits .vd { min-width: 19px; }
+        .vfo .vfodigits .vd.gap { margin-left: 3px; }
+      }
       [data-theme="light"] .vfodigits { color: #0f172a; } [data-theme="light"] .vfodigits .vd.lead { color: #cbd5e1; } [data-theme="light"] .vfotag { color: #be185d; }
 
       /* PR #9 UI review */
@@ -716,7 +731,10 @@
       .badge-unit { display: inline-block; font: 600 11px var(--mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); color: #93c5fd; margin-left: 4px; }
       /* RM survey */
       .rmsteps { list-style: none; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); padding: 0; margin: 0 0 var(--s3); }
-      .rmstep { width: 100%; min-height: var(--tap); border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--muted); font: 600 var(--t12) inherit; cursor: pointer; }
+      .rmstep { width: 100%; min-height: var(--tap); padding: 2px 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); color: var(--muted); font-family: inherit; font-weight: 600; font-size: var(--t12); line-height: 1.2; cursor: pointer; }
+      #rmLimit { flex: 1 1 auto; min-width: 0; }
+      #rmLimitUnit { flex: none; width: auto; min-width: 76px; }
+      @media (max-width: 400px) { #rmUploadCard .grid2 { grid-template-columns: minmax(0, 1fr); } }
       .rmstep[aria-selected="true"] { color: #fff; border-color: var(--accent); background: rgba(59,130,246,.18); }
       .rmcard h3 { font-size: var(--t13); margin: var(--s3) 0 var(--s2); }
       .rmrange { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); } .rmrange input { width: 110px; }
@@ -761,6 +779,53 @@
         *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
       }
 
+
+      /* ═══ one floating action button: colour + symbol per state ═══ */
+      .fabstack { gap: var(--s2); }
+      .fab { position: relative; display: inline-flex; align-items: center; gap: 10px; height: 56px; min-width: 56px; padding: 0 20px 0 16px;
+        border-radius: 28px; border: 1px solid rgba(255,255,255,.16); color: #fff; cursor: pointer; font-family: inherit; font-weight: 700; font-size: var(--t15);
+        letter-spacing: .02em; box-shadow: 0 10px 24px rgba(0,0,0,.45); background: #2563eb; touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent; transition: background .25s, box-shadow .3s, transform .15s var(--ease), padding .2s; }
+      .fab:active { transform: scale(.96); }
+      .fab:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+      .fab .fab-ic { position: relative; display: grid; place-items: center; width: 26px; height: 26px; }
+      .fab .fab-ic .i { width: 24px; height: 24px; }
+      .fab .fab-txt { white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .fab[data-state="off"] { background: #2563eb; }
+      .fab[data-state="connecting"] { background: #b45309; }
+      .fab[data-state="connecting"] .fab-ic::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25);
+        border-top-color: #fff; animation: fabspin .9s linear infinite; }
+      .fab[data-state="ready"] { background: #15803d; }
+      .fab[data-state="ready"] .fab-ic .i { fill: currentColor; stroke: none; }
+      .fab[data-state="live"] { background: #0e7490; animation: fablive 1.8s ease-out infinite; }
+      .fab[data-state="rec"] { background: #b91c1c; animation: fabrec 1.4s ease-out infinite; }
+      .fab[data-state="rec"] .fab-ic .i { color: #fff; animation: fabblink 1s steps(2, start) infinite; }
+      .fab[data-state="remote"] { background: #4338ca; }
+      .fab[data-state="play"] { background: #6d28d9; }
+      .fab[data-state="play"] .fab-ic .i { fill: currentColor; stroke: none; }
+      .fab[data-state="error"] { background: #c2410c; }
+      @keyframes fabspin { to { transform: rotate(360deg); } }
+      @keyframes fablive { 0% { box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 0 rgba(45,212,191,.55); } 100% { box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 14px rgba(45,212,191,0); } }
+      @keyframes fabrec { 0% { box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 0 rgba(248,113,113,.6); } 100% { box-shadow: 0 10px 24px rgba(0,0,0,.45), 0 0 0 14px rgba(248,113,113,0); } }
+      @keyframes fabblink { to { visibility: hidden; } }
+      @media (prefers-reduced-motion: reduce) { .fab, .fab .fab-ic .i, .fab .fab-ic::after { animation: none !important; } }
+      [data-motion="reduce"] .fab, [data-motion="reduce"] .fab .fab-ic .i, [data-motion="reduce"] .fab .fab-ic::after { animation: none !important; }
+      /* while scrolling on a phone it shrinks to the symbol only */
+      body.scrolling .fab { padding: 0 15px; }
+      body.scrolling .fab .fab-txt { display: none; }
+      /* night theme: all red, the symbol and text tell the states apart */
+      [data-theme="night"] .fab { background: #7f1d1d !important; }
+      [data-theme="night"] .fab[data-state="rec"] { background: #991b1b !important; }
+      .fabmenu { display: flex; flex-direction: column; gap: var(--s2); min-width: 220px; padding: var(--s3); border-radius: 16px;
+        background: var(--panel); border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(0,0,0,.55); }
+      .fabmenu[hidden] { display: none; }
+      .fabmenu .btn { justify-content: flex-start; gap: var(--s2); min-height: 48px; width: 100%; padding: 0 var(--s4); font-size: var(--t15); }
+      .fabmenu .btn[hidden] { display: none; }
+      .fabmenu .btn .i { width: 18px; height: 18px; }
+      .fabmenu .btn.go .i, .fabmenu .btn.stop .i { fill: currentColor; stroke: none; }
+      .fabmenu-head { display: flex; align-items: center; gap: var(--s2); font-size: var(--t13); color: var(--muted); padding: 0 var(--s1) var(--s1); }
+      .fabstack .bubble, .fabstack .recpill, .fabstack .fabmini { display: none !important; }
+      @media (min-width: 1000px) { .fabstack .fab { display: inline-flex; } }
     </style>
   </head>
   <body>
@@ -794,6 +859,8 @@
     <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
     <symbol id="i-skip-back" viewBox="0 0 24 24"><path d="M19 20 9 12l10-8zM5 19V5"/></symbol>
     <symbol id="i-skip-fwd" viewBox="0 0 24 24"><path d="m5 4 10 8-10 8zM19 5v14"/></symbol>
+    <symbol id="i-rec" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18h.01"/></symbol>
     <symbol id="i-gps" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></symbol>
   </defs>
 </svg>
@@ -1639,15 +1706,20 @@
 
 
     <div class="fabstack" id="fabStack">
-      <span class="recpill" id="recPill" hidden><span class="dot live"></span>LIVE</span>
-      <div class="fabmini" id="fabMini">
-        <button class="btn rec mini" id="btnRec" type="button" aria-pressed="false" aria-label="Record session" title="Record session (spectrum, GPS, heading, levels)"><span class="recdot2" aria-hidden="true"></span><span id="recTimer">Rec</span></button>
-        <button class="btn go mini" id="btnStart" type="button" aria-label="Start measuring" title="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start</span></button>
-        <button class="btn stop mini" id="btnStop" type="button" aria-label="Stop measuring" title="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop</span></button>
+      <div class="fabmenu" id="fabMenu" role="menu" aria-label="Measurement controls" hidden>
+        <div class="fabmenu-head"><span class="dot" id="fabMenuDot"></span><span id="fabMenuTxt">No source</span></div>
+        <button class="btn go" id="btnStart" type="button" role="menuitem" aria-label="Start measuring" title="Start measuring"><svg class="i" aria-hidden="true"><use href="#i-play"/></svg><span>Start measuring</span></button>
+        <button class="btn rec" id="btnRec" type="button" role="menuitem" aria-pressed="false" aria-label="Record session" title="Record session (spectrum, GPS, heading, levels)"><span class="recdot2" aria-hidden="true"></span><span id="recTimer">Record session</span></button>
+        <button class="btn stop" id="btnStop" type="button" role="menuitem" aria-label="Stop measuring" title="Stop measuring"><svg class="i" aria-hidden="true"><use href="#i-stop"/></svg><span>Stop measuring</span></button>
+        <button class="btn ghost" id="fabConn" type="button" role="menuitem"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span>Connection…</span></button>
       </div>
-      <button class="bubble" id="connBubble" type="button" aria-haspopup="dialog" aria-controls="connSheet" aria-label="Connection: No source" title="Connection (long-press: reconnect last source)">
-        <svg class="i" aria-hidden="true"><use href="#i-plug"/></svg><span class="bdot" id="bubbleDot"></span>
+      <button class="fab" id="connBubble" type="button" data-state="off" aria-haspopup="menu" aria-controls="fabMenu" aria-expanded="false" aria-label="Connect a receiver">
+        <span class="fab-ic" aria-hidden="true"><svg class="i"><use id="fabIcon" href="#i-plug"/></svg></span>
+        <span class="fab-txt" id="fabTxt">Connect</span>
       </button>
+      <span class="bdot" id="bubbleDot" hidden></span>
+      <span class="recpill" id="recPill" hidden></span>
+      <div class="fabmini" id="fabMini" hidden></div>
     </div>
 
     <dialog id="firstRun" class="sheet frdlg" aria-labelledby="frTitle">
@@ -1786,6 +1858,17 @@
     <script>
 (() => {
   "use strict";
+  // Stale-cache guard: this page and monitor.js must come from the same build.
+  // After an update the browser can hand the new page an older cached script;
+  // reload once (the cache has the new script by then).
+  {
+    const want = document.querySelector('meta[name="webrx-build"]')?.getAttribute("content");
+    if (want && want !== "dev" && window.webrxBuild !== want) {
+      let done = null;
+      try { done = sessionStorage.getItem("webrx.reloadedFor"); sessionStorage.setItem("webrx.reloadedFor", want); } catch (_) {}
+      if (done !== want) { location.reload(); return; }
+    }
+  }
   const $ = (id) => document.getElementById(id);
   // Routing table shared with monitor.js (src/apps/monitor/layout.ts): #cm, #remote→cm, #rm = survey, #rf→bands, #wifi→wf …
   const L = window.webrxLayout || { TABS: ["sa", "mt", "dt", "cm", "rm", "wf", "bands", "settings"], MORE_TABS: ["wf", "bands", "settings"], resolveTab: (n) => n, paneIdFor: (t) => "pane-" + (t === "bands" ? "rf" : t) };
@@ -2010,20 +2093,8 @@
   const sheet = $("connSheet");
   const openSheet = () => { if (!sheet.open) sheet.showModal(); };
   for (const id of ["connChip", "btnOpenConn"]) $(id).addEventListener("click", openSheet);
-  // FAB: tap opens the Connection sheet (as before); long-press reconnects the last source.
-  const bubble = $("connBubble");
-  let lpTimer = 0, lpFired = false;
-  bubble.addEventListener("pointerdown", () => { lpFired = false; lpTimer = setTimeout(() => {
-    lpFired = true;
-    const st = dotState($("dotSource").className);
-    if (st !== "ok" && st !== "live") { $("btnConnect").click(); navigator.vibrate?.(20); }
-  }, 600); });
-  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) bubble.addEventListener(ev, () => clearTimeout(lpTimer));
-  bubble.addEventListener("click", (e) => { if (lpFired) { e.preventDefault(); lpFired = false; return; } openSheet(); });
-  bubble.addEventListener("contextmenu", (e) => e.preventDefault());
-  // Start toggles Stop in the stack; minis fade while scrolling on touch screens.
-  const syncRun = () => { const on = !$("btnStop").disabled; $("btnStart").hidden = on; $("btnStop").hidden = !on; };
-  new MutationObserver(syncRun).observe($("btnStop"), { attributes: true, attributeFilter: ["disabled"] }); syncRun();
+  // The floating button (state, menu, long-press) is driven by monitor.js (fab.ts).
+  // It shrinks to its symbol while scrolling on touch screens.
   let scrollT = 0;
   addEventListener("scroll", () => { if (!matchMedia("(pointer: coarse)").matches) return; document.body.classList.add("scrolling"); clearTimeout(scrollT); scrollT = setTimeout(() => document.body.classList.remove("scrolling"), 350); }, { passive: true });
 
@@ -2065,9 +2136,7 @@
   // ── mirrors of live state (the monitor keeps writing to the original elements) ──
   const syncConn = () => {
     const st = dotState($("dotSource").className), txt = $("txtSource").textContent;
-    $("bubbleDot").className = "bdot " + st; $("sheetDot").className = "dot " + st; $("sheetTxt").textContent = txt;
-    $("connBubble").classList.toggle("live", st === "live");
-    $("connBubble").setAttribute("aria-label", "Connection: " + txt);
+    $("sheetDot").className = "dot " + st; $("sheetTxt").textContent = txt;
   };
   observe($("dotSource"), syncConn, ["class"]); observe($("txtSource"), syncConn);
 
@@ -2082,8 +2151,6 @@
     if (k === "Gps") c.addEventListener("click", () => { sheet.close(); show("mt"); });
   }
 
-  const stop = $("btnStop");
-  observe(stop, () => { $("recPill").hidden = stop.disabled; }, ["disabled"]);
 
   // ── tuner ──
   const freq = $("freq");
