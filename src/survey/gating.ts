@@ -96,3 +96,54 @@ export function reduceBands(dB: Float32Array, groups: number): Float32Array {
   }
   return out;
 }
+
+/**
+ * Noise floor across frequency: the 10th-percentile level of each block of
+ * `block` bins, linearly interpolated between block centres. A narrowband
+ * carrier occupies few bins of a block, so — unlike a per-bin floor that
+ * follows the level over time — it never becomes "the floor" and is never
+ * squelched for being steady. NaN bins (not measured) are ignored.
+ */
+export function spectralFloor(dB: Float32Array, block: number, pct = 0.1): Float32Array {
+  const n = dB.length;
+  const out = new Float32Array(n);
+  if (!n) return out;
+  const B = Math.max(1, Math.min(n, Math.round(block)));
+  const nb = Math.ceil(n / B);
+  const lvl = new Float64Array(nb).fill(NaN);
+  const tmp: number[] = [];
+  for (let j = 0; j < nb; j++) {
+    tmp.length = 0;
+    for (let i = j * B; i < Math.min(n, (j + 1) * B); i++) if (Number.isFinite(dB[i])) tmp.push(dB[i]);
+    if (!tmp.length) continue;
+    tmp.sort((a, b) => a - b);
+    lvl[j] = tmp[Math.min(tmp.length - 1, Math.floor(pct * tmp.length))];
+  }
+  // fill blocks without data from their neighbours
+  const known = Array.from(lvl.keys()).filter((j) => Number.isFinite(lvl[j]));
+  if (!known.length) return out.fill(NaN);
+  const centre = (j: number) => (j + 0.5) * B - 0.5;
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    while (k < known.length - 1 && centre(known[k + 1]) <= i) k++;
+    const a = known[k], b = known[Math.min(k + 1, known.length - 1)];
+    const ca = centre(a), cb = centre(b);
+    if (i <= ca || a === b) out[i] = lvl[a];
+    else if (i >= cb) out[i] = lvl[b];
+    else out[i] = lvl[a] + ((lvl[b] - lvl[a]) * (i - ca)) / (cb - ca);
+  }
+  return out;
+}
+
+/** The floor reduced like `reduceBands` reduces levels: [mean, mean] per group (so peak and mean share it). */
+export function reduceFloor(floor: Float32Array, groups: number): Float32Array {
+  const g = Math.max(1, Math.min(groups, floor.length));
+  const out = new Float32Array(2 * g);
+  for (let k = 0; k < g; k++) {
+    const a = Math.floor((k * floor.length) / g), b = Math.max(a + 1, Math.floor(((k + 1) * floor.length) / g));
+    let lin = 0, c = 0;
+    for (let i = a; i < b; i++) if (Number.isFinite(floor[i])) (lin += Math.pow(10, floor[i] / 10)), c++;
+    out[2 * k] = out[2 * k + 1] = c ? 10 * Math.log10(lin / c) : NaN;
+  }
+  return out;
+}

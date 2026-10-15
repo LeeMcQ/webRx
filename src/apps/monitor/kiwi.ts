@@ -156,7 +156,7 @@ export class KiwiClient {
       if (this.wf !== ws) return;
       const was = this.state;
       this.state = was === "connecting" || this.error ? "error" : "closed";
-      if (was === "connecting" && !this.error) this.error = "KiwiSDR closed the connection (busy, password or not reachable)";
+      if (was === "connecting" && !this.error) this.error = "KiwiSDR closed the connection before it was ready";
       this.cleanup();
       this.onLog?.(this.state === "error" ? `KiwiSDR: ${this.error}` : "KiwiSDR disconnected", this.state === "error" ? "er" : "wn");
       this.onChange?.();

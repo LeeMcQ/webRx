@@ -1,7 +1,8 @@
 // Bearing estimation from a rotate-and-sweep capture with a directional antenna.
 // All averaging is done in linear power. A sample is {h: heading °, db: level, t}.
 
-export type Sample = { h: number; db: number; t: number };
+/** One heading/level pair; `m` = heading still against magnetic north (declination unknown when taken). */
+export type Sample = { h: number; db: number; t: number; m?: 1 };
 export const norm = (d: number) => ((d % 360) + 360) % 360;
 export const angDiff = (a: number, b: number) => ((a - b + 540) % 360) - 180; // signed a-b in (-180,180]
 const lin = (db: number) => Math.pow(10, db / 10);

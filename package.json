@@ -15,7 +15,6 @@
     "bench:dsp": "node bench/run.mjs dsp_benchmark",
     "test:devices": "node bench/run.mjs devices.test",
     "typecheck": "tsc --noEmit -p .",
-    "docs": "node ./build.mjs --dist && rm -rf docs && cp -r dist/apps/radioreceiver docs",
     "test:compass": "node bench/run.mjs compass.test",
     "test:map": "node bench/run.mjs map.test",
     "test:sampling": "node bench/run.mjs sampling.test",
@@ -24,7 +23,8 @@
     "test:df": "node bench/run.mjs df.test",
     "test:layout": "node bench/run.mjs layout.test",
     "test:survey": "node bench/run.mjs survey.test",
-    "test:remote": "node bench/run.mjs remote.test"
+    "test:remote": "node bench/run.mjs remote.test",
+    "test": "npm run typecheck && for t in devices compass map sampling coverage wifi df layout survey remote; do npm run -s test:$t || exit 1; done"
   },
   "devDependencies": {
     "browser-sync": "^3.0.3",

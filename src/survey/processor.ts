@@ -1,17 +1,30 @@
 // Survey processing pipeline (runs in a Web Worker; same code runs inline as a fallback).
 // sweep dBFS grids → dBm → band reduction → noise-floor squelch w/ hysteresis →
 // distance/time/change gate → rows → columnar chunk → gzip → SHA-256.
+//
+// The squelch threshold sits a set number of dB above the noise floor, which is
+// estimated across frequency (10th percentile over ~10 MHz blocks) and smoothed
+// over time — so a steady carrier stays above it however long it is on.
 
 import { encodeChunk, gzip, sha256Hex, type SampleRow } from "./codec.js";
-import { SampleGate, Squelch, reduceBands, type Fix } from "./gating.js";
+import { SampleGate, Squelch, reduceBands, reduceFloor, spectralFloor, type Fix } from "./gating.js";
 import { toDbm, type DbmCalibration, type SweepParams } from "./params.js";
 
-export const CHUNK_ROWS = 300;
+/** Rows per chunk (≈ 4 min of driving at 1 sample/s) … */
+export const CHUNK_ROWS = 256;
+/** … or at most this old, so a stop, crash or closed tab never loses more than a minute. */
+export const FLUSH_MS = 60_000;
+/** Width of the noise-floor percentile blocks. */
+export const FLOOR_BLOCK_HZ = 10e6;
+/** Time smoothing of the noise floor (per sample). */
+export const FLOOR_ALPHA = 0.2;
 
 export interface ProcInit {
   surveyKey: string;
   params: SweepParams;
   cal: DbmCalibration;
+  /** First chunk number (continuing after a worker restart). */
+  firstN?: number;
 }
 export interface ChunkOut {
   n: number;
@@ -35,40 +48,80 @@ export class SurveyProcessor {
   private n = 0;
   constructor(public o: ProcInit) {
     this.gate = new SampleGate({ distM: o.params.distM, timeS: o.params.timeS, changeDb: o.params.changeDb });
+    this.n = o.firstN ?? 0;
   }
 
-  values(grids: Float32Array[]): Float32Array {
+  private groups() {
     const p = this.o.params;
-    const parts = grids.map((g) => {
-      const dbm = new Float32Array(g.length);
-      for (let i = 0; i < g.length; i++) dbm[i] = Number.isFinite(g[i]) ? toDbm(g[i], this.o.cal) : -160;
-      return p.reduction === "none" ? dbm : reduceBands(dbm, p.reduction === "peakmean" ? 1 : p.subBands);
+    return p.reduction === "peakmean" ? 1 : p.subBands;
+  }
+
+  /** Per-range dBm spectra (NaN = not measured yet). */
+  private dbm(grids: Float32Array[]): Float32Array[] {
+    return grids.map((g) => {
+      const d = new Float32Array(g.length);
+      for (let i = 0; i < g.length; i++) d[i] = Number.isFinite(g[i]) ? toDbm(g[i], this.o.cal) : NaN;
+      return d;
     });
+  }
+
+  private concat(parts: Float32Array[]) {
     const out = new Float32Array(parts.reduce((a, x) => a + x.length, 0));
     let o = 0;
     for (const x of parts) out.set(x, o), (o += x.length);
     return out;
   }
 
+  /** Stored values: dBm per bin, or peak + mean per band; unmeasured → −160. */
+  values(grids: Float32Array[]): Float32Array {
+    const p = this.o.params;
+    return this.concat(
+      this.dbm(grids).map((d) => {
+        const v = d.map((x) => (Number.isFinite(x) ? x : -160));
+        return p.reduction === "none" ? v : reduceBands(v, this.groups());
+      })
+    );
+  }
+
+  /** Noise floor matching `values` (same layout). */
+  floorFor(grids: Float32Array[]): Float32Array {
+    const p = this.o.params;
+    return this.concat(
+      this.dbm(grids).map((d, i) => {
+        const r = p.ranges[i];
+        const binHz = r ? ((r.stopMHz - r.startMHz) * 1e6) / Math.max(1, d.length) : 1e6;
+        const f = spectralFloor(d, Math.max(16, FLOOR_BLOCK_HZ / binHz));
+        return p.reduction === "none" ? f : reduceFloor(f, this.groups());
+      })
+    );
+  }
+
   async sample(grids: Float32Array[], fix: Fix | null, now: number): Promise<SampleOut> {
     const p = this.o.params;
     const vals = this.values(grids);
-    if (!this.floor || this.floor.length !== vals.length) this.floor = vals.slice();
+    const nf = this.floorFor(grids);
+    if (!this.floor || this.floor.length !== vals.length) this.floor = nf.slice();
     const f = this.floor;
-    for (let i = 0; i < vals.length; i++) f[i] = vals[i] < f[i] ? vals[i] : f[i] + 0.02 * (vals[i] - f[i]);
-    const thr = Array.from(f, (x) => x + p.thresholdDb);
+    for (let i = 0; i < f.length; i++) {
+      if (!Number.isFinite(nf[i])) continue;
+      f[i] = Number.isFinite(f[i]) ? f[i] + FLOOR_ALPHA * (nf[i] - f[i]) : nf[i];
+    }
+    // unmeasured bins can't open: threshold +∞
+    const thr = Array.from(f, (x) => (Number.isFinite(x) ? x + p.thresholdDb : Infinity));
     if (!this.squelch) this.squelch = new Squelch(thr, p.hysteresisDb, vals.length);
     this.squelch.thresholdDb = thr;
     const { out, open } = this.squelch.apply(vals);
-    if (!fix) return { kept: false, reason: "nofix" };
-    const reason = this.gate.offer(fix, out.map((v) => (Number.isFinite(v) ? v : -160)));
-    if (reason === "none" || reason === "jitter") return { kept: false, reason };
-    const code = ({ first: 1, distance: 2, time: 3, change: 4 } as Record<string, number>)[reason] ?? 0;
-    this.rows.push({ t: now, lat: fix.lat, lon: fix.lon, accM: fix.accM, reason: code, values: out });
-    let mx = -Infinity;
-    for (const v of out) if (Number.isFinite(v)) mx = Math.max(mx, v);
-    const res: SampleOut = { kept: true, reason, trail: { lat: fix.lat, lon: fix.lon, db: open ? mx : NaN, keep: open > 0 } };
-    if (this.rows.length >= CHUNK_ROWS) res.chunk = await this.flush();
+    let res: SampleOut;
+    const reason = fix ? this.gate.offer(fix, out.map((v) => (Number.isFinite(v) ? v : -160))) : "nofix";
+    if (!fix || reason === "none" || reason === "jitter" || reason === "nofix") res = { kept: false, reason };
+    else {
+      const code = ({ first: 1, distance: 2, time: 3, change: 4 } as Record<string, number>)[reason] ?? 0;
+      this.rows.push({ t: now, lat: fix.lat, lon: fix.lon, accM: fix.accM, reason: code, values: out });
+      let mx = -Infinity;
+      for (const v of out) if (Number.isFinite(v)) mx = Math.max(mx, v);
+      res = { kept: true, reason, trail: { lat: fix.lat, lon: fix.lon, db: open ? mx : NaN, keep: open > 0 } };
+    }
+    if (this.rows.length >= CHUNK_ROWS || (this.rows.length && now - this.rows[0].t >= FLUSH_MS)) res.chunk = await this.flush();
     return res;
   }
 
@@ -122,13 +175,20 @@ export async function handle(state: { p: SurveyProcessor | null }, m: ToWorker):
   return { reply: { id: m.id, ok: true, result: r }, transfer: c ? [c.bytes.buffer as ArrayBuffer] : [] };
 }
 
-/** Main-thread client: uses the worker when available, else runs inline. */
+/**
+ * Main-thread client: uses the worker when available, else runs inline. If the
+ * worker dies mid-survey, processing continues inline from the next chunk
+ * number (rows the worker held since its last chunk are lost — at most
+ * FLUSH_MS of samples — and reported through `onFallback`).
+ */
 export class ProcessorClient {
   private w: Worker | null = null;
   private inline = { p: null as SurveyProcessor | null };
   private seq = 0;
   private wait = new Map<number, { res: (v: any) => void; rej: (e: any) => void }>();
-  readonly usingWorker: boolean;
+  private initArgs: ProcInit | null = null;
+  private nextN = 0;
+  onFallback?: (why: string) => void;
   constructor(workerUrl: string | null) {
     try {
       if (workerUrl && typeof Worker === "function") {
@@ -139,28 +199,48 @@ export class ProcessorClient {
           this.wait.delete(d.id);
           d.ok ? h.res(d.result) : h.rej(new Error(d.error));
         };
-        this.w.onerror = () => {
-          // fall back to inline processing for the rest of the session
-          this.w?.terminate();
-          this.w = null;
-          for (const h of this.wait.values()) h.rej(new Error("survey worker failed"));
-          this.wait.clear();
+        this.w.onerror = (e) => {
+          e.preventDefault?.();
+          this.fallBack(`survey worker failed${(e as ErrorEvent).message ? `: ${(e as ErrorEvent).message}` : ""}`);
         };
       }
     } catch (_) {
       this.w = null;
     }
-    this.usingWorker = !!this.w;
+  }
+  get usingWorker() {
+    return !!this.w;
+  }
+  private fallBack(why: string) {
+    this.w?.terminate();
+    this.w = null;
+    for (const h of this.wait.values()) h.rej(new Error(why));
+    this.wait.clear();
+    if (this.initArgs) this.inline.p = new SurveyProcessor({ ...this.initArgs, firstN: this.nextN });
+    this.onFallback?.(why);
+  }
+  private seen(r: any) {
+    const c: ChunkOut | undefined = r?.chunk ?? (r && typeof r === "object" && "bytes" in r ? r : undefined);
+    if (c) this.nextN = Math.max(this.nextN, c.n + 1);
+    return r;
   }
   private call(m: Record<string, unknown> & { op: string }, transfer: ArrayBuffer[] = []): Promise<any> {
     const msg = { ...m, id: ++this.seq } as ToWorker;
-    if (!this.w) return handle(this.inline, msg).then((x) => x.reply.result);
+    if (!this.w) return handle(this.inline, msg).then((x) => this.seen(x.reply.result));
     return new Promise((res, rej) => {
-      this.wait.set(msg.id, { res, rej });
-      this.w!.postMessage(msg, transfer);
+      this.wait.set(msg.id, { res: (v) => res(this.seen(v)), rej });
+      try {
+        this.w!.postMessage(msg, transfer);
+      } catch (e: any) {
+        this.wait.delete(msg.id);
+        this.fallBack(`survey worker unavailable: ${e?.message ?? e}`);
+        rej(e);
+      }
     });
   }
   init(init: ProcInit) {
+    this.initArgs = init;
+    this.nextN = init.firstN ?? 0;
     return this.call({ op: "init", init });
   }
   /** `grids` are copies; their buffers are transferred (zero-copy) to the worker. */

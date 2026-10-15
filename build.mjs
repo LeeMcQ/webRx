@@ -6,6 +6,7 @@ import esbuildPluginTsc from "esbuild-plugin-tsc";
 import { program } from "commander";
 import buildCommands from "./build_settings.mjs";
 import { wasmDspPlugin } from "./build_dsp_plugin.mjs";
+import { execSync } from "child_process";
 
 program.option("--clean", "Clean output directory");
 program.option("--dist", "Enable distribution mode");
@@ -18,6 +19,16 @@ const DIST_MODE = program.opts().dist;
 const SOURCE_MAPS = program.opts().sourceMaps && !DIST_MODE;
 const MINIFY = program.opts().minify;
 
+// One id per build, written into the JS bundles and the pages, so a page can
+// tell when the browser handed it a script cached from an older build.
+const BUILD_ID = (() => {
+  let sha = "local";
+  try {
+    sha = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch (_) {}
+  return `${sha}-${Date.now().toString(36)}`;
+})();
+
 function asArray(src) {
   if (Array.isArray(src)) return src;
   return [src];
@@ -26,7 +37,7 @@ function asArray(src) {
 async function compile(src) {
   console.log(`Build ${src}`);
   // Keep assets (fonts, Leaflet's control icons) inside the app's own folder so
-  // the folder can be deployed on its own (docs/, gh-pages).
+  // the folder can be deployed on its own (gh-pages).
   let assetPrefix = path.dirname(src).split(path.sep).join("/");
   return esbuild.build({
     entryPoints: [src],
@@ -37,6 +48,7 @@ async function compile(src) {
     minify: MINIFY,
     treeShaking: true,
     sourcemap: SOURCE_MAPS,
+    define: { __WEBRX_BUILD__: JSON.stringify(BUILD_ID) },
     loader: {
       ".html": "copy",
       ".json": "copy",
@@ -115,7 +127,23 @@ async function main() {
     });
   }
 
-  if (actions.build) await run(buildCommands);
+  if (actions.build) {
+    // Keep the CSP hash of the monitor's inline script in step with its source.
+    execSync("node scripts/csp-hash.mjs", { stdio: "inherit" });
+    await run(buildCommands);
+    await stampBuild();
+  }
+}
+
+/** Writes the build id into every built page's <meta name="webrx-build">. */
+async function stampBuild() {
+  const pages = await glob("dist/**/*.html", { nodir: true });
+  for (const p of pages) {
+    const html = await fs.readFile(p, "utf8");
+    const next = html.replace(/<meta name="webrx-build" content="[^"]*"\s*\/?>/, `<meta name="webrx-build" content="${BUILD_ID}" />`);
+    if (next !== html) await fs.writeFile(p, next);
+  }
+  console.log(`Build id ${BUILD_ID}`);
 }
 
 main();

@@ -120,7 +120,7 @@ import { fixesToCsv, fixesToKml, fixesToGpx, encodeSession, decodeSession, impor
 }
 
 // ── HackRF sweep protocol ──
-import { initSweepPayload, parseSweepTransfer, blockToSlices, SweepGrid, firmwareOlderThan, SWEEP_BLOCK_BYTES } from "../src/devices/sweep.js";
+import { initSweepPayload, parseSweepTransfer, blockToSlices, SweepGrid, SweepCounter, sweepSteps, blocksForDwell, firmwareOlderThan, SWEEP_BLOCK_BYTES } from "../src/devices/sweep.js";
 import { clampLnaVga } from "../src/devices/hackrf.js";
 import { isBlogV4, deviceKey, RTL_MAX_FREQUENCY } from "../src/devices/provider.js";
 {
@@ -155,7 +155,52 @@ import { isBlogV4, deviceKey, RTL_MAX_FREQUENCY } from "../src/devices/provider.
   check("slice starts f, f+10 MHz", sl[0].startHz === f0 && sl[1].startHz === f0 + 10e6);
   const g = new SweepGrid(2400e6, 2420e6, 256);
   for (const x of sl) g.add(x);
+  check("grid publishes only at the end of a sweep", g.peaks(1).length === 0 && g.sweeps === 0);
+  g.endSweep();
   near("sweep peak at f0+12.5 MHz", g.peaks(1)[0].hz, f0 + 12.5e6, 120e3);
+  // the tone keeps its level when grid bins are finer than FFT bins (old code decayed per FFT bin)
+  const fine = new SweepGrid(2400e6, 2420e6, 4096);
+  for (const x of sl) fine.add(x);
+  fine.endSweep();
+  const coarse = g.peaks(1)[0].db;
+  near("fine grid: same peak level as a coarse grid", fine.peaks(1)[0].db, coarse, 0.01);
+  const fineVals = Array.from(fine.db).filter(Number.isFinite);
+  check("fine grid: every covered bin filled", fineVals.length >= 4096 * 0.49, fineVals.length);
+}
+// ── sweep detectors, hold, discard ──
+{
+  const mk = (db: number[]) => ({ startHz: 0, binHz: 100, db: new Float32Array(db) });
+  const peak = new SweepGrid(0, 400, 1, "peak"), avg = new SweepGrid(0, 400, 1, "avg"), rms = new SweepGrid(0, 400, 1, "rms");
+  for (const gg of [peak, avg, rms]) gg.add(mk([-80, -80, -80, -50])), gg.endSweep();
+  near("detector peak = max", peak.db[0], -50, 1e-4);
+  near("detector avg = mean of dB", avg.db[0], -72.5, 1e-4);
+  near("detector rms = mean power", rms.db[0], 10 * Math.log10((3e-8 + 1e-5) / 4), 1e-3);
+  const hold = new SweepGrid(0, 400, 1, "peak", 0.5);
+  hold.add(mk([-50])), hold.endSweep();
+  hold.add(mk([-90])), hold.endSweep();
+  near("display hold decays 0.5 dB per sweep, not per bin", hold.db[0], -50.5, 1e-4);
+  const d = new SweepGrid(0, 400, 1, "peak");
+  d.add(mk([-60])), d.endSweep();
+  d.add(mk([-20])), d.discard(), d.endSweep();
+  near("discard drops a paused partial sweep", d.db[0], -60, 1e-4);
+}
+// ── sweep counting ──
+{
+  // HackRF: 3 retunes × 2 blocks; interleaved frequencies come back round to the lowest
+  const c = new SweepCounter(sweepSteps([[2400, 2460]]) * 2);
+  const seq = [2400, 2400, 2420, 2420, 2440, 2440, 2400, 2400, 2420, 2420, 2440, 2440, 2400].map((x) => x * 1e6);
+  const b = seq.map((f) => c.next(f));
+  check("counter: boundary when the lowest frequency returns", b.filter(Boolean).length === 2 && b[6] && b[12], b);
+  // single retune: frequency never changes → count blocks
+  const one = new SweepCounter(sweepSteps([[100, 110]]) * 4);
+  const ob = Array.from({ length: 9 }, () => one.next(100e6));
+  check("counter: single-retune plan completes every N blocks", ob.filter(Boolean).length === 2 && ob[4] && ob[8], ob);
+  // RTL hops (unknown count): frequency order only
+  const rtl = new SweepCounter(0);
+  const rb = [88, 90.4, 92.8, 88, 90.4, 92.8, 88].map((x) => rtl.next(x * 1e6));
+  check("counter: RTL hops", rb.filter(Boolean).length === 2 && rb[3] && rb[6], rb);
+  check("sweep steps: 2400–2490 → 5 retunes, 88–108 → 1", sweepSteps([[2400, 2490]]) === 5 && sweepSteps([[88, 108]]) === 1);
+  check("dwell 6.5 ms ≈ 16 blocks (hackrf_sweep default), clamped 1–256", blocksForDwell(6.5) === 16 && blocksForDwell(0.01) === 1 && blocksForDwell(1e6) === 256);
   check("firmware 2021.03.1 older than 2023.01.1", firmwareOlderThan("2021.03.1") === true);
   check("firmware 2024.02.1 ok", firmwareOlderThan("2024.02.1") === false);
   check("git firmware unknown", firmwareOlderThan("git-1a2b3c") === null);
@@ -163,6 +208,25 @@ import { isBlogV4, deviceKey, RTL_MAX_FREQUENCY } from "../src/devices/provider.
   check("Blog V4 detection from EEPROM strings", isBlogV4({ manufacturerName: "RTLSDRBlog", productName: "Blog V4" }) && !isBlogV4({ manufacturerName: "Realtek", productName: "RTL2838UHIDIR" }));
   check("device key uses serial", deviceKey({ kind: "rtlsdr", serial: "00000001", name: "x" }) === "rtlsdr:00000001");
   check("RTL max 1766 MHz", RTL_MAX_FREQUENCY === 1_766_000_000);
+}
+
+// ── DT: magnetic samples converted once declination is known; map bearings in true ──
+import { Directional, trueBearing } from "../src/apps/monitor/dt.js";
+import { declination } from "../src/df/wmm.js";
+{
+  const d = new Directional(false);
+  check("no position: magnetic reference", d.northRef() === "M");
+  d.addSample({ h: 100, db: -50, t: 1, m: 1 });
+  d.addSample({ h: 200, db: -60, t: 2 });
+  d.setPos({ lat: -26.2041, lon: 28.0473 });
+  const D = declination(-26.2041, 28.0473, 0);
+  check("position known: true reference", d.northRef() === "T");
+  near("pending magnetic sample converted to true", d.st.samples[0].h, ((100 + D) % 360 + 360) % 360, 1e-6);
+  check("conversion flag cleared; true samples untouched", d.st.samples[0].m === undefined && d.st.samples[1].h === 200);
+  d.setPos({ lat: -26.3, lon: 28.1 });
+  near("converted once only", d.st.samples[0].h, ((100 + D) % 360 + 360) % 360, 1e-6);
+  near("magnetic fix → true for the map", trueBearing({ bearing: 10, north: "M", lat: -26.2041, lon: 28.0473 }), ((10 + D) % 360 + 360) % 360, 1e-6);
+  check("true fix unchanged", trueBearing({ bearing: 10, north: "T", lat: -26.2, lon: 28 }) === 10);
 }
 
 export function done(label: string) {
