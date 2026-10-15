@@ -1,10 +1,10 @@
 // RM survey: params/validation, gating, squelch, DP, codec, retention, upload resume (local mock server).
 import * as http from "http";
 import { DEFAULT_PARAMS, estimateBytesPerHour, toDbm, validateParams, valuesPerSample } from "../src/survey/params.js";
-import { SampleGate, Squelch, reduceBands } from "../src/survey/gating.js";
+import { SampleGate, Squelch, reduceBands, reduceFloor, spectralFloor } from "../src/survey/gating.js";
 import { simplify } from "../src/survey/dp.js";
 import { ByteReader, ByteWriter, decodeChunk, encodeChunk, gunzip, gzip, sha256Hex, unzigzag, zigzag } from "../src/survey/codec.js";
-import { ProcessorClient, handle, SurveyProcessor } from "../src/survey/processor.js";
+import { CHUNK_ROWS, FLUSH_MS, ProcessorClient, handle, SurveyProcessor } from "../src/survey/processor.js";
 import { expiredChunks, limitState, parseLimit } from "../src/survey/retention.js";
 import { UploadQueue, backoffMs, onUnmeteredNetwork, testConnection, validateServerUrl, type QueuedChunk } from "../src/survey/upload.js";
 
@@ -118,6 +118,83 @@ async function main() {
     check("snapshot keeps all 100 bins in dBm", dd.header.nValues === 100 && Math.abs(dd.rows[0].values[50] - (-40 - 30 - 2 + 1.5)) <= 0.25, dd.rows[0].values[50]);
   }
 
+  // ── noise floor across frequency ──
+  {
+    const spec = new Float32Array(400).map((_, i) => -100 + 3 * Math.sin(i * 1.7) + (i >= 200 && i < 204 ? 50 : 0));
+    const f = spectralFloor(spec, 40);
+    const atCarrier = f[201];
+    check("10th-percentile floor ignores a narrow carrier", atCarrier < -101 && atCarrier > -104, atCarrier);
+    const tilt = new Float32Array(400).map((_, i) => -100 + i * 0.05);
+    const ft = spectralFloor(tilt, 40);
+    check("floor follows a sloping noise floor (interpolated)", Math.abs(ft[200] - tilt[200]) < 2.5 && Math.abs(ft[380] - tilt[380]) < 2.5, [ft[200], ft[380]]);
+    const gaps = new Float32Array(100).fill(NaN);
+    gaps.fill(-95, 60);
+    const fg = spectralFloor(gaps, 20);
+    check("unmeasured blocks borrow their neighbours' floor", fg.every((v) => Math.abs(v + 95) < 1e-4), [fg[0], fg[99]]);
+    const rf = reduceFloor(new Float32Array([-100, -100, -90, -90]), 2);
+    check("reduced floor: [mean, mean] per band", rf[0] === -100 && rf[1] === -100 && Math.abs(rf[2] + 90) < 1e-4 && rf[2] === rf[3], Array.from(rf));
+  }
+
+  // ── a steady carrier stays above the squelch however long it is on ──
+  {
+    const P = { ...DEFAULT_PARAMS, ranges: [{ startMHz: 400, stopMHz: 500 }], reduction: "none" as const, distM: 0, timeS: 1, changeDb: 0, thresholdDb: 10, hysteresisDb: 2 };
+    const sp = new SurveyProcessor({ surveyKey: "k", params: P, cal: CAL });
+    const spec = () => new Float32Array(100).map((_, i) => (i === 50 ? -40 : -90 + Math.random()));
+    let last: any = null, chunks = 0;
+    for (let k = 0; k < 400; k++) {
+      last = await sp.sample([spec()], { t: k * 1000, lat: -33.9, lon: 18.4, accM: 3 }, k * 1000);
+      if (last.chunk) chunks++;
+    }
+    check("carrier still open after 400 sweeps (old per-bin floor crept up and closed it)", last.kept && Math.abs(last.trail.db - (-40 - 30 - 2 + 1.5)) < 0.01, last.trail);
+    check(`chunks flushed every ${FLUSH_MS / 1000} s or ${CHUNK_ROWS} rows`, chunks === 6, chunks);
+  }
+
+  // ── time-based flush even when the vehicle stands still ──
+  {
+    const P = { ...DEFAULT_PARAMS, ranges: [{ startMHz: 400, stopMHz: 500 }], reduction: "peakmean" as const, distM: 10, timeS: 0, changeDb: 0 };
+    const sp = new SurveyProcessor({ surveyKey: "k", params: P, cal: CAL });
+    const g = () => new Float32Array(100).fill(-90);
+    const r0 = await sp.sample([g()], { t: 0, lat: -33.9, lon: 18.4, accM: 3 }, 0);
+    let flushedAt = -1;
+    for (let t = 1000; t <= 70_000; t += 1000) {
+      const r = await sp.sample([g()], { t, lat: -33.9, lon: 18.4, accM: 3 }, t);
+      if (r.chunk && flushedAt < 0) flushedAt = t;
+    }
+    check("standing still: the held row is written after 60 s", r0.kept && flushedAt === FLUSH_MS, flushedAt);
+  }
+
+  // ── worker dies mid-survey → inline, chunk numbers continue ──
+  {
+    const G = globalThis as any;
+    const saved = G.Worker;
+    let msgs = 0;
+    G.Worker = class {
+      onmessage: any;
+      onerror: any;
+      st = { p: null as SurveyProcessor | null };
+      postMessage(m: any) {
+        if (++msgs === 4) return setTimeout(() => this.onerror({ message: "boom", preventDefault() {} }), 0);
+        handle(this.st, m).then((r) => this.onmessage({ data: r.reply }));
+      }
+      terminate() {}
+    };
+    const P = { ...DEFAULT_PARAMS, ranges: [{ startMHz: 400, stopMHz: 500 }], reduction: "peakmean" as const, distM: 10, timeS: 1, changeDb: 0 };
+    const pc = new ProcessorClient("worker.js");
+    let why = "";
+    pc.onFallback = (w) => (why = w);
+    check("fake worker in use", pc.usingWorker);
+    await pc.init({ surveyKey: "k", params: P, cal: CAL });
+    const g = () => new Float32Array(100).fill(-90);
+    await pc.sample([g()], { t: 0, lat: -33.9, lon: 18.4 }, 0);
+    const c0 = await pc.flush();
+    const lost = await pc.sample([g()], { t: 1000, lat: -33.9, lon: 18.5 }, 1000).then(() => "ok", (e) => e.message);
+    check("worker error rejects the pending call", /boom/.test(lost) && /boom/.test(why) && !pc.usingWorker, { lost, why });
+    await pc.sample([g()], { t: 2000, lat: -33.9, lon: 18.6 }, 2000);
+    const c1 = await pc.flush();
+    check("inline processing continues with the next chunk number", c0?.n === 0 && c1?.n === 1, [c0?.n, c1?.n]);
+    G.Worker = saved;
+  }
+
   // ── retention ──
   const now = Date.UTC(2026, 9, 13);
   const ch = [
@@ -143,6 +220,7 @@ async function main() {
   // mock server: stores chunks, verifies sha, fails the 2nd PUT once, requires token
   const store = new Map<string, Map<number, string>>();
   let failOnce = true, puts = 0;
+  const completes: any[] = [];
   const srv = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (d) => chunks.push(d));
@@ -157,6 +235,7 @@ async function main() {
       }
       let m = u.match(/^\/api\/surveys\/(\w+)\/chunks\/(\d+)$/);
       if (req.method === "PUT" && m) {
+        if (!store.has(m[1])) return res.writeHead(404).end();
         puts++;
         if (m[2] === "1" && failOnce) {
           failOnce = false;
@@ -173,7 +252,10 @@ async function main() {
         const s = store.get(m[1]);
         return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ chunks: [...(s || new Map()).entries()].map(([n, sha256]) => ({ n, sha256 })) }));
       }
-      if (req.method === "POST" && /complete$/.test(u)) return res.writeHead(200).end("{}");
+      if (req.method === "POST" && /complete$/.test(u)) {
+        completes.push(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+        return res.writeHead(200).end("{}");
+      }
       res.writeHead(404).end();
     });
   });
@@ -221,7 +303,59 @@ async function main() {
   const q3 = new UploadQueue({ baseUrl: base, token: "t0k" }, fetchFn, new Map([["local1", { surveyKey: "local1", meta: {} }]]), q3chunks, async () => {}, () => clock);
   await q3.run();
   check("new survey upload acked", q3chunks[0].state === "acked");
-  check("complete call", await q3.complete("local1", { samples: 1 }));
+  check("complete call", await q3.complete("local1", { samples: 1 }, Date.UTC(2026, 9, 13, 8)));
+  check("complete carries the survey's real end time", completes.at(-1)?.endedAt === "2026-10-13T08:00:00.000Z", completes.at(-1));
+
+  // the browser's fetch throws "Illegal invocation" when called as a method of another object
+  {
+    const strictFetch = function (this: unknown, url: string, init?: any) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+      return fetch(url, init) as any;
+    };
+    const c = { ...(await mk(4)) };
+    const qq = new UploadQueue({ baseUrl: base, token: "t0k" }, strictFetch as any, new Map([["local1", { surveyKey: "local1", remoteId: "S1", meta: {} }]]), [c], async () => {}, () => clock);
+    const r = await qq.run();
+    check("works with window.fetch passed unbound (no Illegal invocation)", r.sent === 1 && !r.lastError, r);
+  }
+  // never given up: a chunk that failed many times is still retried when due
+  {
+    const old = { ...(await mk(5)), state: "failed" as const, tries: 25, nextAt: clock - 1 };
+    const qq = new UploadQueue({ baseUrl: base, token: "t0k" }, fetchFn, new Map([["local1", { surveyKey: "local1", remoteId: "S1", meta: {} }]]), [old], async () => {}, () => clock);
+    const r = await qq.run();
+    check("chunk with 25 failed tries still uploaded", r.sent === 1 && (old.state as string) === "acked", r);
+  }
+  // manual upload (force) ignores back-off; bytes loaded lazily from the store
+  {
+    const c = { ...(await mk(6)), state: "failed" as const, tries: 3, nextAt: clock + 60_000 };
+    const bytes = c.bytes!;
+    delete (c as any).bytes;
+    let loads = 0;
+    const qq = new UploadQueue({ baseUrl: base, token: "t0k" }, fetchFn, new Map([["local1", { surveyKey: "local1", remoteId: "S1", meta: {} }]]), [c], async () => {}, () => clock, async () => (loads++, bytes));
+    check("not due yet: skipped", (await qq.run()).skipped === 1 && loads === 0);
+    const r = await qq.run({ force: true });
+    check("Upload now retries at once, loading bytes on demand", r.sent === 1 && loads === 1, { r, loads });
+  }
+  // a rejected token stops the pass instead of failing every chunk
+  {
+    const cs = [await mk(7), await mk(8), await mk(9)];
+    const saves: string[] = [];
+    const qq = new UploadQueue({ baseUrl: base, token: "wrong" }, fetchFn, new Map([["local1", { surveyKey: "local1", remoteId: "S1", meta: {} }]]), cs, async (c) => void (c && saves.push(`${c.n}:${c.state}`)), () => clock);
+    const r = await qq.run();
+    check("401: pass stops after the first chunk", r.authFailed === true && r.failed === 1 && cs[1].state === "queued", { r, s: cs.map((c) => c.state) });
+    check("only changed chunks are saved", saves.length === 1 && saves[0] === "7:failed", saves);
+  }
+  // server lost the survey (404) → recreated on the next pass
+  {
+    const c = await mk(0);
+    const sv = { surveyKey: "local1", remoteId: "GONE", meta: {} as Record<string, unknown> };
+    const savedSurveys: (string | undefined)[] = [];
+    const qq = new UploadQueue({ baseUrl: base, token: "t0k" }, fetchFn, new Map([["local1", sv]]), [c], async (_c, s) => void (s && savedSurveys.push(s.remoteId)), () => clock);
+    const r1 = await qq.run();
+    check("404: remote id cleared", r1.failed === 1 && sv.remoteId === undefined && savedSurveys[0] === undefined, { r1, sv, savedSurveys });
+    clock += 600_000;
+    const r2 = await qq.run();
+    check("next pass: survey created again and chunk uploaded", r2.sent === 1 && !!sv.remoteId && sv.remoteId !== "GONE", { r2, sv });
+  }
   srv.close();
 
   if (failures) {

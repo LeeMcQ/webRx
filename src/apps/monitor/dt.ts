@@ -36,6 +36,7 @@ type DtState = {
 };
 
 const KEY = "webrx.dt.v2";
+const POS_KEY = "webrx.dt.pos.v1";
 const MAX_SAMPLES = 6000;
 export const STALE_MS = 500;
 
@@ -66,16 +67,67 @@ export class Directional {
   problem: string | undefined;
   /** Set by the monitor: front-end overload in the current frame. */
   overload = false;
-  /** Last known GPS position (for declination). */
+  /** Last known GPS position (for declination); remembered across sessions. */
   pos: { lat: number; lon: number; altM?: number } | undefined;
   private saveAt = 0;
-  private track: { t: number; h: number }[] = [];
+  private posSavedAt = 0;
+  /** `m` marks a heading taken while declination was still unknown (magnetic). */
+  private track: { t: number; h: number; m?: 1 }[] = [];
   private recent: number[] = [];
   private maxSeen = -Infinity;
   onNewPeak?: () => void;
 
   constructor(private persist = true) {
     this.st = persist ? load() : defaults();
+    if (persist) {
+      try {
+        const p = JSON.parse(localStorage.getItem(POS_KEY) || "null");
+        if (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) this.pos = p;
+      } catch (_) {}
+    }
+  }
+
+  /**
+   * GPS position update. Declination changes by well under a degree over tens
+   * of km, so the last position is kept for the next session. When the first
+   * position makes declination known, samples taken against magnetic north
+   * are converted to true so one sweep never mixes the two references.
+   */
+  setPos(p: { lat: number; lon: number; altM?: number }) {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) return;
+    const wasMagnetic = this.northRef() === "M";
+    this.pos = { lat: p.lat, lon: p.lon, altM: p.altM };
+    if (wasMagnetic && this.northRef() === "T") this.convertPending();
+    const now = Date.now();
+    if (this.persist && now - this.posSavedAt > 60_000) {
+      this.posSavedAt = now;
+      try {
+        localStorage.setItem(POS_KEY, JSON.stringify(this.pos));
+      } catch (_) {}
+    }
+  }
+
+  /** Compass headings are magnetic until declination is known (auto mode without a position). */
+  private pendingDecl() {
+    return this.st.source === "compass" && this.st.declMode === "auto" && !this.pos;
+  }
+
+  /** Converts samples/track recorded against magnetic north to true north. */
+  private convertPending() {
+    const d = this.declination();
+    let n = 0;
+    for (const s of this.st.samples)
+      if (s.m) {
+        s.h = norm(s.h + d);
+        delete s.m;
+        n++;
+      }
+    for (const t of this.track)
+      if (t.m) {
+        t.h = norm(t.h + d);
+        delete t.m;
+      }
+    if (n) this.save(true);
   }
 
   save(force = false) {
@@ -128,7 +180,7 @@ export class Directional {
     if (r.deg === undefined) return;
     const t = this.st.source === "compass" ? compass.status.timestamp ?? now : now;
     if (this.track.length && this.track[this.track.length - 1].t >= t) return;
-    this.track.push({ t, h: r.deg });
+    this.track.push(this.pendingDecl() ? { t, h: r.deg, m: 1 } : { t, h: r.deg });
     if (this.track.length > 400) this.track.splice(0, this.track.length - 400);
   }
 
@@ -141,7 +193,7 @@ export class Directional {
     this.level = median(this.recent); // 3-frame median kills single-frame spikes
     const h = headingAt(this.track, t - this.st.lagMs);
     if (h === undefined) return;
-    this.addSample({ h, db: this.level, t });
+    this.addSample(this.pendingDecl() ? { h, db: this.level, t, m: 1 } : { h, db: this.level, t });
   }
 
   /** Playback / tests: a sample with an explicit heading. */
@@ -303,6 +355,16 @@ export class Directional {
       ctx.fillText(`${lo.toFixed(1)} ${units} centre`, 6 * dpr, W - 8 * dpr);
     }
   }
+}
+
+/**
+ * Bearing against true north for plotting on a map. Fixes saved before
+ * declination was known (north "M") are corrected with the declination at the
+ * fix position; true and manual fixes pass through unchanged.
+ */
+export function trueBearing(f: { bearing: number; north: "T" | "M"; lat: number; lon: number }): number {
+  if (f.north !== "M" || !Number.isFinite(f.lat) || !Number.isFinite(f.lon)) return f.bearing;
+  return norm(f.bearing + declination(f.lat, f.lon, 0));
 }
 
 export const formatBearing = (deg: number, north?: "T" | "M") => `${String(Math.round(norm(deg)) % 360).padStart(3, "0")}°${north ?? ""} ${cardinal(deg)}`;

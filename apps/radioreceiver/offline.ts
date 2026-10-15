@@ -3,8 +3,10 @@
 // • Everything the app needs — both pages, their scripts, icons and the WASM DSP
 //   core — is precached on install, so the receiver and the monitor open with no
 //   connection (useful in the field).
-// • Pages are network-first so updates appear as soon as you're online.
-// • Other same-origin files are served from cache and refreshed in the background.
+// • Pages and everything that must match them (scripts, styles, WASM, JSON) are
+//   network-first with a short timeout, falling back to the cache offline, so a
+//   new page never runs with an older cached script after an update.
+// • Images and icons are served from cache and refreshed in the background.
 // • Map tiles you have looked at are kept (up to a few thousand) so the MMN map
 //   still shows streets in the field without signal.
 // • CSV files shared from other Android apps (share target) are put in the
@@ -16,7 +18,9 @@ import { getUploadCfg } from "../../src/survey/store.js";
 import { SYNC_TAG, uploadPass } from "../../src/survey/sync.js";
 import { onUnmeteredNetwork } from "../../src/survey/upload.js";
 
-const VERSION = "v7";
+const VERSION = "v8";
+/** Give the network this long before falling back to the cached copy. */
+const NETWORK_TIMEOUT_MS = 4000;
 const CACHE_NAME = `radioreceiver-${VERSION}`;
 const APP_STATIC_RESOURCES = [
   "./",
@@ -62,16 +66,30 @@ async function refreshCache() {
   await we.clients.claim();
 }
 
-async function networkFirst(request: Request): Promise<Response> {
+async function networkFirst(request: Request, event: FetchEvent, page: boolean): Promise<Response> {
   const cache = await we.caches.open(CACHE_NAME);
-  try {
-    const response = await fetch(request);
-    if (response.ok) cache.put(request, response.clone());
+  const net = fetch(request).then((response) => {
+    if (response.ok) event.waitUntil(cache.put(request, response.clone()).catch(() => undefined));
     return response;
+  });
+  const fallback = async () =>
+    (await cache.match(request, { ignoreSearch: true })) || (page ? await cache.match("index.html") : undefined);
+  try {
+    // A slow connection shouldn't hold the app up: after the timeout use the
+    // cached copy if there is one (the network answer still refreshes the cache).
+    const timeout = new Promise<Response | undefined>((resolve) =>
+      setTimeout(async () => resolve(await fallback()), NETWORK_TIMEOUT_MS)
+    );
+    const first = await Promise.race([net, timeout]);
+    if (first) return first;
+    return await net;
   } catch (error) {
-    return (await cache.match(request, { ignoreSearch: true })) || (await cache.match("index.html")) || Response.error();
+    return (await fallback()) || Response.error();
   }
 }
+
+/** Files that must come from the same build as the page that loads them. */
+const SHELL = /\.(html|js|mjs|css|wasm|json)$/i;
 
 async function staleWhileRevalidate(request: Request, event: FetchEvent): Promise<Response> {
   const cache = await we.caches.open(CACHE_NAME);
@@ -161,7 +179,9 @@ we.addEventListener("fetch", (e: FetchEvent) => {
   }
   if (req.method !== "GET" || url.origin !== we.location.origin) return;
   if (req.mode === "navigate") {
-    e.respondWith(networkFirst(req));
+    e.respondWith(networkFirst(req, e, true));
+  } else if (SHELL.test(url.pathname) || url.pathname.endsWith("/")) {
+    e.respondWith(networkFirst(req, e, false));
   } else {
     e.respondWith(staleWhileRevalidate(req, e));
   }
@@ -175,11 +195,15 @@ we.addEventListener("sync", (e: any) => {
     (async () => {
       const cfg = await getUploadCfg();
       if (!cfg || !cfg.serverUrl || !cfg.autoWifi) return;
-      // Respect the Wi-Fi/unmetered rule: on a metered link finish quietly; the app retries later.
-      if (!onUnmeteredNetwork(navigator, cfg.unmetered).unmetered) return;
+      // Respect the Wi-Fi/unmetered rule. On a metered link, fail the sync so the
+      // browser keeps it and retries later (it would otherwise be consumed); the
+      // app also re-registers whenever it opens or the network changes.
+      if (!onUnmeteredNetwork(navigator, cfg.unmetered).unmetered) throw new Error("metered network — waiting for Wi-Fi");
       const r = await uploadPass({ serverUrl: cfg.serverUrl, token: cfg.token }, fetch as any);
+      // A rejected token won't fix itself: stop; the RM tab shows the error.
+      if (r.authFailed) return;
       // Throwing asks the browser to retry this sync later (with its own back-off).
-      if (r.failed) throw new Error(`${r.failed} chunk(s) failed`);
+      if (r.failed || r.pending) throw new Error(`${r.pending} chunk(s) still pending`);
     })()
   );
 });

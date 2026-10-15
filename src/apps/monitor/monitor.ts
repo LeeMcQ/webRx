@@ -9,7 +9,7 @@
 import { FFT } from "@jtarrio/signals/dsp/fft.js";
 import { DirectSampling, RtlDevice } from "@jtarrio/webrtlsdr/rtlsdr/rtldevice.js";
 import { HackRF, HACKRF_BASEBAND_FILTERS, HACKRF_LNA_STEPS } from "../../devices/hackrf.js";
-import { SweepGrid, type SweepSlice } from "../../devices/sweep.js";
+import { SweepCounter, SweepGrid, blocksForDwell, sweepSteps, type SweepSlice } from "../../devices/sweep.js";
 import { initSurvey, type SurveyHost } from "../../survey/ui.js";
 import { TUNING_KEY, loadTuning, type TuningState } from "./layout.js";
 import { initPresets } from "./presets.js";
@@ -26,6 +26,8 @@ import {
 import { canInstallApp, onInstallAvailabilityChange, promptInstallApp } from "../../ui/install.js";
 import { compass, formatHeading } from "../../gps/compass.js";
 import { LiveMap } from "../../ui/livemap.js";
+import { initFab, refreshFab } from "./fab.js";
+import { drawCalibrationChart, fitCanvas } from "./calchart.js";
 import { initWifiAnalyser } from "./wifi-ui.js";
 import { shared } from "./listen.js";
 import { analyser, CMAP_NAMES, type Src } from "./analyser.js";
@@ -33,11 +35,13 @@ import * as sess from "./sessions.js";
 import { owrx, normaliseUrl, safeHttp, safeKind, type Label } from "./owrx.js";
 import { uber, looksLikeUber } from "./ubersdr.js";
 import { kiwi } from "./kiwi.js";
+import { FEATURED, JNB, favs, rememberServer, savedServers, toggleFav } from "./remote-store.js";
+import { getConnection, linkQuality, radioBridgeSignal } from "./netinfo.js";
 import { avgStep, enbwBins, sUnits, cleanDirEntry, NO_RETRY, backoffMs, type DirEntry } from "./util.js";
 type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
 type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
 let remote: RemoteClient = owrx;
-import { dt, dtPlay, formatBearing, norm } from "./dt.js";
+import { dt, dtPlay, formatBearing, norm, trueBearing } from "./dt.js";
 import { triangulate, ellipsePoints } from "../../df/triangulate.js";
 import { fixesToCsv, fixesToGpx, fixesToKml, encodeSession, decodeSession, importKraken, type FixRecord } from "../../df/io.js";
 import { distanceHint } from "../../df/pathloss.js";
@@ -317,6 +321,7 @@ function log(msg: string, cls = "") {
 function setChip(dotId: string, txtId: string, text: string, state: "" | "ok" | "live" | "warn" | "err") {
   $(txtId).textContent = text;
   $(dotId).className = `dot ${state}`;
+  if (dotId === "dotSource") refreshFab();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -557,15 +562,17 @@ function processBlock(bytes: Uint8Array) {
   for (let k = 0; k < n; ++k) peak[k] = cfg.peakHold ? Math.max(peak[k] - 0.15, spec[k]) : spec[k];
   ++frames;
   lastStats = computeStats();
-  if (isSdrMode()) {
+  if (gps.fix) dt.setPos({ lat: gps.fix.lat, lon: gps.fix.lon, altM: (gps.fix as any).altM });
+  // While an RTL-SDR survey hops across its ranges these frames aren't at the
+  // tuned frequency: keep them out of DT, session recording and MMN pins.
+  if (isSdrMode() && !surveyHopping) {
     // DT uses the raw (un-averaged) frame so the level lines up in time with the heading.
     dt.overload = rawMaxDbfs() > -3;
-    if (gps.fix) dt.pos = { lat: gps.fix.lat, lon: gps.fix.lon, altM: (gps.fix as any).altM };
     dt.push(levelAt(dtFreqHz(), dt.st.bwHz, raw, cfg.cal), Date.now());
     dtTrackSample();
   }
   analyser.ingest(spec);
-  if (recorder.active) recorder.offer(captureFrame);
+  if (recorder.active && !surveyHopping) recorder.offer(captureFrame);
   const now = performance.now();
   if (now - lastTimelineAt > 500) {
     lastTimelineAt = now;
@@ -576,7 +583,7 @@ function processBlock(bytes: Uint8Array) {
     // Calibration: skip the first moments after the stream starts, then average.
     if (now >= calRun.from) calRun.avg.addSpectrum(raw, cfg.cal);
     if (now >= calRun.until) calRun.done();
-  } else if (running) {
+  } else if (running && !surveyHopping) {
     pinAvg.addSpectrum(raw, cfg.cal);
     if (cfg.logMode === "time" && now - lastLogAt >= cfg.logEvery * 1000) {
       lastLogAt = now;
@@ -898,10 +905,11 @@ let lastFixT = 0;
 
 function onGpsForPins() {
   const f = gps.fix;
+  if (f) dt.setPos({ lat: f.lat, lon: f.lon, altM: (f as any).altM });
   sampler.opts.spacingM = cfg.spacingM;
   sampler.opts.formula = cfg.distFormula;
   if (cfg.logMode !== "distance") return;
-  if (!running || calRun) {
+  if (!running || calRun || surveyHopping) {
     pinHint = "";
     return;
   }
@@ -1254,76 +1262,15 @@ function renderCalResults() {
 }
 
 function drawCalChart() {
-  const cv = $<HTMLCanvasElement>("calChart");
-  const ctx = fitCanvas(cv);
-  const W = cv.width;
-  const H = cv.height;
-  const dpr = W / Math.max(1, cv.clientWidth);
-  ctx.clearRect(0, 0, W, H);
   const saved = loadCalibration();
   const useSaved = !draft.inherent && !draft.vehicle && saved;
-  const inh = draft.inherent ?? (useSaved ? saved!.inherent : undefined);
-  const veh = draft.vehicle ?? (useSaved ? saved!.vehicle : undefined);
-  const ref = veh ?? inh;
-  ctx.font = `${10 * dpr}px ui-monospace, monospace`;
-  if (!ref) {
-    ctx.fillStyle = "#64748b";
-    ctx.fillText("Spectra appear here after each measurement", 10 * dpr, 20 * dpr);
-    return;
-  }
-  const guard = Number($<HTMLInputElement>("calGuard").value) || 0;
-  const thr = (veh?.bandMeanDb ?? NaN) + guard;
-  const all = [...(inh?.spectrum ?? []), ...(veh?.spectrum ?? [])];
-  let lo = Math.min(...all);
-  let hi = Math.max(...all, Number.isFinite(thr) ? thr : -Infinity);
-  lo = Math.floor(lo / 5) * 5 - 5;
-  hi = Math.ceil(hi / 5) * 5 + 5;
-  const left = 36 * dpr;
-  const bottom = 16 * dpr;
-  const pw = W - left - 6 * dpr;
-  const ph = H - bottom - 6 * dpr;
-  const y = (v: number) => 6 * dpr + (1 - (v - lo) / (hi - lo)) * ph;
-  const x = (i: number, n: number) => left + ((i + 0.5) / n) * pw;
-  ctx.strokeStyle = "rgba(148,163,184,0.15)";
-  ctx.fillStyle = "#64748b";
-  ctx.lineWidth = 1;
-  for (let v = lo; v <= hi; v += (hi - lo) / 5) {
-    ctx.beginPath();
-    ctx.moveTo(left, Math.round(y(v)) + 0.5);
-    ctx.lineTo(left + pw, Math.round(y(v)) + 0.5);
-    ctx.stroke();
-    ctx.fillText(v.toFixed(0), 2 * dpr, y(v) + 3 * dpr);
-  }
-  ctx.fillText(`${(ref.freqStartHz / 1e6).toFixed(3)} MHz`, left, H - 3 * dpr);
-  const endLabel = `${(ref.freqStopHz / 1e6).toFixed(3)} MHz`;
-  ctx.fillText(endLabel, left + pw - ctx.measureText(endLabel).width, H - 3 * dpr);
-  // measurement band
-  const span = ref.freqStopHz - ref.freqStartHz;
-  const [b0, b1] = bandBins(1000, span, bwHz());
-  ctx.fillStyle = "rgba(59,130,246,0.12)";
-  ctx.fillRect(left + (b0 / 1000) * pw, 6 * dpr, ((b1 - b0) / 1000) * pw, ph);
-  const trace = (sp: number[] | undefined, colour: string) => {
-    if (!sp?.length) return;
-    ctx.beginPath();
-    sp.forEach((v, i) => (i ? ctx.lineTo(x(i, sp.length), y(v)) : ctx.moveTo(x(i, sp.length), y(v))));
-    ctx.strokeStyle = colour;
-    ctx.lineWidth = 1.2 * dpr;
-    ctx.stroke();
-  };
-  trace(inh?.spectrum, "#60a5fa");
-  trace(veh?.spectrum, "#f59e0b");
-  if (Number.isFinite(thr)) {
-    ctx.save();
-    ctx.setLineDash([6 * dpr, 4 * dpr]);
-    ctx.strokeStyle = "#f87171";
-    ctx.beginPath();
-    ctx.moveTo(left, y(thr));
-    ctx.lineTo(left + pw, y(thr));
-    ctx.stroke();
-    ctx.restore();
-    ctx.fillStyle = "#f87171";
-    ctx.fillText(`threshold ${thr.toFixed(1)}`, left + 4 * dpr, y(thr) - 4 * dpr);
-  }
+  drawCalibrationChart(
+    $<HTMLCanvasElement>("calChart"),
+    draft.inherent ?? (useSaved ? saved!.inherent : undefined),
+    draft.vehicle ?? (useSaved ? saved!.vehicle : undefined),
+    Number($<HTMLInputElement>("calGuard").value) || 0,
+    bwHz()
+  );
 }
 
 async function measureStep(which: "inherent" | "vehicle") {
@@ -1503,11 +1450,6 @@ function bindCalibration() {
 //  Network Information API (Wi-Fi / cellular estimates)
 // ═══════════════════════════════════════════════════════════════════
 
-function getConnection(): any {
-  const n = navigator as any;
-  return n.connection || n.mozConnection || n.webkitConnection || null;
-}
-
 function readNetworkInfo() {
   const conn = getConnection();
   if (!conn) {
@@ -1523,20 +1465,10 @@ function readNetworkInfo() {
   // carries most of the weight. Caveats: downlink is capped at 10 Mbps and
   // rounded to 25 kbps, RTT is rounded to 25 ms, and `type` is often missing on
   // desktop. This is NOT a radio signal level.
-  let q: number;
-  if (rtt !== null) {
-    const rttScore = Math.max(0, Math.min(100, 100 - ((rtt - 25) / 475) * 100)); // 25 ms → 100, 500 ms → 0
-    const dlScore = Number.isNaN(dl) ? rttScore : Math.max(0, Math.min(100, (Math.log10(Math.max(dl, 0.05)) + 1.3) / 2.3 * 100)); // 0.05 → 0, 10 Mbps → 100
-    q = Math.round(0.7 * rttScore + 0.3 * dlScore);
-  } else {
-    const ectScore: Record<string, number> = { "4g": 75, "3g": 50, "2g": 25, "slow-2g": 10 };
-    q = ectScore[eff] ?? 50;
-  }
-  q = Math.max(0, Math.min(100, q));
+  const { q, label } = linkQuality(rtt, dl, eff);
   // Real signal level only from the Radio Bridge app (RSSI for Wi-Fi, RSRP for LTE/NR).
   const rb = radioBridgeSignal();
   const rssi = rb ? rb.dbm : null;
-  const label = q >= 80 ? "Excellent" : q >= 60 ? "Good" : q >= 40 ? "Fair" : q >= 20 ? "Poor" : "Very poor";
   $("nType").textContent = type;
   $("nEffType").textContent = eff;
   $("nDownlink").textContent = Number.isNaN(dl) ? "—" : `${dl.toFixed(2)} Mbps`;
@@ -1551,14 +1483,6 @@ function readNetworkInfo() {
   setChip("dotNet", "txtNet", `${(type !== "—" ? type : eff).toUpperCase()}${rtt !== null ? ` · ${rtt} ms` : ""}`, q >= 60 ? "ok" : q >= 30 ? "warn" : "err");
   netInfo = { quality: q, rssi, rtt, dl, type, eff };
   return netInfo;
-}
-
-/** Hook for the Radio Bridge app: `window.webrxRadioBridge = { dbm, kind: "RSSI" | "RSRP", at: Date.now() }`. */
-function radioBridgeSignal(): { dbm: number; kind: string } | null {
-  const v = (window as any).webrxRadioBridge;
-  if (!v || typeof v.dbm !== "number" || !Number.isFinite(v.dbm)) return null;
-  if (typeof v.at === "number" && Date.now() - v.at > 10000) return null; // stale
-  return { dbm: Math.round(v.dbm), kind: String(v.kind || "RSSI") };
 }
 
 function pushNetworkSample() {
@@ -1582,17 +1506,6 @@ function pushNetworkSample() {
 // ═══════════════════════════════════════════════════════════════════
 //  Drawing
 // ═══════════════════════════════════════════════════════════════════
-
-function fitCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const w = Math.max(50, Math.round(c.clientWidth * dpr));
-  const h = Math.max(30, Math.round(c.clientHeight * dpr));
-  if (c.width !== w || c.height !== h) {
-    c.width = w;
-    c.height = h;
-  }
-  return c.getContext("2d")!;
-}
 
 function freqLabel(hz: number): string {
   return hz >= 1e9 ? `${(hz / 1e9).toFixed(4)} GHz` : `${(hz / 1e6).toFixed(3)} MHz`;
@@ -1921,6 +1834,7 @@ function updateButtons() {
     b.disabled = running && !device;
   }
   renderRecording();
+  refreshFab();
 }
 
 async function requestWakeLock() {
@@ -2362,7 +2276,7 @@ function renderDt() {
 let dtRenderExtras: ((f: ReturnType<typeof dt.fit>, units: string) => void) | null = null;
 
 function renderDtFixes() {
-  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, sigma: f.sigma, ambiguous: f.mode === "null", label: `Fix ${i + 1}: ${formatBearing(f.bearing, f.north)} ±${f.sigma}° · ${Number.isFinite(f.level) ? f.level.toFixed(1) : "—"} ${f.units} · ${freqLabel(f.freqHz)}` })));
+  liveMap?.setBearings(dt.st.fixes.map((f, i) => ({ lat: f.lat, lon: f.lon, bearing: trueBearing(f), sigma: f.sigma, ambiguous: f.mode === "null", label: `Fix ${i + 1}: ${formatBearing(f.bearing, f.north)} ±${f.sigma}° · ${Number.isFinite(f.level) ? f.level.toFixed(1) : "—"} ${f.units} · ${freqLabel(f.freqHz)}` })));
   dtAfterFixes?.();
 }
 let dtAfterFixes: (() => void) | null = null;
@@ -2857,7 +2771,8 @@ function renderRecButton() {
   b.setAttribute("aria-label", on ? "Stop recording session" : "Record session");
   b.title = on ? "Stop recording session" : "Record session (spectrum, GPS, heading, levels)";
   const m = recorder.meta;
-  setText("recTimer", on && m ? `${fmtDur(m.endedAt - m.startedAt)} · ${fmtMB(m.bytes)}` : "Rec");
+  setText("recTimer", on && m ? `Stop recording · ${fmtDur(m.endedAt - m.startedAt)} · ${fmtMB(m.bytes)}` : "Record session");
+  refreshFab();
 }
 
 async function renderSessions() {
@@ -3156,52 +3071,9 @@ function bindStatus() {
 //  RM: OpenWebRX remote receivers
 // ═══════════════════════════════════════════════════════════════════
 
-const FEATURED: DirEntry[] = [
-  { n: "TWR | Johannesburg", s: "Johannesburg, South Africa", u: "http://jnb.twrmon.net:8073/", v: "", lat: -26.2, lon: 28.05, k: "kiwisdr", feat: "Featured" },
-];
-const FAV_KEY = "webrx.remote.favs";
-const favs = (): string[] => {
-  try {
-    const j = JSON.parse(localStorage.getItem(FAV_KEY) || "[]");
-    return Array.isArray(j) ? j.map(safeHttp).filter((x): x is string => !!x) : [];
-  } catch (_) {
-    return [];
-  }
-};
-function toggleFav(raw: string) {
-  const u = safeHttp(raw);
-  if (!u) return;
-  const f = favs();
-  const i = f.indexOf(u);
-  if (i >= 0) f.splice(i, 1);
-  else f.unshift(u);
-  try {
-    localStorage.setItem(FAV_KEY, JSON.stringify(f.slice(0, 50)));
-  } catch (_) {}
-}
-const JNB = { lat: -26.2, lon: 28.05 };
 let uberDir: DirEntry[] | null = null;
 let uberDirErr = "";
 let dir: { fetched: string; source: string; probed: boolean; servers: DirEntry[]; kiwi?: DirEntry[] } | null = null;
-const SAVED_KEY = "webrx.remote.saved";
-const savedServers = (): { u: string; n: string; k?: string }[] => {
-  try {
-    const j = JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
-    return (Array.isArray(j) ? j : []).flatMap((x: any) => {
-      const u = safeHttp(x?.u);
-      return u ? [{ u, n: String(x.n ?? "").slice(0, 120), k: safeKind(x.k) }] : [];
-    });
-  } catch (_) {
-    return [];
-  }
-};
-function rememberServer(u: string, n: string, k?: string) {
-  const list = savedServers().filter((x) => x.u !== u);
-  list.unshift({ u, n, k });
-  try {
-    localStorage.setItem(SAVED_KEY, JSON.stringify(list.slice(0, 20)));
-  } catch (_) {}
-}
 const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 let lastRemoteView = "";
@@ -4131,6 +4003,18 @@ function bindVfo() {
 export function initMonitor() {
   initTuning();
   bind();
+  initFab(() => {
+    const m = recorder.meta;
+    return {
+      dot: ($("dotSource").className.match(/\b(ok|live|warn|err)\b/) || [""])[0],
+      text: $("txtSource").textContent ?? "",
+      running,
+      recording: recorder.active,
+      recLabel: recorder.active && m ? `${fmtDur(m.endedAt - m.startedAt)} · ${fmtMB(m.bytes)}` : "",
+      playing: !!pb,
+      remote: remote.connected,
+    };
+  });
   bindStartupFreq();
   initSurvey(surveyHost);
   const pr = initPresets({
@@ -4197,7 +4081,8 @@ export function initMonitor() {
 // ── DT triangulation ────────────────────────────────────────────
 let dtEst: ReturnType<typeof triangulate> = null;
 function dtTriangulate() {
-  const use = dt.st.fixes.filter((f) => Number.isFinite(f.bearing) && Number.isFinite(f.lat));
+  // A map is drawn against true north: fixes saved before declination was known are corrected first.
+  const use = dt.st.fixes.filter((f) => Number.isFinite(f.bearing) && Number.isFinite(f.lat)).map((f) => ({ ...f, bearing: trueBearing(f), north: "T" as const }));
   // Loop nulls are ambiguous by 180°: pick the reciprocal that agrees best with the peak fixes (or skip if alone).
   const peaks = use.filter((f) => f.mode !== "null");
   const list = use.map((f) => ({ lat: f.lat, lon: f.lon, bearing: f.bearing, sigma: Math.max(f.sigma, (f.gpsAccM ?? 0) > 50 ? 10 : 0) }));
@@ -4485,12 +4370,18 @@ async function toggleSweep() {
   const nv = (id: string) => parseFloat($<HTMLInputElement>(id).value);
   const lo = Math.max(1, Math.round(nv("sweepLo"))), hi = Math.min(6000, Math.round(nv("sweepHi")));
   if (!(hi > lo)) return log("Sweep: stop must be above start", "wn");
-  sweepGrid = new SweepGrid(lo * 1e6, hi * 1e6, 2048);
+  // Display: peak hold that decays 0.5 dB per completed sweep (not per FFT bin).
+  sweepGrid = new SweepGrid(lo * 1e6, hi * 1e6, 2048, "peak", 0.5);
+  const counter = new SweepCounter(sweepSteps([[lo, hi]]) * 16);
   let pending = false;
   try {
-    await device.startSweep([[lo, hi]], (sl) => {
-      sweepGrid!.add(sl);
-      if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; drawSweep(); }); }
+    await device.startSweep([[lo, hi]], (sl) => sweepGrid!.add(sl), 256, {
+      blocksPerStep: 16,
+      onBlock: (hz) => {
+        if (!counter.next(hz)) return;
+        sweepGrid!.endSweep();
+        if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; drawSweep(); }); }
+      },
     });
     $("btnSweep").textContent = "Stop sweep";
     log(`HackRF sweep ${lo}–${hi} MHz (receive only, 20 MS/s, 5 MHz slices)`, "ok");
@@ -4507,6 +4398,12 @@ async function toggleSweep() {
 /** Raw dBFS frame tap for RTL hopping (set only while an RM survey runs on an RTL-SDR). */
 let surveyFrameHook: ((raw: Float32Array, n: number) => void) | null = null;
 let rtlHop: { stop: boolean } | null = null;
+/** An RTL-SDR survey is retuning across its ranges: frames aren't at the tuned frequency. */
+let surveyHopping = false;
+let surveySavedBiasTee: boolean | null = null;
+let surveyStartedRun = false;
+/** SA was measuring when a HackRF survey took the receiver over: resume it afterwards. */
+let surveyResumeSa = false;
 
 const surveyHost: SurveyHost = {
   deviceKind: () => (remote.connected ? "remote" : !device || !sdr ? "none" : sdr.kind === "hackrf" ? "hackrf" : "rtlsdr"),
@@ -4522,7 +4419,41 @@ const surveyHost: SurveyHost = {
   },
   calOffsetDb: () => cfg.cal,
   ppm: () => fe.ppm,
-  levelDbfs: () => (lastStats && Number.isFinite(lastStats.band) ? lastStats.band - cfg.cal : null),
+  // A reference source is a single tone: its level is the peak bin, not the band mean
+  // (a mean over many bins would read it ~10·log10(bins) dB low).
+  levelDbfs: () => (lastStats && Number.isFinite(lastStats.peak) ? lastStats.peak - cfg.cal : null),
+  async measureReference(p) {
+    if (!running || !device) throw new Error("Start measuring on SA at the reference frequency first");
+    const d = device;
+    // Measure at the survey's own gains, then put the SA gains back.
+    if (d instanceof HackRF) {
+      await ctl(() => d.setAmpEnabled(p.amp));
+      await ctl(() => d.setLnaVga({ lna: p.lnaDb, vga: p.vgaDb }));
+    }
+    try {
+      await new Promise((r) => setTimeout(r, 1200)); // let the averaged trace settle
+      const avg = new PowerAverager();
+      const t0 = performance.now();
+      while (performance.now() - t0 < 1500) {
+        if (lastStats && Number.isFinite(lastStats.peak)) avg.addLevels({ pk: lastStats.peak - cfg.cal });
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const v = avg.meanLevels().pk;
+      return Number.isFinite(v) ? v : null;
+    } finally {
+      if (d instanceof HackRF && device === d) {
+        await ctl(() => d.setAmpEnabled(cfg.amp)).catch(() => {});
+        await ctl(() => d.setLnaVga(cfg.hrfLna === null ? null : { lna: cfg.hrfLna!, vga: cfg.hrfVga! })).catch(() => {});
+        await ctl(() => d.setGain(cfg.gain)).catch(() => {});
+      }
+    }
+  },
+  async setBiasTee(on) {
+    const d = device;
+    if (!d) return;
+    if (surveySavedBiasTee === null) surveySavedBiasTee = cfg.biasTee;
+    await ctl(() => d.enableBiasTee(on)).catch(() => {});
+  },
   tunedHz: () => cfg.freqMHz * 1e6,
   openNoiseCal: () => openCalibration(),
   noiseFloorDbm: () => loadCalibration()?.noiseFloorDb ?? null,
@@ -4533,23 +4464,35 @@ const surveyHost: SurveyHost = {
       await ctl(() => d.setLnaVga({ lna: p.lnaDb, vga: p.vgaDb })).catch(() => {});
     }
   },
-  async startSweep(ranges, onSlice, fftSize) {
+  async startSweep(ranges, onSlice, fftSize, opts) {
+    const dwellMs = Math.max(1, opts?.dwellMs ?? 20);
     if (device instanceof HackRF) {
+      surveyResumeSa = running;
       if (running) await stop();
       if (device.sweeping) await device.stopSweep();
-      await device.startSweep(ranges, onSlice, fftSize);
-      return;
+      const blocks = blocksForDwell(dwellMs);
+      await device.startSweep(ranges, onSlice, fftSize, { blocksPerStep: blocks, onBlock: opts?.onUnit });
+      return sweepSteps(ranges) * blocks;
     }
     if (!device || sdr?.kind !== "rtlsdr") throw new Error("No receiver connected");
-    // RTL-SDR hopping: retune across the ranges, keep the centre 80 % of each frame.
+    // RTL-SDR hopping: retune across the ranges, keep the centre 80 % of each frame,
+    // and average the frames that arrive during the dwell time (linear power).
+    surveyHopping = true;
+    surveyStartedRun = !running;
     if (!running) await start();
+    if (!running) {
+      surveyHopping = false;
+      throw new Error("The RTL-SDR didn't start");
+    }
     const hop = (rtlHop = { stop: false });
     const rate = cfg.sampleRate, useW = 0.8 * rate;
-    let want = 0, got: Float32Array | null = null;
+    let skip = 0;
+    let acc: PowerAverager | null = null;
     surveyFrameHook = (raw) => {
-      if (want > 0) want--;
-      else if (!got) got = raw.slice();
+      if (skip > 0) skip--;
+      else acc?.addSpectrum(raw);
     };
+    const hops = ranges.reduce((a, [lo, hi]) => a + Math.max(1, Math.ceil(((hi - lo) * 1e6) / useW)), 0);
     (async () => {
       const saved = cfg.freqMHz;
       while (!hop.stop) {
@@ -4557,12 +4500,15 @@ const surveyHost: SurveyHost = {
           for (let c = lo * 1e6 + useW / 2; c - useW / 2 < hi * 1e6 && !hop.stop; c += useW) {
             cfg.freqMHz = c / 1e6;
             await ctl(() => applyTuning(device!)).catch(() => {});
-            got = null;
-            want = 1; // discard the frame that straddles the retune
+            acc = new PowerAverager();
+            skip = 1; // discard the frame that straddles the retune
             const t0 = performance.now();
-            while (!got && !hop.stop && performance.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 10));
-            const f = got as Float32Array | null;
+            // at least one frame, then keep averaging until the dwell time has passed
+            while (!hop.stop && performance.now() - t0 < 2000 && (acc.blocks === 0 || performance.now() - t0 < dwellMs)) await new Promise((r) => setTimeout(r, 5));
+            const f = acc.meanSpectrum();
+            acc = null;
             if (!f) continue;
+            opts?.onUnit?.(c);
             const n = f.length, a = Math.floor(n * 0.1), b = Math.ceil(n * 0.9);
             onSlice({ startHz: c - rate / 2 + (a * rate) / n, binHz: rate / n, db: f.slice(a, b) });
           }
@@ -4571,12 +4517,36 @@ const surveyHost: SurveyHost = {
       cfg.freqMHz = saved;
       if (device) await ctl(() => applyTuning(device!)).catch(() => {});
     })();
+    return hops;
   },
   async stopSweep() {
-    if (device instanceof HackRF && device.sweeping) await device.stopSweep();
+    const d0 = device;
+    if (d0 instanceof HackRF && d0.sweeping) {
+      await d0.stopSweep();
+      // the survey used its own gains: put the SA settings back
+      await ctl(() => d0.setAmpEnabled(cfg.amp)).catch(() => {});
+      await ctl(() => d0.setLnaVga(cfg.hrfLna === null ? null : { lna: cfg.hrfLna!, vga: cfg.hrfVga! })).catch(() => {});
+      await ctl(() => d0.setGain(cfg.gain)).catch(() => {});
+    }
     if (rtlHop) rtlHop.stop = true;
     rtlHop = null;
     surveyFrameHook = null;
+    if (surveyHopping) {
+      surveyHopping = false;
+      // Only stop the measurement if the survey started it.
+      if (surveyStartedRun && running) await stop();
+    }
+    surveyStartedRun = false;
+    if (surveySavedBiasTee !== null && device) {
+      const d = device, on = surveySavedBiasTee;
+      await ctl(() => d.enableBiasTee(on)).catch(() => {});
+    }
+    surveySavedBiasTee = null;
+    if (surveyResumeSa && device && !running) {
+      surveyResumeSa = false;
+      await start().catch(() => {});
+    }
+    surveyResumeSa = false;
   },
   fix: () => (gps.fix ? { t: Date.now(), lat: gps.fix.lat, lon: gps.fix.lon, accM: gps.fix.accuracyM ?? undefined, speed: (gps.fix as any).speed ?? null } : null),
   heading: () => dt.heading ?? (compass.status.state === "on" ? compass.status.heading : undefined) ?? null,

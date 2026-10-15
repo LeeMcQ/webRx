@@ -143,11 +143,15 @@ export class UberClient {
       const r = await fetch(root + "connection", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_session_id: this.sid }) });
       const j = await r.json().catch(() => ({}));
       if (g !== this.gen) return;
-      if (!r.ok || !j.allowed) throw new Error(j.reason || `server refused (${r.status})`);
+      if (!r.ok || !j.allowed) {
+        // An explicit "no" from the server (full, banned, rate limited …) won't change by retrying.
+        const why = String(j.reason || `HTTP ${r.status}`);
+        throw Object.assign(new Error(why), { refused: true });
+      }
     } catch (e: any) {
       if (g !== this.gen) return;
       this.state = "error";
-      this.error = `UberSDR refused the connection: ${e?.message ?? e}`;
+      this.error = e?.refused ? `UberSDR refused the connection: ${e.message}` : `UberSDR not reachable: ${e?.message ?? e}`;
       this.onLog?.(this.error, "er");
       this.onChange?.();
       return;

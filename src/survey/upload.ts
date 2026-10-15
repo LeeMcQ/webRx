@@ -51,7 +51,10 @@ export interface QueuedChunk {
   surveyKey: string; // local survey id
   n: number;
   sha256: string;
-  bytes: Uint8Array;
+  /** Present when the chunk is created; the store keeps bytes apart and loads them only to upload. */
+  bytes?: Uint8Array;
+  /** Compressed size in bytes (kept with the metadata). */
+  size?: number;
   state: "queued" | "uploading" | "acked" | "failed";
   tries: number;
   nextAt: number;
@@ -69,18 +72,30 @@ export function backoffMs(tries: number, rnd = Math.random): number {
   return Math.round(base * (0.75 + 0.5 * rnd()));
 }
 
-export const MAX_TRIES = 10;
+export type PassResult = { sent: number; failed: number; skipped: number; authFailed?: boolean; lastError?: string };
 
-/** Drives uploads; persistence is delegated to `save` (IndexedDB in the app, memory in tests). */
+/**
+ * Drives uploads. Persistence is delegated to `save`, called with whatever
+ * changed (a chunk's upload state or a survey's remoteId) — IndexedDB in the
+ * app, memory in tests. A failed chunk is never given up on: it retries with
+ * back-off capped at 5 min, and a manual "Upload now" (`force`) retries at once.
+ */
 export class UploadQueue {
+  /** Why the last request failed (shown in the RM tab). */
+  lastError = "";
+  private fetchFn: Fetch;
   constructor(
     public cfg: UploadConfig,
-    private fetchFn: Fetch,
+    fetchFn: Fetch,
     public surveys: Map<string, SurveyRemote>,
     public chunks: QueuedChunk[],
-    private save: () => Promise<void> = async () => {},
-    private now: () => number = Date.now
-  ) {}
+    private save: (chunk?: QueuedChunk, survey?: SurveyRemote) => Promise<void> = async () => {},
+    private now: () => number = Date.now,
+    private loadBytes: (c: QueuedChunk) => Promise<Uint8Array | undefined> = async (c) => c.bytes
+  ) {
+    // window.fetch / self.fetch must not be called as a method of this object ("Illegal invocation")
+    this.fetchFn = (url, init) => fetchFn(url, init);
+  }
 
   private async ensureSurvey(s: SurveyRemote): Promise<string> {
     if (s.remoteId) return s.remoteId;
@@ -89,30 +104,31 @@ export class UploadQueue {
       headers: headers(this.cfg, { "Content-Type": "application/json" }),
       body: JSON.stringify({ clientSurveyId: s.surveyKey, ...s.meta }),
     });
+    if (r.status === 401 || r.status === 403) throw new AuthError();
     if (!r.ok) throw new Error("create survey: " + r.status);
     const j = await r.json();
     s.remoteId = String(j.surveyId);
+    await this.save(undefined, s);
     // resume: mark chunks the server already has
     const g = await this.fetchFn(join(this.cfg.baseUrl, `/surveys/${encodeURIComponent(s.remoteId)}`), { headers: headers(this.cfg) });
     if (g.ok) {
       const have = new Map<number, string>(((await g.json()).chunks || []).map((c: any) => [c.n, c.sha256]));
       for (const c of this.chunks)
-        if (c.surveyKey === s.surveyKey && have.get(c.n) === c.sha256 && c.state !== "acked") (c.state = "acked"), (c.ackedAt = this.now());
+        if (c.surveyKey === s.surveyKey && have.get(c.n) === c.sha256 && c.state !== "acked") {
+          c.state = "acked";
+          c.ackedAt = this.now();
+          await this.save(c);
+        }
     }
-    await this.save();
     return s.remoteId;
   }
 
-  /** Uploads every due chunk once. Returns counts. */
-  async run(): Promise<{ sent: number; failed: number; skipped: number }> {
+  /** Uploads every due chunk once (`force`: ignore back-off). Returns counts. */
+  async run(opts: { force?: boolean } = {}): Promise<PassResult> {
     let sent = 0, failed = 0, skipped = 0;
     for (const c of this.chunks) {
       if (c.state === "acked") continue;
-      if (c.state === "failed" && c.tries >= MAX_TRIES) {
-        skipped++;
-        continue;
-      }
-      if (c.nextAt > this.now()) {
+      if (!opts.force && c.nextAt > this.now()) {
         skipped++;
         continue;
       }
@@ -121,37 +137,58 @@ export class UploadQueue {
       try {
         const id = await this.ensureSurvey(s);
         if ((c.state as string) === "acked") continue;
+        const body = c.bytes ?? (await this.loadBytes(c));
+        if (!body) throw new Error("chunk bytes missing");
         c.state = "uploading";
         const r = await this.fetchFn(join(this.cfg.baseUrl, `/surveys/${encodeURIComponent(id)}/chunks/${c.n}`), {
           method: "PUT",
           headers: headers(this.cfg, { "Content-Type": "application/vnd.webrx.chunk+gzip", "X-Chunk-SHA256": c.sha256 }),
-          body: c.bytes,
+          body,
         });
+        if (r.status === 401 || r.status === 403) throw new AuthError();
+        if (r.status === 404 || r.status === 410) {
+          // the server no longer knows this survey: create it again next time
+          s.remoteId = undefined;
+          await this.save(undefined, s);
+        }
         if (r.ok) {
           c.state = "acked";
           c.ackedAt = this.now();
           sent++;
         } else throw new Error("PUT " + r.status);
-      } catch (_) {
+      } catch (e: any) {
+        this.lastError = e?.message ?? String(e);
         c.tries++;
         c.state = "failed";
         c.nextAt = this.now() + backoffMs(c.tries);
         failed++;
+        if (e instanceof AuthError) {
+          // every other request would be refused too: stop this pass
+          await this.save(c);
+          return { sent, failed, skipped, authFailed: true, lastError: this.lastError };
+        }
       }
-      await this.save();
+      await this.save(c);
     }
-    return { sent, failed, skipped };
+    return { sent, failed, skipped, lastError: failed ? this.lastError : undefined };
   }
 
-  async complete(surveyKey: string, totals: Record<string, unknown>) {
+  /** POST …/complete with the survey's real end time. */
+  async complete(surveyKey: string, totals: Record<string, unknown>, endedAt?: number) {
     const s = this.surveys.get(surveyKey);
     if (!s?.remoteId) return false;
     const r = await this.fetchFn(join(this.cfg.baseUrl, `/surveys/${encodeURIComponent(s.remoteId)}/complete`), {
       method: "POST",
       headers: headers(this.cfg, { "Content-Type": "application/json" }),
-      body: JSON.stringify({ endedAt: new Date(this.now()).toISOString(), totals }),
+      body: JSON.stringify({ endedAt: new Date(endedAt ?? this.now()).toISOString(), totals }),
     });
     return r.ok;
+  }
+}
+
+class AuthError extends Error {
+  constructor() {
+    super("token rejected");
   }
 }
 

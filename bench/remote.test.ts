@@ -6,6 +6,7 @@ import { parseWf, parseSnd, KiwiClient } from "../src/apps/monitor/kiwi.js";
 import { UberClient } from "../src/apps/monitor/ubersdr.js";
 import { Adpcm, decodeFft, normaliseUrl, safeHttp, safeKind, safeJson, MAX_BINS } from "../src/apps/monitor/owrx.js";
 import { avgStep, enbwBins, sUnits, cleanDirEntry, NO_RETRY, backoffMs } from "../src/apps/monitor/util.js";
+import { linkQuality } from "../src/apps/monitor/netinfo.js";
 
 declare const process: { exit(code: number): never };
 let failures = 0;
@@ -143,6 +144,21 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("thesis path unchanged (dB EMA)", near(l2[0], 0.6 * -100 + 0.4 * -90, 1e-4), l2[0]);
   check("S-meter HF: −73 dBm = S9", sUnits(-73, 7e6) === "S9+0" && sUnits(-79, 7e6) === "S8");
   check("S-meter VHF: −93 dBm = S9", sUnits(-93, 145e6) === "S9+0" && sUnits(-73, 145e6) === "S9+20" && sUnits(-99, 145e6) === "S8");
+  for (const [msg, retry] of [
+    ["UberSDR not reachable: Failed to fetch", true],
+    ["KiwiSDR closed the connection before it was ready", true],
+    ["Server closed the connection (1006)", true],
+    ["No answer from the server (timeout)", true],
+    ["UberSDR refused the connection: server full", false],
+    ["This KiwiSDR needs a password", false],
+    ["All channels on this KiwiSDR are in use", false],
+    ["This KiwiSDR is down", false],
+    ["mixed", false],
+  ] as [string, boolean][])
+    check(`${retry ? "retry" : "no retry"}: ${msg}`, NO_RETRY.test(msg) === !retry);
+  check("link quality: 25 ms RTT + 10 Mbps = 100 % Excellent", linkQuality(25, 10, "4g").q === 100 && linkQuality(25, 10, "4g").label === "Excellent");
+  check("link quality: 500 ms RTT, 0.05 Mbps = 0 % Very poor", linkQuality(500, 0.05, "2g").q === 0 && linkQuality(500, 0.05, "2g").label === "Very poor");
+  check("link quality without RTT falls back to effective type", linkQuality(null, NaN, "3g").q === 50);
   check("backoff 2,4,8… capped at 60 s", backoffMs(0) === 2000 && backoffMs(2) === 8000 && backoffMs(10) === 60000);
   check("no-retry errors", NO_RETRY.test("This KiwiSDR needs a password") && NO_RETRY.test("All channels on this KiwiSDR are in use") && !NO_RETRY.test("timeout"));
 }

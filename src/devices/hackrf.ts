@@ -366,7 +366,17 @@ export class HackRF implements RtlDevice {
    * 20 MS/s, 15 MHz baseband filter, 20 MHz steps, interleaved style. Normal
    * streaming is stopped first; call stopSweep() then resetBuffer() to go back.
    */
-  async startSweep(rangesMHz: [number, number][], onSlice: (s: SweepSlice) => void, fftSize = 256): Promise<void> {
+  /**
+   * Starts hackrf_sweep mode. `blocksPerStep` sets the dwell per retune (16 as
+   * hackrf_sweep); `onBlock` gets each block's tuned frequency before its slices,
+   * so callers can tell when a full pass is complete (see SweepCounter).
+   */
+  async startSweep(
+    rangesMHz: [number, number][],
+    onSlice: (s: SweepSlice) => void,
+    fftSize = 256,
+    opts: { blocksPerStep?: number; onBlock?: (freqHz: number) => void } = {}
+  ): Promise<void> {
     this.stopStreaming(new RadioError("Sweep started", RadioErrorType.UsbTransferError));
     this.failure = null;
     await this.setMode(Mode.OFF);
@@ -374,7 +384,7 @@ export class HackRF implements RtlDevice {
     await this.setSampleRate(SWEEP_SAMPLE_RATE);
     await this.ctrlOut(Req.BASEBAND_FILTER_BANDWIDTH_SET, 15_000_000 & 0xffff, 15_000_000 >>> 16);
     await this.applyGain();
-    const numBytes = SWEEP_BLOCK_BYTES * 16; // 16 blocks per retune, as hackrf_sweep
+    const numBytes = SWEEP_BLOCK_BYTES * Math.max(1, Math.round(opts.blocksPerStep ?? 16)); // 16 blocks per retune, as hackrf_sweep
     const p = initSweepPayload(rangesMHz, numBytes);
     await this.ctrlOut(Req.INIT_SWEEP, p.value, p.index, p.data.buffer as ArrayBuffer);
     await this.setMode(Mode.RX_SWEEP);
@@ -386,6 +396,7 @@ export class HackRF implements RtlDevice {
         if (gen !== this.sweepGen) return;
         if (r.status !== "ok" || !r.data) throw new Error(`USB transfer status: ${r.status}`);
         for (const b of parseSweepTransfer(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength))) {
+          opts.onBlock?.(b.freqHz);
           for (const s of blockToSlices(b, fftSize)) onSlice(s);
         }
       }

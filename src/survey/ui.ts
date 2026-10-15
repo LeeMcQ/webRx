@@ -6,7 +6,7 @@
 // uploads are dBm only, so a completed dBm calibration is required to start.
 
 import type { SweepSlice } from "../devices/sweep.js";
-import { SweepGrid } from "../devices/sweep.js";
+import { SweepCounter, SweepGrid } from "../devices/sweep.js";
 import { decodeChunk, gunzip } from "./codec.js";
 import { ProcessorClient, type ChunkOut } from "./processor.js";
 import { simplify } from "./dp.js";
@@ -23,8 +23,8 @@ import {
   type SweepParams,
 } from "./params.js";
 import { limitState, parseLimit, type LimitAction } from "./retention.js";
-import { allChunks, putChunk, putSurvey, putUploadCfg, type StoredSurvey } from "./store.js";
-import { SYNC_TAG, applyRetention, uploadPass } from "./sync.js";
+import { allChunks, deleteSurvey, getSurvey, patchSurvey, putChunk, putSurvey, putUploadCfg, usedBytes, type StoredSurvey } from "./store.js";
+import { SYNC_TAG, applyRetention, freeAcked, uploadPass } from "./sync.js";
 import { onUnmeteredNetwork, testConnection, validateServerUrl, type QueuedChunk } from "./upload.js";
 
 export interface SurveyHost {
@@ -36,11 +36,28 @@ export interface SurveyHost {
   calOffsetDb(): number;
   ppm(): number;
   levelDbfs(): number | null;
+  /**
+   * Level of a reference tone (peak, dBFS) at the survey's gains, averaged over
+   * a moment while measuring on SA. Throws with a user message when it can't.
+   */
+  measureReference(p: SweepParams): Promise<number | null>;
+  /** Switches antenna power; the previous state comes back at stopSweep(). */
+  setBiasTee(on: boolean): Promise<void>;
   tunedHz(): number;
   openNoiseCal(): void;
   noiseFloorDbm(): number | null;
   applyGains(p: SweepParams): Promise<void>;
-  startSweep(ranges: [number, number][], onSlice: (s: SweepSlice) => void, fftSize?: number): Promise<void>;
+  /**
+   * Starts sweeping. `onUnit` gets the tuned frequency of every block (HackRF)
+   * or hop (RTL-SDR) before its slices, so sweeps can be counted; returns the
+   * expected units per full sweep when known.
+   */
+  startSweep(
+    ranges: [number, number][],
+    onSlice: (s: SweepSlice) => void,
+    fftSize?: number,
+    opts?: { dwellMs?: number; onUnit?: (hz: number) => void }
+  ): Promise<number | void>;
   stopSweep(): Promise<void>;
   fix(): { t: number; lat: number; lon: number; accM?: number; speed?: number | null } | null;
   heading(): number | null;
@@ -158,7 +175,7 @@ function render() {
       <div class="field full"><label for="rmToken">Token (optional)</label><input id="rmToken" type="password" autocomplete="off" value="${esc(settings.token)}" /></div>
       <label class="check"><input id="rmAutoWifi" type="checkbox" ${settings.autoWifi ? "checked" : ""}/> Auto-upload on Wi-Fi</label>
       <label class="check"><input id="rmUnmetered" type="checkbox" ${settings.unmetered ? "checked" : ""}/> This network is unmetered (when Wi-Fi can't be detected, e.g. iOS)</label>
-      <div class="field"><label for="rmLimit">On-device limit</label><div class="inline"><input id="rmLimit" type="number" min="0" step="0.1" value="${settings.limitValue}" style="width:90px" /><select id="rmLimitUnit"><option>MB</option><option>GB</option></select></div></div>
+      <div class="field"><label for="rmLimit">On-device limit</label><div class="inline"><input id="rmLimit" type="number" min="0" step="0.1" inputmode="decimal" value="${settings.limitValue}" /><select id="rmLimitUnit"><option>MB</option><option>GB</option></select></div></div>
       <div class="field"><label for="rmLimitAction">At the limit</label><select id="rmLimitAction"><option value="pause">Pause recording</option><option value="stop">Stop survey</option></select></div>
       <label class="check"><input id="rmWake" type="checkbox" ${settings.wakeLock ? "checked" : ""}/> Keep screen on while surveying</label>
     </div>
@@ -237,7 +254,7 @@ function refreshChecks() {
     if (ul) ul.innerHTML = errs.map((x) => `<li>${esc(x)}</li>`).join("");
   }
   const s = $<HTMLButtonElement>("rmStart");
-  if (s) s.disabled = !!run || errs.length > 0;
+  if (s) s.disabled = !!run || starting || errs.length > 0;
   const cs = $("rmCalState");
   if (cs) cs.textContent = calibrationComplete(calValues()) ? "✓ calibrated (dBm)" : "required";
   equipTable();
@@ -301,15 +318,33 @@ function bind() {
     ($("rmCalOffset") as HTMLInputElement).value = String(host.calOffsetDb());
     $("rmCalMsg").textContent = host.calOffsetDb() === 0 ? "This device has no saved offset (0 dB) — measure one against a reference." : `Loaded ${host.calOffsetDb()} dB from this device's saved calibration${host.serial() ? ` (S/N ${host.serial()})` : ""}.`;
   });
-  $("rmCalMeasure").addEventListener("click", () => {
-    const ref = num("rmCalRef"), lv = host.levelDbfs();
-    if (ref === null || lv === null) {
-      $("rmCalMsg").textContent = "Feed a known reference level, start measuring on SA at its frequency, enter the level in dBm, then press Measure.";
+  $("rmCalMeasure").addEventListener("click", async () => {
+    const ref = num("rmCalRef");
+    const msg = $("rmCalMsg");
+    if (ref === null || !Number.isFinite(ref)) {
+      msg.textContent = "Feed a known reference level (e.g. a signal generator), start measuring on SA at its frequency, enter its level in dBm, then press Measure.";
       return;
     }
-    const off = Math.round((ref - lv) * 10) / 10;
-    ($("rmCalOffset") as HTMLInputElement).value = String(off);
-    $("rmCalMsg").textContent = `Measured ${lv.toFixed(1)} dBFS at ${(host.tunedHz() / 1e6).toFixed(3)} MHz for a ${ref} dBm reference → offset ${off} dB.`;
+    readFormSafe();
+    const btn = $<HTMLButtonElement>("rmCalMeasure");
+    btn.disabled = true;
+    msg.textContent = "Measuring the reference at the survey gains… keep it connected (≈3 s).";
+    try {
+      const lv = await host.measureReference(params);
+      if (lv === null) {
+        msg.textContent = "No level measured — is the reference inside the SA span and the receiver running?";
+        return;
+      }
+      const off = Math.round((ref - lv) * 10) / 10;
+      ($("rmCalOffset") as HTMLInputElement).value = String(off);
+      cal.confirmed = false;
+      msg.textContent = `Measured ${lv.toFixed(1)} dBFS (peak, LNA ${params.lnaDb} dB · VGA ${params.vgaDb} dB${params.amp ? " · amp on" : ""}) at ${(host.tunedHz() / 1e6).toFixed(3)} MHz for a ${ref} dBm reference → offset ${off} dB. Check the antenna gain and cable loss, then confirm.`;
+      refreshChecks();
+    } catch (e: any) {
+      msg.textContent = e?.message ?? String(e);
+    } finally {
+      btn.disabled = false;
+    }
   });
   $("rmCalNoise").addEventListener("click", () => host.openNoiseCal());
   $("rmCalSave").addEventListener("click", () => {
@@ -419,9 +454,13 @@ interface Run {
   battery: { level: number; charging: boolean } | null;
   skip: boolean;
   wake: any;
-  lastSweepSeen: number[];
+  counter: SweepCounter;
+  /** Samples handed to the processor and not yet stored. */
+  inflight: Set<Promise<void>>;
+  stopping: boolean;
 }
 let run: Run | null = null;
+let starting = false;
 const workerUrl = () => {
   try {
     return new URL("survey-worker.js", document.baseURI).href;
@@ -435,78 +474,108 @@ function binsFor(r: { startMHz: number; stopMHz: number }, p: SweepParams) {
 }
 
 async function startRun() {
+  if (run || starting) return;
   readFormSafe();
   const kind = host.deviceKind();
   const errs = validateParams(params, kind, calValues());
   if (errs.length) return refreshChecks();
+  starting = true;
   const p: SweepParams = JSON.parse(JSON.stringify(params));
   const key = `rm-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  run = {
-    key, params: p, cal: { ...cal }, grids: p.ranges.map((r) => new SweepGrid(r.startMHz * 1e6, r.stopMHz * 1e6, binsFor(r, p))),
+  const r: Run = {
+    key, params: p, cal: { ...cal }, grids: p.ranges.map((x) => new SweepGrid(x.startMHz * 1e6, x.stopMHz * 1e6, binsFor(x, p), p.detector)),
     proc: new ProcessorClient(workerUrl()), samples: 0, sweeps: 0,
     lastSweepAt: 0, startedAt: Date.now(), bytes: 0, rawBytes: 0, trail: [], snapshots: 0, lastSnapAt: Date.now(), lastSnapPos: null, paused: false, cpuMs: 0, sliceMs: 0,
-    battery: null, skip: false, wake: null, lastSweepSeen: p.ranges.map(() => 0),
+    battery: null, skip: false, wake: null, counter: new SweepCounter(0), inflight: new Set(), stopping: false,
   };
-  const meta = { name: key, unit: "dBm", calibration: run.cal, params: p, device: host.deviceLabel(), startedAt: new Date(run.startedAt).toISOString() };
-  await putSurvey({ surveyKey: key, name: key, startedAt: run.startedAt, samples: 0, bytes: 0, meta } as StoredSurvey);
-  await run.proc.init({ surveyKey: key, params: p, cal: run.cal });
-  host.log(`Survey processing: ${run.proc.usingWorker ? "Web Worker" : "main thread (no Worker support)"}`, "ok");
+  r.proc.onFallback = (why) => host.log(`${why} — continuing on the main thread`, "warn");
+  let stored = false;
   try {
+    const meta = { name: key, unit: "dBm", calibration: r.cal, params: p, device: host.deviceLabel(), startedAt: new Date(r.startedAt).toISOString() };
+    await putSurvey({ surveyKey: key, name: key, startedAt: r.startedAt, samples: 0, bytes: 0, meta } as StoredSurvey);
+    stored = true;
+    await r.proc.init({ surveyKey: key, params: p, cal: r.cal });
+    host.log(`Survey processing: ${r.proc.usingWorker ? "Web Worker" : "main thread (no Worker support)"}`, "ok");
+    run = r;
+    uiRunState("starting…");
     await host.applyGains(p);
-    await host.startSweep(p.ranges.map((r) => [r.startMHz, r.stopMHz]), onSlice, p.fftSize);
+    await host.setBiasTee(p.bias);
+    const units = await host.startSweep(
+      p.ranges.map((x) => [x.startMHz, x.stopMHz]),
+      onSlice,
+      p.fftSize,
+      { dwellMs: p.dwellMs, onUnit: (hz) => onUnit(r, hz) }
+    );
+    r.counter.unitsPerSweep = typeof units === "number" ? units : 0;
   } catch (e: any) {
-    host.log(`Survey couldn't start the receiver: ${e?.message ?? e}`, "err");
-    run = null;
-    return refreshChecks();
+    host.log(`Survey couldn't start: ${e?.message ?? e}`, "err");
+    if (run === r) run = null;
+    r.proc.terminate();
+    await host.stopSweep().catch(() => {});
+    if (stored) await deleteSurvey(key).catch(() => {});
+    starting = false;
+    uiRunState();
+    const el = $("rmLimitMsg");
+    if (el) el.textContent = `Couldn't start: ${e?.message ?? e}`;
+    return;
   }
-  if (settings.wakeLock && (navigator as any).wakeLock) run.wake = await (navigator as any).wakeLock.request("screen").catch(() => null);
+  starting = false;
+  if (settings.wakeLock && (navigator as any).wakeLock) r.wake = await (navigator as any).wakeLock.request("screen").catch(() => null);
   (navigator as any).getBattery?.().then((b: any) => {
-    const upd = () => run && (run.battery = { level: b.level, charging: b.charging });
+    const upd = () => run === r && (r.battery = { level: b.level, charging: b.charging });
     upd();
     b.addEventListener?.("levelchange", upd);
     b.addEventListener?.("chargingchange", upd);
-  });
-  host.log(`RM survey started: ${p.ranges.map((r) => `${r.startMHz}–${r.stopMHz} MHz`).join(", ")} (dBm, calibrated)`, "ok");
+  }).catch(() => {});
+  host.log(`RM survey started: ${p.ranges.map((x) => `${x.startMHz}–${x.stopMHz} MHz`).join(", ")} (dBm, calibrated, ${p.detector} detector, ${p.dwellMs} ms dwell${p.bias ? ", bias-tee on" : ""})`, "ok");
   uiRunState();
 }
 
 function onSlice(s: SweepSlice) {
   const r = run;
-  if (!r || r.paused) return;
+  if (!r || r.paused || r.stopping) return;
   const t0 = performance.now();
   for (const g of r.grids) if (s.startHz + s.db.length * s.binHz > g.loHz && s.startHz < g.hiHz) g.add(s);
-  // a completed sweep = every range wrapped around since the last sample
-  const done = r.grids.every((g, i) => g.sweeps > r.lastSweepSeen[i]);
-  if (done) {
-    r.grids.forEach((g, i) => (r.lastSweepSeen[i] = g.sweeps));
-    r.sweeps++;
-    const now = Date.now();
-    // battery-aware: below 20 % and not charging → every other sweep
-    r.skip = !!(r.battery && !r.battery.charging && r.battery.level < 0.2) && !r.skip;
-    if (now - r.lastSweepAt >= r.params.repeatS * 1000 && !r.skip) {
-      r.lastSweepAt = now;
-      void sample(now);
-    }
+  r.sliceMs = r.sliceMs * 0.95 + (performance.now() - t0) * 0.05;
+}
+
+/** Every block/hop: when it starts a new pass, the previous sweep is complete. */
+function onUnit(r: Run, hz: number) {
+  if (run !== r || r.stopping) return;
+  if (!r.counter.next(hz)) return;
+  if (r.paused) {
+    for (const g of r.grids) g.discard();
+    return;
   }
-  r.grids.length && (r.sliceMs = r.sliceMs * 0.95 + (performance.now() - t0) * 0.05);
+  for (const g of r.grids) g.endSweep();
+  r.sweeps++;
+  const now = Date.now();
+  // battery-aware: below 20 % and not charging → every other sweep
+  r.skip = !!(r.battery && !r.battery.charging && r.battery.level < 0.2) && !r.skip;
+  if (now - r.lastSweepAt >= r.params.repeatS * 1000 && !r.skip) {
+    r.lastSweepAt = now;
+    const job = sample(r, now).finally(() => r.inflight.delete(job));
+    r.inflight.add(job);
+  }
 }
 
 function gridCopies(r: Run): Float32Array[] {
   return r.grids.map((g) => g.db.slice());
 }
 
-async function sample(now: number) {
-  const r = run!;
+async function sample(r: Run, now: number) {
   const fix = host.fix();
   const t0 = performance.now();
   const res = await r.proc.sample(gridCopies(r), fix, now).catch((e) => (host.log(`Survey processing error: ${e?.message ?? e}`, "err"), null));
   r.cpuMs = r.cpuMs * 0.9 + (performance.now() - t0) * 0.1;
-  if (!res || !res.kept || run !== r) return;
+  if (!res) return;
+  // a chunk is stored even if this sample wasn't kept (time-based flush) or the run just stopped
+  if (res.chunk) await storeChunk(r, res.chunk);
+  if (!res.kept) return;
   r.samples++;
   if (res.trail) r.trail.push(res.trail);
-  if (res.chunk) await storeChunk(r, res.chunk);
   const se = r.params.snapshotEvery;
-  if (fix) {
+  if (fix && run === r) {
     if (se === "60s" && now - r.lastSnapAt >= 60_000) void takeSnapshot("interval");
     if (se === "100m" && r.lastSnapPos && Math.hypot((fix.lat - r.lastSnapPos.lat) * 111_133, (fix.lon - r.lastSnapPos.lon) * 111_133 * Math.cos((fix.lat * Math.PI) / 180)) >= 100) void takeSnapshot("interval");
     if (!r.lastSnapPos) r.lastSnapPos = { lat: fix.lat, lon: fix.lon };
@@ -517,7 +586,7 @@ async function sample(now: number) {
 /** Full-resolution spectrum of every range, stored as its own chunk (reduction "none"). */
 async function takeSnapshot(why: "button" | "interval") {
   const r = run;
-  if (!r) return;
+  if (!r || r.stopping) return;
   const fix = host.fix();
   r.lastSnapAt = Date.now();
   if (fix) r.lastSnapPos = { lat: fix.lat, lon: fix.lon };
@@ -530,33 +599,44 @@ async function takeSnapshot(why: "button" | "interval") {
 }
 
 async function storeChunk(r: Run, out: ChunkOut) {
-  const lim = limitState(await usedOnDevice(), parseLimit(settings.limitValue, settings.limitUnit), out.bytes.length, settings.limitAction);
+  const limit = parseLimit(settings.limitValue, settings.limitUnit);
+  let lim = limitState(await usedOnDevice(), limit, out.bytes.length, settings.limitAction);
   if (lim.atLimit) {
-    // never drop data: keep this chunk, then pause/stop recording
-    (settings.limitAction === "stop" ? stopRun : pauseRun)(`on-device limit reached (${mb(lim.limitBytes)})`);
+    // Chunks the server has confirmed are only a local copy: make room with the oldest of those first.
+    const freed = await freeAcked(lim.usedBytes + out.bytes.length - limit).catch(() => 0);
+    if (freed) {
+      usedCache = { at: 0, v: 0 };
+      lim = limitState(await usedOnDevice(), limit, out.bytes.length, settings.limitAction);
+      host.log(`Storage limit: removed ${mb(freed)} of already-uploaded survey data from this device`, "ok");
+    }
   }
-  const c: QueuedChunk = { surveyKey: r.key, n: out.n, sha256: out.sha256, bytes: out.bytes, state: "queued", tries: 0, nextAt: 0 };
+  // never drop data: this chunk is always kept, then recording pauses/stops at the limit
+  const c: QueuedChunk = { surveyKey: r.key, n: out.n, sha256: out.sha256, bytes: out.bytes, size: out.bytes.length, state: "queued", tries: 0, nextAt: 0 };
   await putChunk(c);
   usedCache.v += out.bytes.length;
   r.bytes += out.bytes.length;
   r.rawBytes += out.rawLen;
+  if (lim.atLimit && run === r && !r.stopping && !r.paused) {
+    const why = `on-device limit reached (${mb(lim.limitBytes)})`;
+    if (settings.limitAction === "stop") void stopRun(why);
+    else pauseRun(why);
+  }
   const w = $("rmLimitMsg");
-  if (w) w.textContent = lim.warn ? `Storage at ${Math.round((100 * lim.usedBytes) / lim.limitBytes)} % of your ${mb(lim.limitBytes)} limit — upload or raise the limit. At the limit the survey will ${settings.limitAction}.` : "";
+  if (w) w.textContent = lim.atLimit ? `On-device limit (${mb(lim.limitBytes)}) reached — upload the survey data or raise the limit, then resume.` : lim.warn ? `Storage at ${Math.round((100 * lim.usedBytes) / lim.limitBytes)} % of your ${mb(lim.limitBytes)} limit — upload or raise the limit. At the limit the survey will ${settings.limitAction}.` : "";
   void requestBackgroundUpload();
   void maybeAutoUpload();
 }
 
-async function flush() {
-  const r = run;
-  if (!r) return;
-  const c = await r.proc.flush();
-  if (c) await storeChunk(r, c);
-}
-
 let usedCache = { at: 0, v: 0 };
 async function usedOnDevice() {
-  if (Date.now() - usedCache.at > 5000) usedCache = { at: Date.now(), v: (await allChunks()).reduce((a, c) => a + c.bytes.byteLength, 0) };
+  if (Date.now() - usedCache.at > 5000) usedCache = { at: Date.now(), v: await usedBytes() };
   return usedCache.v;
+}
+
+/** Writes the rows the processor holds as a chunk now (stop, page hidden, periodic). */
+async function flushRun(r: Run) {
+  const c = await r.proc.flush().catch((e) => (host.log(`Survey processing error: ${e?.message ?? e}`, "err"), undefined));
+  if (c) await storeChunk(r, c);
 }
 
 function pauseRun(why: string) {
@@ -572,25 +652,38 @@ function resume() {
 }
 async function stopRun(why: string) {
   const r = run;
-  if (!r) return;
-  await host.stopSweep();
-  await flush();
+  if (!r || r.stopping) return;
+  r.stopping = true;
+  uiRunState("stopping…");
+  await host.stopSweep().catch(() => {});
+  // let samples already handed to the processor finish and store their chunks
+  await Promise.allSettled([...r.inflight]);
+  await flushRun(r);
   r.proc.terminate();
   r.wake?.release?.();
   run = null;
-  await putSurvey({ surveyKey: r.key, name: r.key, startedAt: r.startedAt, endedAt: Date.now(), samples: r.samples, bytes: r.bytes, completed: true, meta: { unit: "dBm", calibration: r.cal, params: r.params, device: host.deviceLabel() } } as StoredSurvey);
+  const endedAt = Date.now();
+  // merge: keep what the upload pass stored meanwhile (remoteId)
+  const prev = await getSurvey(r.key).catch(() => undefined);
+  const meta = { ...(prev?.meta ?? {}), unit: "dBm", calibration: r.cal, params: r.params, device: host.deviceLabel(), endedAt: new Date(endedAt).toISOString() };
+  if (prev) await patchSurvey(r.key, { endedAt, samples: r.samples, bytes: r.bytes, completed: true, meta });
+  else await putSurvey({ surveyKey: r.key, name: r.key, startedAt: r.startedAt, endedAt, samples: r.samples, bytes: r.bytes, completed: true, meta } as StoredSurvey);
   host.log(`Survey ${why}: ${r.samples} samples, ${r.snapshots} snapshots, ${mb(r.bytes)} stored`, "ok");
   uiRunState();
   refreshQueue();
+  void requestBackgroundUpload();
+  void maybeAutoUpload();
 }
 
 function uiRunState(msg = "") {
   const r = run;
   const b = (id: string) => $<HTMLButtonElement>(id);
   if (!b("rmStart")) return;
-  b("rmPause").disabled = b("rmStop").disabled = b("rmSnap").disabled = !r;
+  const busy = !r || r.stopping || starting;
+  b("rmPause").disabled = b("rmSnap").disabled = busy;
+  b("rmStop").disabled = !r || r.stopping;
   b("rmPause").textContent = r?.paused ? "Resume" : "Pause";
-  $("rmState").textContent = !r ? "idle" : r.paused ? `paused${msg ? " — " + msg : ""}` : "recording";
+  $("rmState").textContent = !r ? (starting ? "starting…" : "idle") : r.stopping ? "stopping…" : r.paused ? `paused${msg ? " — " + msg : ""}` : msg || "recording";
   refreshChecks();
   stats();
 }
@@ -693,34 +786,46 @@ async function uploadNow(manual: boolean) {
   const bad = settings.serverUrl ? validateServerUrl(settings.serverUrl) : "Enter your upload server URL first.";
   if (bad) return void (manual && ($("rmUpMsg").textContent = bad));
   uploading = true;
+  const btn = $<HTMLButtonElement>("rmUploadNow");
+  if (manual && btn) btn.disabled = true;
   try {
-    const res = await uploadPass({ serverUrl: settings.serverUrl, token: settings.token }, fetch as any);
-    if (manual || res.sent || res.failed) $("rmUpMsg").textContent = `Uploaded ${res.sent} chunk(s)${res.failed ? `, ${res.failed} failed (will retry with back-off)` : ""}.`;
+    // A manual upload retries failed chunks at once instead of waiting for their back-off.
+    const res = await uploadPass({ serverUrl: settings.serverUrl, token: settings.token }, fetch as any, { force: manual });
+    const el = $("rmUpMsg");
+    if (res.busy) {
+      if (manual) el.textContent = "An upload is already running in the background — the queue below updates when it finishes.";
+    } else if (res.authFailed) el.textContent = "The server rejected the token — check it, then press Upload now.";
+    else if (manual || res.sent || res.failed)
+      el.textContent = res.sent || res.failed || res.pending
+        ? `Uploaded ${res.sent} chunk(s)${res.failed ? `, ${res.failed} failed — ${res.lastError ?? "network error"} (retrying automatically; Upload now retries at once)` : ""}${res.pending ? ` · ${res.pending} pending` : ""}.`
+        : "Nothing to upload — everything on this device is on the server.";
     if (res.pending) void requestBackgroundUpload();
   } catch (e: any) {
     if (manual) $("rmUpMsg").textContent = `Upload failed: ${e?.message ?? e}`;
   } finally {
     uploading = false;
+    if (btn) btn.disabled = false;
     refreshQueue();
   }
 }
 async function refreshQueue() {
   const t = $("rmQueue");
   if (!t) return;
-  const all = await allChunks();
+  const all = await allChunks().catch(() => []);
   const by = new Map<string, { n: number; acked: number; bytes: number; failed: number }>();
   for (const c of all) {
     const b = by.get(c.surveyKey) ?? { n: 0, acked: 0, bytes: 0, failed: 0 };
     b.n++;
-    b.bytes += c.bytes.byteLength;
+    b.bytes += c.size ?? 0;
     if (c.state === "acked") b.acked++;
     if (c.state === "failed") b.failed++;
     by.set(c.surveyKey, b);
   }
-  usedCache = { at: Date.now(), v: all.reduce((a, c) => a + c.bytes.byteLength, 0) };
+  usedCache = { at: Date.now(), v: all.reduce((a, c) => a + (c.size ?? 0), 0) };
   t.innerHTML = by.size
     ? `<tr><th>Survey</th><th>Chunks</th><th>Size</th></tr>` + [...by].map(([k, b]) => `<tr><td>${esc(k.replace(/^rm-/, ""))}</td><td>${b.acked}/${b.n} uploaded${b.failed ? ` · ${b.failed} retrying` : ""}</td><td>${mb(b.bytes)}</td></tr>`).join("")
     : `<tr><td>No survey data on this device yet.</td></tr>`;
+  if (all.some((c) => c.state !== "acked")) void requestBackgroundUpload();
 }
 
 /** Decodes a stored chunk (debug/export helper). */
@@ -734,9 +839,18 @@ export function initSurvey(h: SurveyHost) {
   window.addEventListener("webrx:tab", (e) => {
     if ((e as CustomEvent).detail === "rm") (refreshChecks(), drawMap());
   });
-  window.addEventListener("online", () => void maybeAutoUpload());
-  (navigator as any).connection?.addEventListener?.("change", () => void maybeAutoUpload());
-  document.addEventListener("visibilitychange", () => !document.hidden && scheduleDraw());
+  const netChanged = () => {
+    void requestBackgroundUpload();
+    void maybeAutoUpload();
+  };
+  window.addEventListener("online", netChanged);
+  (navigator as any).connection?.addEventListener?.("change", netChanged);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) return scheduleDraw();
+    // the page may be frozen or killed while hidden: write what the processor holds
+    if (run && !run.stopping) void flushRun(run);
+  });
+  window.addEventListener("pagehide", () => run && !run.stopping && void flushRun(run));
   setInterval(() => run && stats(), 2000);
   setInterval(() => document.getElementById("pane-rm")?.hidden === false && !run && refreshChecks(), 3000);
   void applyRetention().then(refreshQueue).catch(() => {});

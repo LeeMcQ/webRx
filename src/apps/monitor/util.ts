@@ -41,8 +41,13 @@ export function cleanDirEntry(x: any): DirEntry | null {
   return { n: str(x.n, 120), s: str(x.s, 120), u, v: str(x.v, 40), lat: Number.isFinite(+x.lat) ? +x.lat : 0, lon: Number.isFinite(+x.lon) ? +x.lon : 0, ok: x.ok ? 1 : 0, k: k === "openwebrx" ? undefined : k, users: x.users ? str(x.users, 40) : undefined, feat: x.feat ? str(x.feat, 30) : undefined };
 }
 
-/** Errors a retry can't fix. */
-export const NO_RETRY = /password|in use|busy|refused|mixed|down|full|banned|kicked|too many/i;
+/**
+ * Errors a retry can't fix: an explicit answer from the server (password,
+ * all channels in use, refused, down, banned …) or mixed content. Plain
+ * network failures ("not reachable", "closed the connection", timeouts) are
+ * retried with back-off.
+ */
+export const NO_RETRY = /password|in use|too busy|refused the connection|^mixed$|is down|server (is )?full|banned|kicked|too many/i;
 export function backoffMs(tries: number) {
   return Math.min(60_000, 2000 * 2 ** tries);
 }

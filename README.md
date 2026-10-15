@@ -95,11 +95,14 @@ npm run test:devices    # HackRF protocol (mock WebUSB), NMEA parsing, G-MOUSE (
 npm run test:map        # CSV importer: webRx, legacy, thesis MATLAB, European, headerless and broken files; writer round trip
 npm run test:sampling   # spatial sampling (§3.5), per-bin averaging, measurement band, calibration
 npm run test:coverage   # natural-neighbour / IDW grids, licence site formats, licensed vs measured
-npm run typecheck
+npm run test:df         # bearing fit, WMM declination, HackRF sweep grid/counter, DT magnetic→true
+npm run test:survey     # RM survey: noise floor, squelch, chunking, worker fallback, upload queue (mock server)
+npm run test:remote     # OpenWebRX / UberSDR / KiwiSDR protocol and retry rules
+npm test                # typecheck + every suite above
 cd dsp-rs && cargo test --release
 ```
 
-`npm run docs` rebuilds the app into `docs/` for GitHub Pages.
+GitHub Pages serves the `gh-pages` branch: `npm run build`, then publish `dist/apps/radioreceiver` there (`npm run deploy`). Each build stamps a build id into the page and the service worker loads the app shell network-first, so phones pick up a new version on the next open instead of mixing old cached scripts with new HTML.
 
 ## Compatible hardware and software
 

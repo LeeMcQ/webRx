@@ -94,26 +94,69 @@ export function blockToSlices(b: SweepBlock, fftSize = 256, rate = SWEEP_SAMPLE_
   ];
 }
 
-/** Accumulates slices into a fixed grid covering [loHz, hiHz). */
+export type GridDetector = "peak" | "avg" | "rms";
+
+/**
+ * Accumulates slices into a fixed grid covering [loHz, hiHz), one measurement
+ * per sweep. During a sweep every grid bin collects all FFT bins that overlap
+ * it (peak: max · avg: mean of dB · rms: mean power); `endSweep()` publishes
+ * the result to `db`. With `holdDecayDb` > 0 (a display), `db` keeps a peak
+ * hold that decays by that much once per sweep instead.
+ */
 export class SweepGrid {
   readonly db: Float32Array;
   readonly binHz: number;
   sweeps = 0;
-  private lastStart = -1;
-  constructor(readonly loHz: number, readonly hiHz: number, bins = 2048) {
+  private acc: Float64Array;
+  private cnt: Uint32Array;
+  constructor(
+    readonly loHz: number,
+    readonly hiHz: number,
+    bins = 2048,
+    public detector: GridDetector = "peak",
+    public holdDecayDb = 0
+  ) {
     this.db = new Float32Array(bins).fill(NaN);
     this.binHz = (hiHz - loHz) / bins;
+    this.acc = new Float64Array(bins);
+    this.cnt = new Uint32Array(bins);
   }
   add(s: SweepSlice) {
-    if (s.startHz < this.lastStart) this.sweeps++;
-    this.lastStart = s.startHz;
+    const n = this.db.length;
     for (let i = 0; i < s.db.length; ++i) {
-      const f = s.startHz + (i + 0.5) * s.binHz;
-      const k = Math.floor((f - this.loHz) / this.binHz);
-      if (k < 0 || k >= this.db.length) continue;
-      const cur = this.db[k];
-      this.db[k] = Number.isNaN(cur) ? s.db[i] : Math.max(cur - 0.5, s.db[i]); // light peak-hold with decay
+      const v = s.db[i];
+      if (!Number.isFinite(v)) continue;
+      const f0 = s.startHz + i * s.binHz;
+      const f1 = f0 + s.binHz;
+      if (f1 <= this.loHz || f0 >= this.hiHz) continue;
+      // every grid bin this FFT bin overlaps (grid bins can be finer than FFT bins)
+      const k0 = Math.max(0, Math.floor((f0 - this.loHz) / this.binHz));
+      const k1 = Math.min(n - 1, Math.ceil((f1 - this.loHz) / this.binHz) - 1);
+      for (let k = k0; k <= k1; k++) {
+        if (this.detector === "peak") this.acc[k] = this.cnt[k] ? Math.max(this.acc[k], v) : v;
+        else if (this.detector === "avg") this.acc[k] += v;
+        else this.acc[k] += Math.pow(10, v / 10);
+        this.cnt[k]++;
+      }
     }
+  }
+  /** Ends the current sweep: publishes its values (bins it didn't reach keep their last value). */
+  endSweep() {
+    for (let k = 0; k < this.db.length; k++) {
+      const c = this.cnt[k];
+      if (!c) continue;
+      const v = this.detector === "peak" ? this.acc[k] : this.detector === "avg" ? this.acc[k] / c : 10 * Math.log10(this.acc[k] / c);
+      const cur = this.db[k];
+      this.db[k] = this.holdDecayDb > 0 && Number.isFinite(cur) ? Math.max(cur - this.holdDecayDb, v) : v;
+      this.acc[k] = 0;
+      this.cnt[k] = 0;
+    }
+    this.sweeps++;
+  }
+  /** Drops what the current sweep collected so far (e.g. while a survey is paused). */
+  discard() {
+    this.acc.fill(0);
+    this.cnt.fill(0);
   }
   /** Strongest bins, at least `sepHz` apart. */
   peaks(count = 5, sepHz = 200_000): { hz: number; db: number }[] {
@@ -126,6 +169,49 @@ export class SweepGrid {
     }
     return out;
   }
+}
+
+/**
+ * Tells when one pass over all the ranges is complete. Feed it the tuned
+ * frequency of every received block (HackRF) or hop (RTL-SDR), in arrival
+ * order. A new sweep starts when the lowest frequency comes round again after
+ * other frequencies, or — for a plan with a single retune, which never moves
+ * — after the expected number of blocks.
+ */
+export class SweepCounter {
+  private minHz = Infinity;
+  private seenOther = false;
+  private units = 0;
+  constructor(public unitsPerSweep: number) {}
+  /** True when this block/hop begins a new sweep (the previous one is complete). */
+  next(tagHz: number): boolean {
+    let boundary = false;
+    if (tagHz < this.minHz) {
+      boundary = this.units > 0;
+      this.minHz = tagHz;
+    } else if (tagHz === this.minHz) {
+      if (this.seenOther) boundary = true;
+      else if (this.unitsPerSweep > 0 && this.units >= this.unitsPerSweep) boundary = true;
+    } else this.seenOther = true;
+    if (boundary) {
+      this.units = 0;
+      this.seenOther = false;
+    }
+    this.units++;
+    return boundary;
+  }
+}
+
+/** Retune steps per pass for HackRF sweep ranges (as initSweepPayload rounds them). */
+export function sweepSteps(rangesMHz: [number, number][], stepWidth = SWEEP_STEP_HZ): number {
+  return rangesMHz.reduce((a, [lo, hi]) => a + Math.max(1, Math.ceil((hi - lo) / (stepWidth / 1e6))), 0);
+}
+
+/** Sweep blocks per retune for a dwell time (hackrf_sweep uses 16 ≈ 6.5 ms). */
+export function blocksForDwell(dwellMs: number, rate = SWEEP_SAMPLE_RATE): number {
+  const perBlock = (SWEEP_BLOCK_BYTES - 10) / 2 / rate; // seconds of I/Q per block
+  if (!Number.isFinite(dwellMs) || dwellMs <= 0) return 16;
+  return Math.max(1, Math.min(256, Math.round(dwellMs / 1000 / perBlock)));
 }
 
 /** Parses "1.2.3"/"2024.02.1"/"git-abcdef" firmware strings; returns true if older than min. */
