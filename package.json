@@ -10,6 +10,7 @@
     "serve": "browser-sync start --server \"dist/\" --files \"dist/\" --startPath \"apps/radioreceiver\"",
     "watch": "npm run build && run-p serve build-on-change",
     "dist": "nx build radioreceiver",
+    "predeploy": "node ./build.mjs --dist",
     "deploy": "gh-pages -d dist/apps/radioreceiver",
     "build:wasm": "dsp-rs/build.sh",
     "bench:dsp": "node bench/run.mjs dsp_benchmark",
