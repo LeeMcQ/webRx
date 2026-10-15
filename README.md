@@ -102,7 +102,7 @@ npm test                # typecheck + every suite above
 cd dsp-rs && cargo test --release
 ```
 
-GitHub Pages serves the `gh-pages` branch: `npm run build`, then publish `dist/apps/radioreceiver` there (`npm run deploy`). Each build stamps a build id into the page and the service worker loads the app shell network-first, so phones pick up a new version on the next open instead of mixing old cached scripts with new HTML.
+GitHub Pages serves the `gh-pages` branch: `npm run deploy` builds in distribution mode (`node ./build.mjs --dist`: minified, no source maps) and publishes `dist/apps/radioreceiver` there. Each build stamps a build id into the page and the service worker loads the app shell network-first, so phones pick up a new version on the next open instead of mixing old cached scripts with new HTML.
 
 ## Compatible hardware and software
 
