@@ -44,7 +44,7 @@ export function safeJson(t: string): any {
   }
 }
 
-export const REMOTE_KINDS = ["openwebrx", "ubersdr", "kiwisdr"] as const;
+export const REMOTE_KINDS = ["openwebrx", "ubersdr", "kiwisdr", "trace"] as const;
 export type RemoteKindName = (typeof REMOTE_KINDS)[number];
 export function safeKind(k: unknown): RemoteKindName | undefined {
   return REMOTE_KINDS.includes(k as RemoteKindName) ? (k as RemoteKindName) : undefined;

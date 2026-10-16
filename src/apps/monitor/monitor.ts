@@ -35,11 +35,13 @@ import * as sess from "./sessions.js";
 import { owrx, normaliseUrl, safeHttp, safeKind, type Label } from "./owrx.js";
 import { uber, looksLikeUber } from "./ubersdr.js";
 import { kiwi } from "./kiwi.js";
+import { trace, looksLikeTrace } from "./trace.js";
+import { headingAt as headingAtTrace } from "../../trace/codec.js";
 import { FEATURED, JNB, favs, rememberServer, savedServers, toggleFav } from "./remote-store.js";
 import { getConnection, linkQuality, radioBridgeSignal } from "./netinfo.js";
 import { avgStep, enbwBins, sUnits, cleanDirEntry, NO_RETRY, backoffMs, type DirEntry } from "./util.js";
-type RemoteClient = typeof owrx | typeof uber | typeof kiwi;
-type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr";
+type RemoteClient = typeof owrx | typeof uber | typeof kiwi | typeof trace;
+type RemoteKind = "openwebrx" | "ubersdr" | "kiwisdr" | "trace";
 let remote: RemoteClient = owrx;
 import { dt, dtPlay, formatBearing, norm, trueBearing } from "./dt.js";
 import { triangulate, ellipsePoints } from "../../df/triangulate.js";
@@ -1729,6 +1731,7 @@ function renderCompass() {
   const btn = document.getElementById("btnCompass") as HTMLButtonElement | null;
   if (btn) btn.textContent = st.state === "on" || st.state === "starting" ? "Compass on" : "Compass";
   liveMap?.setHeading(st.state === "on" && st.source !== "relative" ? h : undefined);
+  tracePhoneHeading();
 }
 
 compass.addEventListener("change", renderCompass);
@@ -2466,7 +2469,7 @@ function src(): Src {
     pbHi: passband()?.[1] ?? null,
     labels: labelsNow(),
     stats: srcStats(),
-    units: remote.connected && !pb ? (remote.kind === "kiwisdr" ? "dB" : "dB") : cfg.cal ? "dBm" : "dBFS",
+    units: remote.connected && !pb ? (remote.kind === "trace" ? trace.units : "dB") : cfg.cal ? "dBm" : "dBFS",
   };
 }
 
@@ -3076,6 +3079,65 @@ let uberDirErr = "";
 let dir: { fetched: string; source: string; probed: boolean; servers: DirEntry[]; kiwi?: DirEntry[] } | null = null;
 const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
+// ── TRACE: direction finding from the station's antenna pointing ──
+/** Level at the DT frequency from a remote spectrum frame (its own view, not the local SDR's). */
+function remoteLevelAt(freqHz: number, bw: number, arr: Float32Array): number {
+  const n = arr.length;
+  if (!n || !remote.rateHz) return NaN;
+  const lo = remote.centreHz - remote.rateHz / 2;
+  const k0 = Math.max(0, Math.floor(((freqHz - bw / 2 - lo) / remote.rateHz) * n));
+  const k1 = Math.min(n - 1, Math.ceil(((freqHz + bw / 2 - lo) / remote.rateHz) * n));
+  let sum = 0, cnt = 0;
+  for (let k = k0; k <= k1; ++k) if (Number.isFinite(arr[k])) (sum += 10 ** (arr[k] / 10)), ++cnt;
+  return cnt ? 10 * Math.log10(sum / cnt) : NaN;
+}
+
+/**
+ * When the station reports where its antenna points (rotator, compass, or a
+ * phone on the boom), every spectrum frame becomes a DT sample: the level at
+ * the DT frequency and the heading at that frame's own sample index — both on
+ * the station's clock, so network delay doesn't smear the bearing.
+ */
+const dfPending: { index: bigint; lv: number }[] = [];
+function traceDirection(f: Float32Array) {
+  if (pb) return;
+  const lv = remoteLevelAt(dtFreqHz(), dt.st.bwHz, f);
+  if (Number.isFinite(lv)) dfPending.push({ index: trace.spectrumIndex, lv });
+  if (dfPending.length > 200) dfPending.splice(0, dfPending.length - 200);
+  traceResolveDirection();
+}
+
+/** Pointing arrives in batches: a level waits until a heading sample after its index is known. */
+function traceResolveDirection() {
+  const pts = trace.pointing;
+  if (!pts.length) return;
+  const newest = pts[pts.length - 1].index;
+  const m = trace.pointingMeta;
+  while (dfPending.length && dfPending[0].index <= newest) {
+    const s = dfPending.shift()!;
+    const h0 = headingAtTrace(pts, s.index);
+    if (h0 === null) continue;
+    const h = m?.magnetic ? norm(h0 + (m.declination ?? dt.declination())) : h0;
+    dt.heading = h;
+    dt.level = s.lv;
+    dt.problem = undefined; // the station supplies the heading; the phone's compass isn't needed
+    dt.addSample({ h, db: s.lv, t: Date.now() });
+  }
+}
+
+/** A phone strapped to the station's antenna can supply the heading (when the station has no sensor of its own). */
+let tracePhoneSentAt = 0;
+function tracePhoneHeading() {
+  if (remote !== trace || !trace.connected || trace.context?.pointing?.source !== "client") return;
+  const st = compass.status;
+  if (st.state !== "on" || st.source === "relative" || st.heading === undefined) return;
+  const now = Date.now();
+  if (now - tracePhoneSentAt < 100) return;
+  tracePhoneSentAt = now;
+  const known = dt.northRef() === "T";
+  trace.sendPointing(norm(st.heading + dt.st.mountOffset), { accuracy: st.accuracy ?? null, magnetic: true, declination: known ? dt.declination() : null, tUnixMs: st.timestamp ?? now });
+}
+
 let lastRemoteView = "";
 function feedRemote(f: Float32Array) {
   if (pb || !remote.connected || !f.length) return;
@@ -3133,7 +3195,12 @@ function renderRemote() {
   else msg.textContent = "Paste an OpenWebRX, UberSDR or KiwiSDR address (https), or pick one from the directory below.";
   if (!on) return;
   setText("rxName", remote.name || remote.url.page);
-  setText("rxMeta", `${remote.label} ${remote.version || "?"} · ${freqLabel(remote.centreHz)} · span ${hzShort(remote.rateHz)} · FFT ${remote.fftSize || "?"} · ${remote.clients}${remote.maxClients ? "/" + remote.maxClients : ""} listeners`);
+  setText(
+    "rxMeta",
+    remote.kind === "trace"
+      ? `TRACE ${trace.version || "?"} · ${freqLabel(remote.centreHz)} · span ${hzShort(remote.rateHz)} · ${trace.fftSize} bins · ${trace.units}${trace.context?.cal ? ` ±${trace.context.cal.uncertainty_db} dB` : ""} · clock class ${trace.clockClass}${trace.headingAtSpectrum !== null ? ` · antenna ${Math.round(trace.headingAtSpectrum)}°${trace.pointingMeta?.magnetic ? "M" : ""} (${trace.pointingMeta?.source})` : ""}${trace.controlHolder ? ` · control: ${trace.youControl ? "you" : trace.controlHolder}` : ""}`
+      : `${remote.label} ${remote.version || "?"} · ${freqLabel(remote.centreHz)} · span ${hzShort(remote.rateHz)} · FFT ${remote.fftSize || "?"} · ${remote.clients}${remote.maxClients ? "/" + remote.maxClients : ""} listeners`
+  );
   const ps = $<HTMLSelectElement>("rxProfile");
   const key = remote.profiles.map((p) => p.id).join(",");
   if (ps.dataset.key !== key) {
@@ -3182,6 +3249,7 @@ async function detectKind(page: string): Promise<RemoteKind> {
   if (has(uberDir)) return "ubersdr";
   if (has(dir?.kiwi) || has(FEATURED) || /:8073\/|kiwi/i.test(page)) return "kiwisdr";
   if (has(dir?.servers)) return "openwebrx";
+  if (await looksLikeTrace(page)) return "trace";
   return (await looksLikeUber(page)) ? "ubersdr" : "openwebrx";
 }
 
@@ -3265,8 +3333,9 @@ async function connectRemote(u: string, kind?: RemoteKind, retry = false) {
   owrx.disconnect(true);
   uber.disconnect(true);
   kiwi.disconnect(true);
+  trace.disconnect(true);
   const k: RemoteKind = safeKind(kind) ?? (await detectKind(page));
-  remote = k === "ubersdr" ? uber : k === "kiwisdr" ? kiwi : owrx;
+  remote = k === "ubersdr" ? uber : k === "kiwisdr" ? kiwi : k === "trace" ? trace : owrx;
   wireRemote();
   try {
     await remote.connect(u);
@@ -3393,8 +3462,13 @@ async function loadDir() {
 }
 
 function wireRemote() {
-  for (const c of [owrx, uber, kiwi] as RemoteClient[]) {
-    c.onFft = (f) => c === remote && feedRemote(f);
+  for (const c of [owrx, uber, kiwi, trace] as RemoteClient[]) {
+    c.onFft = (f) => {
+      if (c !== remote) return;
+      feedRemote(f);
+      if (c === trace) traceDirection(f);
+    };
+    if (c === trace) trace.onPointing = () => trace === remote && traceResolveDirection();
     c.onLog = (m, k) => c === remote && log(m, (k as any) ?? "");
     c.onChange = () => c === remote && onRemoteChange();
   }
@@ -3565,6 +3639,8 @@ function snapHz(hz: number) {
 /** Tunable range of the active source (Hz). */
 function tuneRange(): [number, number] {
   if (remote.connected) {
+    // a TRACE station retunes its receiver: anything the device covers is tunable
+    if (remote.kind === "trace") return [trace.context?.device?.min_hz ?? 0, trace.context?.device?.max_hz ?? 6e9];
     const full = (remote as any).fullHz as number | undefined;
     if (full) return [0, full];
     return [remote.centreHz - remote.rateHz / 2, remote.centreHz + remote.rateHz / 2];
@@ -3824,7 +3900,7 @@ function renderVfo() {
   setText("vfoBw", pbv ? hzShort(Math.abs(pbv[1] - pbv[0])) : "—");
   // signal meter: S-units need a calibrated dBm level (S9 = −73 dBm, 6 dB per S-unit)
   const lv = remote.connected && !pb && Number.isFinite(remote.smeterDb) ? remote.smeterDb : lastStats?.band;
-  const dbm = remote.connected && !pb ? remote.kind === "kiwisdr" : cfg.cal !== 0;
+  const dbm = remote.connected && !pb ? remote.kind === "kiwisdr" || (remote.kind === "trace" && trace.units === "dBm") : cfg.cal !== 0;
   const bar = document.getElementById("vfoMeterBar");
   if (bar && lv !== undefined && Number.isFinite(lv)) {
     const u = Math.max(0, Math.min(1, (lv + 127) / 100));

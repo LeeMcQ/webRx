@@ -25,7 +25,8 @@
     "test:layout": "node bench/run.mjs layout.test",
     "test:survey": "node bench/run.mjs survey.test",
     "test:remote": "node bench/run.mjs remote.test",
-    "test": "npm run typecheck && for t in devices compass map sampling coverage wifi df layout survey remote; do npm run -s test:$t || exit 1; done"
+    "test:trace": "node bench/run.mjs trace.test",
+    "test": "npm run typecheck && for t in devices compass map sampling coverage wifi df layout survey remote trace; do npm run -s test:$t || exit 1; done"
   },
   "devDependencies": {
     "browser-sync": "^3.0.3",

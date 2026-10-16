@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-UV2f++MKC7JNHvZ+tMuvokKvvH0jCBnBECSPxyWjqrY='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss:; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-UV2f++MKC7JNHvZ+tMuvokKvvH0jCBnBECSPxyWjqrY='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; media-src 'self' blob:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="webrx-build" content="dev" />
     <meta name="theme-color" content="#0a101c" />
@@ -1452,7 +1452,7 @@
               <label for="rxUrl">Server address</label>
               <input id="rxUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://sdr.example.org/ or https://call.tunnel.ubersdr.org/" spellcheck="false" />
             </div>
-            <div class="field"><label for="rxUrlKind">Server type</label><select id="rxUrlKind"><option value="auto">Detect</option><option value="openwebrx">OpenWebRX</option><option value="ubersdr">UberSDR</option><option value="kiwisdr">KiwiSDR</option></select></div>
+            <div class="field"><label for="rxUrlKind">Server type</label><select id="rxUrlKind"><option value="auto">Detect</option><option value="openwebrx">OpenWebRX</option><option value="ubersdr">UberSDR</option><option value="kiwisdr">KiwiSDR</option><option value="trace">TRACE station</option></select></div>
             </div>
             <div class="btns" style="margin-top:8px">
               <button class="btn primary" id="btnRxConnect" type="button">Connect</button>

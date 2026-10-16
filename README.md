@@ -87,6 +87,13 @@ The receiver and the monitor can't use the same SDR at the same time; each page 
 
 Install from the browser menu (or the Install button). All pages, the WASM core and the icons are cached for offline use, and the app has shortcuts to the Receiver, the Monitor and the Map. Once installed, it appears in Android's share sheet for CSV files and opens `.csv` files on desktop.
 
+### TRACE stations
+
+`trace/` holds TRACE (Timestamped RF Adaptive Calibrated Encoding): a Rust
+station that serves one SDR's calibrated spectrum, audio, I/Q, antenna pointing
+and GPS-timed bursts to browsers, and the codecs webRx decodes. See
+[trace/README.md](trace/README.md); in webRx choose server type **TRACE station**.
+
 ### Tests
 
 ```shell
@@ -98,6 +105,7 @@ npm run test:coverage   # natural-neighbour / IDW grids, licence site formats, l
 npm run test:df         # bearing fit, WMM declination, HackRF sweep grid/counter, DT magnetic→true
 npm run test:survey     # RM survey: noise floor, squelch, chunking, worker fallback, upload queue (mock server)
 npm run test:remote     # OpenWebRX / UberSDR / KiwiSDR protocol and retry rules
+npm run test:trace      # TRACE decoders reproduce the Rust codecs byte for byte
 npm test                # typecheck + every suite above
 cd dsp-rs && cargo test --release
 ```
