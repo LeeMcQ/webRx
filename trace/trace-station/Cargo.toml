@@ -1,0 +1,18 @@
+[package]
+name = "trace-station"
+description = "TRACE station: drives an SDR, does the DSP once, and serves spectrum, audio, I/Q, pointing and bursts to browsers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+trace-core = { path = "../trace-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
+axum = { version = "0.8", features = ["ws"] }
+rustfft = "6"
+libloading = "0.8"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

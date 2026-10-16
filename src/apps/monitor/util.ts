@@ -1,7 +1,7 @@
 // Pure helpers shared by the monitor and its unit tests (no DOM).
 import { safeHttp, safeKind } from "./owrx.js";
 
-export type DirEntry = { n: string; s: string; u: string; v: string; lat: number; lon: number; ok?: number; k?: "ubersdr" | "kiwisdr"; users?: string; feat?: string };
+export type DirEntry = { n: string; s: string; u: string; v: string; lat: number; lon: number; ok?: number; k?: "ubersdr" | "kiwisdr" | "trace"; users?: string; feat?: string };
 
 /** One EMA step: display trace in the selected domain, legacy trace always in dB. */
 export function avgStep(spec: Float32Array, legacy: Float32Array | null, v: Float32Array, a: number, mode: "lin" | "log", offset = 0) {

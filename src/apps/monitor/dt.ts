@@ -369,5 +369,6 @@ export function trueBearing(f: { bearing: number; north: "T" | "M"; lat: number;
 
 export const formatBearing = (deg: number, north?: "T" | "M") => `${String(Math.round(norm(deg)) % 360).padStart(3, "0")}°${north ?? ""} ${cardinal(deg)}`;
 export const dt = new Directional();
+if (typeof window !== "undefined") (window as any).webrxDt = dt;
 /** Separate instance for recording playback: never touches the live plot or localStorage. */
 export const dtPlay = new Directional(false);

@@ -10,7 +10,8 @@ const csp = [
   `script-src 'self' 'wasm-unsafe-eval' ${hashes.join(" ")}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com",
-  "connect-src 'self' https: wss:",
+  // http/ws only to this computer: a TRACE station or rtl_tcp bridge running locally
+  "connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
   "media-src 'self' blob:",
   "worker-src 'self' blob:",
   "font-src 'self' data:",
